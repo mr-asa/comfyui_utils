@@ -1,3 +1,2 @@
 .vscode/launch.json
-.env.development
 tests.py
