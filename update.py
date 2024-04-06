@@ -62,11 +62,14 @@ def get_repository_status(directory):
 # Основная функция для обхода каталогов и выполнения проверок
 def main():
     try:
+    # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
         # Указываем путь к каталогу, в котором находятся каталоги с репозиториями
-        base_directory = os.path.realpath(__file__).rsplit("\\",2)[0]+"\\custom_nodes"
+        # У меня лежит в каталоге "f:\ComfyUI\self_write\comfyui_utils\" поэтому можно брать путь такой
+        base_directory = os.path.realpath(__file__).rsplit("\\",3)[0]+"\\custom_nodes"
         # base_directory = "f:\\temp\\git_tests" # Можно указать конкретный путь к каталогу плагинов
         # print("base_directory",base_directory)
-        
+    # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+
         # Получаем список всех папок в базовой директории
         directories = [os.path.join(base_directory, d) for d in os.listdir(base_directory) if os.path.isdir(os.path.join(base_directory, d))]
         directories = [base_directory.rsplit("\\",1)[0]]+directories

@@ -44,20 +44,9 @@ def get_active_requirements(file_path):
 
                     else:
                         active_requirements.append("".join([gpackage,pair]))
-                        # active_requirements += [gpackage,operator,version]
-                        # active_requirements.append(f"{gpackage}{pair}")
     return active_requirements
 
 
-
-# Функция для проверки версии установленного пакета
-# def get_installed_version(package_name):
-#     result = subprocess.run(['pip', 'show', package_name], capture_output=True, text=True)
-#     if result.returncode == 0:
-#         for line in result.stdout.split('\n'):
-#             if line.startswith('Version:'):
-#                 return line.split(':', 1)[1].strip()
-#     return None
 def get_installed_version(package_name):
     try:
         return importlib.metadata.version(package_name)
@@ -65,24 +54,9 @@ def get_installed_version(package_name):
         return None
 
 
-# Функция для получения актуальной версии пакета
-# def get_latest_version(package_name):
-#     result = subprocess.run(['pip', 'install', '--quiet', '--no-warn-script-location', '--upgrade', package_name], capture_output=True, text=True)
-#     if result.returncode == 0:
-#         result = subprocess.run(['pip', 'show', package_name], capture_output=True, text=True)
-#         if result.returncode == 0:
-#             for line in result.stdout.split('\n'):
-#                 if line.startswith('Version:'):
-#                     return line.split(':', 1)[1].strip()
-#     return None
-# def get_latest_version(package_name):
-#     try:
-#         latest_version = importlib.metadata.version(package_name)
-#         return latest_version
-#     except importlib.metadata.PackageNotFoundError:
-#         return None
 def get_latest_version(package_name):
     try:
+        # print("\tget_latest_version(package_name)",package_name)
         response = requests.get(f"https://pypi.org/pypi/{package_name}/json")
         response.raise_for_status()  # Проверка наличия ошибок HTTP
         package_info = response.json()
@@ -91,7 +65,6 @@ def get_latest_version(package_name):
     except requests.RequestException as e:
         print(f"Ошибка при получении данных с PyPI: {e}")
         return None
-
 
 
 # Функция для активации виртуального окружения
@@ -157,26 +130,23 @@ def combine_names(input_ordered_dict):
             if name is not None:  # Проверяем, что имя не равно None
                 unique_names_dict[key].add(name)
 
-    # Обновляем вложенные списки, заменяя повторяющиеся имена на список уникальных имен
+    # Создаем словарь для хранения объединенных значений
+    combined_values_dict = {}
+
+    # Обновляем вложенные списки, объединяя строки с одинаковыми первыми тремя элементами
     for key, values in input_ordered_dict.items():
-        names = [name for name in unique_names_dict[key] if name is not None]  # Получаем уникальные имена для данного ключа
-        new_values = []
-        has_none = False
+        combined_values_dict[key] = []
+        temp_dict = {}
         for sublist in values:
-            if all(item is None for item in sublist[:-1]):  # Проверяем, что все элементы списка кроме последнего равны None
-                if not has_none:
-                    sublist[-1] = names  # Заменяем имя на список уникальных имен
-                    new_values.append(sublist)
-                    has_none = True
-            else:
-                new_values.append(sublist)
+            sublist_key = tuple(sublist[:-1])  # Преобразуем список в кортеж для использования в качестве ключа
+            if sublist_key not in temp_dict:
+                temp_dict[sublist_key] = []
+            temp_dict[sublist_key].append(sublist[-1])
 
+        for sublist_key, names in temp_dict.items():
+            combined_values_dict[key].append(list(sublist_key) + [names])
 
-        new_values = sort_nested_lists(new_values)
-        # print("-- new_values",new_values)
-        input_ordered_dict[key] = new_values  # Обновляем вложенные списки
-
-    return input_ordered_dict
+    return combined_values_dict
 
 
 def main():
@@ -254,28 +224,44 @@ def main():
                 print(Fore.GREEN + "\n" + package_name + Style.RESET_ALL)
 
                 values = (result_ordered_dict[package_name])
-                for i in values:
-                    print(f"\t{i[0]+' ' if i[0] else ''}{i[1]+i[2]+' ' if i[1] else 'any '}in {i[3]}")
+                # for i in values:
+                #     print(f"\t{i[0]+' ' if i[0] else ''}{i[1]+i[2]+' ' if i[1] else 'any version '}in {i[3]}")
+
+                # def custom_sort_key(item):
+                #     print("custom_sort_key",item)
+                #     version = item[2]
+                #     if not version:
+                #         return float('inf')  # Поместить строки, начинающиеся с "any" в конец
+                #     return version
+
+                # values_sorted = sorted(values, key=custom_sort_key)
+
+                values_sorted = sorted(values, key=lambda x: x[2] if x[2] is not None else '')
 
 
+                for i in values_sorted:
+                    print(f"\t{i[0] if i[0] else ''}{i[1]+i[2]+' ' if i[1] else 'any version '}in {i[3]}")
 
 
-                installed_version = get_installed_version(package_name + f"{i[0] if i[0] else ''}")
-                latest_version = get_latest_version(package_name + f"{i[0] if i[0] else ''}")
+                installed_version = get_installed_version(package_name)
+                latest_version = get_latest_version(package_name)
                 # print("installed_version,latest_version",installed_version,latest_version,installed_version==latest_version)
 
                 if not installed_version:
                     print(Fore.RED + "\tNone" + 
-                        Fore.CYAN + f" pip install {package_name}" +
+                        Fore.CYAN + f" pip install {package_name}{i[0] if i[0] else ''}=={latest_version}" +
                         Style.RESET_ALL )
                     values = result_ordered_dict[package_name]
 
                 elif installed_version == latest_version:
                     print(f"\tYou hav a latest {installed_version} version")
                 else:
-                    print(Fore.YELLOW + f"\tCan Update {installed_version} to {latest_version}" + 
+                    print(Fore.YELLOW + f"\tCan updated from {installed_version} to {latest_version}" + 
                         Fore.CYAN + f" pip install {package_name}=={latest_version}" +
-                        Style.RESET_ALL)
+                        Style.RESET_ALL + " or update " +
+                        Fore.CYAN + f"pip install --upgrade {package_name}" + 
+                        Style.RESET_ALL
+                        )
                     # print(f"installed_version")
 
 
