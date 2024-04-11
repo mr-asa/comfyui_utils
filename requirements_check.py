@@ -1,11 +1,49 @@
 import os
 import re
-import glob
+import sys
+import json
+import pathlib
 import requests
 import subprocess
 import importlib.metadata
 from colorama import init, Fore, Style
 from collections import OrderedDict
+
+
+def check_path(path):
+    return os.path.exists(path)
+
+def read_from_config(key):
+    config_file = 'config.json'
+
+    config = {}
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+
+    while True:
+        # Получаем значение для указанного ключа
+        value = config.get(key)
+
+        # Если значения нет или оно некорректное, запрашиваем новое
+        if value:
+            if key == "venv_path":
+                value = os.path.join(value, 'Scripts', 'activate_this.py')
+
+        if not value or not check_path(value):
+            new_value = input(f"Write {key}: ")
+            if not check_path(new_value):
+                print(f"Invalid {key} path. Please provide a valid path.")
+                continue  # Пропускаем остальные шаги и начинаем заново
+
+            config[key] = new_value
+            with open(config_file, 'w') as f:
+                json.dump(config, f, indent=4)
+                # json.dump(config, f)
+        else:
+            break
+
+    return value
 
 
 # Функция для получения списка активных требований из файла requirements.txt
@@ -49,9 +87,17 @@ def get_active_requirements(file_path):
 
 def get_installed_version(package_name):
     try:
-        return importlib.metadata.version(package_name)
-    except importlib.metadata.PackageNotFoundError:
+        result = subprocess.run(['pip', 'show', package_name], capture_output=True, text=True)
+        if result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                # print(line)
+                if line.startswith('Version:'):
+                    return line.split(':', 1)[1].strip()
         return None
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return None
+
 
 
 def get_latest_version(package_name):
@@ -69,8 +115,16 @@ def get_latest_version(package_name):
 
 # Функция для активации виртуального окружения
 def activate_virtual_environment():
-    activate_script = r'F:\AUTOMATIC18\venv\Scripts\activate.bat'
-    subprocess.run([activate_script], shell=True)
+    activate_this = read_from_config("venv_path")
+    if os.path.exists(activate_this):
+        with open(activate_this) as f:
+            code = compile(f.read().replace("path.decode(\"utf-8\")", "path"), activate_this, 'exec')
+            exec(code, dict(__file__=activate_this))
+        venv_paths = os.environ['VIRTUAL_ENV'].split(os.pathsep)
+        sys.path[:0] = [str(pathlib.Path(read_from_config("venv_path")).resolve())] + venv_paths
+    else:
+        print("Путь к виртуальному окружению не найден.")
+
 
 # Функция для разбора условных зависимостей и получения всех пакетов
 def parse_conditional_dependencies(dependency,directory):
@@ -86,11 +140,6 @@ def parse_conditional_dependencies(dependency,directory):
         # print("\t\tcomparison",comparison)
         version = match.group(4)
         # print("\t\tversion",version)
-        # if comparison == "==":
-        #     packages = [f"{package_name}[{conditions}]=={version}"]
-        # else:
-        #     packages = [f"{package_name}[{conditions}]{comparison}{version}"]
-        # packages = [f"{package_name}[{conditions}]{comparison}{version}"]
         if package_name == "git":
             packages = {package_name:[None,"+",dependency[4:],directory]}
         elif package_name == "--extra-index-url":
@@ -150,8 +199,9 @@ def combine_names(input_ordered_dict):
 
 
 def main():
-    try:
+    global config_file
 
+    try:
         # Словарь для хранения требований
         requirements_dict = OrderedDict()
 
@@ -159,7 +209,8 @@ def main():
         activate_virtual_environment()
 
         # Обход всех каталогов и поиск файлов requirements.txt
-        directory = r'f:/ComfyUI/custom_nodes'
+        directory = read_from_config("custom_nodes_path")
+
         root, dirs, files = next(os.walk(directory))
         for dir in dirs:
             # print(dir)
@@ -185,25 +236,9 @@ def main():
                             else:
                                 requirements_dict[package].append(packages[package])
 
-
-
-        # for key, value in requirements_dict.items():
-        #     requirements_dict[key] = [sublist for sublist in value if sublist != [None, None, None]]
-
-        # print("-->requirements_dict\n",requirements_dict)
-
         sorted_ordered_dict = sort_ordered_dict(requirements_dict)
 
         result_ordered_dict = combine_names(sorted_ordered_dict)
-
-        # result_ordered_dict = sort_ordered_dict(sorted_ordered_dict)
-
-
-        # print("--> result_ordered_dict ",result_ordered_dict)
-
-        # # Удаление дубликатов и вывод требований
-        # requirements_list = list(requirements_dict.values())
-        # print("Список требований:")
 
         packages = sorted([i for i in result_ordered_dict], key=str.lower)
         for package_name in packages:
@@ -212,32 +247,12 @@ def main():
                 values = (result_ordered_dict[package_name])
                 for i in values:
                     print(Fore.BLUE + f"\t{package_name}{i[1]}{i[2]}" + Style.RESET_ALL + f" in {i[3]}")
-                # print("GIT")
-                # pass
-            # elif package_name == "--extra-index-url":
-            #     print("EXTRA")
-            #     values = (result_ordered_dict[package_name])
-            #     for i in values:
-            #         print(Fore.BLUE + f"\t{package_name}{i[1]}{i[2]}" + Style.RESET_ALL + f" in {i[3]}")
-            #     pass
             else:
                 print(Fore.GREEN + "\n" + package_name + Style.RESET_ALL)
 
                 values = (result_ordered_dict[package_name])
-                # for i in values:
-                #     print(f"\t{i[0]+' ' if i[0] else ''}{i[1]+i[2]+' ' if i[1] else 'any version '}in {i[3]}")
-
-                # def custom_sort_key(item):
-                #     print("custom_sort_key",item)
-                #     version = item[2]
-                #     if not version:
-                #         return float('inf')  # Поместить строки, начинающиеся с "any" в конец
-                #     return version
-
-                # values_sorted = sorted(values, key=custom_sort_key)
 
                 values_sorted = sorted(values, key=lambda x: x[2] if x[2] is not None else '')
-
 
                 for i in values_sorted:
                     print(f"\t{i[0] if i[0] else ''}{i[1]+i[2]+' ' if i[1] else 'any version '}in {i[3]}")
@@ -264,22 +279,8 @@ def main():
                         )
                     # print(f"installed_version")
 
-
-
-        # # Проверка установленных и актуальных версий
-        # print("\nПроверка установленных и актуальных версий:")
-        # for requirement in requirements_list:
-        #     package_name, package_version = requirement.split('==')
-        #     installed_version = get_installed_version(package_name)
-        #     if installed_version:
-        #         print(f"{package_name}: Установленная версия - {installed_version}")
-        #     latest_version = get_latest_version(package_name)
-        #     if latest_version:
-        #         print(f"{package_name}: Актуальная версия - {latest_version}")
-
     except Exception as e:
         print(f"An error occurred: {e}")
-
 
 
 # Вызываем основную функцию
