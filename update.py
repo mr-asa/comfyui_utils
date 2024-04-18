@@ -48,7 +48,7 @@ def get_repository_status(directory):
         for commit in github_commits:
             # print(commit.authored_datetime)
             if commit.hexsha not in local_commits:
-                print(Fore.BLUE + f"--> {commit.authored_datetime}\n{commit.message}"[:-1] + Style.RESET_ALL)
+                print(Fore.BLUE + f"--> {commit.authored_datetime}\n{commit.message}".rstrip('\n') + Style.RESET_ALL)
                 files_edited = True
 
         if files_edited:

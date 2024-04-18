@@ -118,10 +118,19 @@ def activate_virtual_environment():
     activate_this = read_from_config("venv_path")
     if os.path.exists(activate_this):
         with open(activate_this) as f:
-            code = compile(f.read().replace("path.decode(\"utf-8\")", "path"), activate_this, 'exec')
+            code = compile(
+                f.read().replace("path.decode(\"utf-8\")", "path"), 
+                activate_this, 
+                'exec')
             exec(code, dict(__file__=activate_this))
         venv_paths = os.environ['VIRTUAL_ENV'].split(os.pathsep)
         sys.path[:0] = [str(pathlib.Path(read_from_config("venv_path")).resolve())] + venv_paths
+
+        path_to_cd = activate_this.split("Scripts")[0]
+        print(f"--> Strings to cmd <--\n" + 
+              Fore.BLUE + f"cd /d {path_to_cd}\ncall Scripts\\activate.bat\n" + 
+              Style.RESET_ALL)
+
     else:
         print("Путь к виртуальному окружению не найден.")
 
