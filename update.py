@@ -26,7 +26,27 @@ def get_repository_status(directory):
 
         print("\t"+repo.remotes[0].url)
 
-        current_branch = repo.active_branch
+        try:
+            current_branch = repo.active_branch
+        except TypeError:
+            branches = repo.branches
+
+            if len(branches) == 1:
+                branch_name = branches[0].name
+                repo.heads[branch_name].checkout()
+                current_branch = repo.active_branch
+
+            else:
+                print("Founded several brunches:")
+                for branch in branches:
+                    print(branch.name)
+
+                # Ожидаем ввода пользователем имени нужной ветки
+                desired_branch = input("Chose brunch for update: ")
+
+                # Переключаемся на выбранную ветку
+                repo.heads[desired_branch].checkout()
+                current_branch = repo.active_branch
 
         tracking_branch = current_branch.tracking_branch()
         if tracking_branch is None:
