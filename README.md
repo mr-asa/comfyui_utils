@@ -16,5 +16,8 @@ Writes logs of all changes made (commit comments) and changes in files.\
 Compares the version of the installed package with the latest one.\
 Prescribes a list of required packagejs in requrements.txt and the ability to update them.
 
-Currently in WIP status.   
    
+---
+### png_to_json.py
+
+Convert all workflow in .jpeg and .png metadata to .json files

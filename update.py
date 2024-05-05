@@ -71,6 +71,10 @@ def get_repository_status(directory):
                 print(Fore.BLUE + f"--> {commit.authored_datetime}\n{commit.message}".rstrip('\n') + Style.RESET_ALL)
                 files_edited = True
 
+        if repo.is_dirty():
+            # Спрятать локальные изменения
+            repo.git.stash()
+
         if files_edited:
             print()
             result = repo.git.pull()
