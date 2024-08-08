@@ -5,67 +5,216 @@ import json
 import pathlib
 import requests
 import subprocess
-import importlib.metadata
-from colorama import init, Fore, Style
+from colorama import Fore, Style
 from collections import OrderedDict
 
 
-def check_path(path):
-    return os.path.exists(path)
-
-def read_from_config(key):
-    config_file = 'config.json'
-
-    config = {}
-    if os.path.exists(config_file):
-        with open(config_file, 'r') as f:
-            config = json.load(f)
-
+def choose_environment_type():
     while True:
-        # Получаем значение для указанного ключа
-        value = config.get(key)
+        choice = input("Choose environment type (1 for venv, 2 for conda): ").strip()
+        if choice == '1':
+            return 'venv'
+        elif choice == '2':
+            return 'conda'
+        elif choice.upper() == 'NO':
+            sys.exit("Exiting script as requested.")
+        print("Invalid choice. Please enter 1 for venv, 2 for conda, or 'NO' to exit.")
 
-        # Если значения нет или оно некорректное, запрашиваем новое
-        if value:
-            if key == "venv_path":
-                value = os.path.join(value, 'Scripts', 'activate_this.py')
+def read_from_config(key, check=False):
+    # print(f"\tread_from_config",key,"check = ",check)
+    # config_file = 'config.json'
+    if not os.path.exists(config_file):
+        # Create an empty config file if it does not exist
+        with open(config_file, 'w') as f:
+            json.dump({}, f, indent=4)
+        # print(f"\tConfig file '{config_file}' created.")
 
-        if not value or not check_path(value):
-            new_value = input(f"Write {key}: ")
-            if not check_path(new_value):
-                print(f"Invalid {key} path. Please provide a valid path.")
-                continue  # Пропускаем остальные шаги и начинаем заново
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+            
+    # print(f"\tReading config for key: {key}")
+    value = config.get(key)
+    # print(f"\tvalue = ",value)
 
-            config[key] = new_value
-            with open(config_file, 'w') as f:
-                json.dump(config, f, indent=4)
-                # json.dump(config, f)
+    if check:
+        return value
+    
+    else:
+        if key == 'env_type':
+            if key not in config:
+                value = choose_environment_type()
+                config[key] = value
+                with open(config_file, 'w') as f:
+                    json.dump(config, f, indent=4)
+                return value
+            else:
+                env_type = config.get(key)
+            
+            return env_type
+
+        env_type = config.get('env_type')
+        # print("\tenv_type = ",env_type)
+
+        while True:
+            # print("\tcollect other", env_type)
+            if env_type == 'venv':
+                if key == "venv_path":
+                    if not value or not os.path.exists(value):
+                        value = input("Enter venv path (or 'NO' to exit): ")
+                        if value.upper() == 'NO':
+                            sys.exit("Exiting script as requested.")
+                        if os.path.exists(value):
+                            value = os.path.join(value, 'Scripts', 'activate_this.py')
+                        else:
+                            print("\tInvalid venv path. Please try again.")
+                            continue
+
+            elif env_type == 'conda':
+                # print("\tIt Is Conda!!!", key)
+                if key in ["conda_path", "conda_env"]:
+                    if not value:
+                        if key == "conda_path":
+                            value = get_conda_path()
+                        elif key == "conda_env":
+                            value = get_conda_env()
+                        elif value.upper() == 'NO':
+                            sys.exit("Exiting script as requested.")
+                    # elif key == "conda_path" and not os.path.exists(value):
+                    #     print("\tConda path not found. Please enter it again.")
+                    #     value = get_conda_path()
+                    # else:
+                    #     return config.get(key)
+
+
+            # print("\tkey in config.keys()",key in config.keys())
+            if key not in config.keys():
+                choice = input(f"Enter {key}: ")
+                config[key] = choice
+
+            # if value and (key not in ["project_path", "custom_nodes_path"] or os.path.exists(value)):
+            #     config[key] = value
+                with open(config_file, 'w') as f:
+                    json.dump(config, f, indent=4)
+                return choice
+            # else:
+            #     print(f"\tInvalid {key}. Please provide a valid value.")
+            #     value = None  # Reset value to force re-entry
+            else:
+                return config.get(key)
+
+
+        return value
+
+def get_conda_path():
+    # print("__get_conda_path__")
+    choice = read_from_config("conda_path",check=True)
+    print("choice",choice)
+
+    if choice:
+        return choice
+    else:
+        username = os.environ['USERNAME']
+        default_paths = [
+            fr"C:\ProgramData\Anaconda3\Scripts\conda.exe",
+            fr"C:\ProgramData\miniconda3\Scripts\conda.exe",
+            fr"C:\Users\{username}\Anaconda3\Scripts\conda.exe",
+            fr"C:\Users\{username}\miniconda3\Scripts\conda.exe",
+        ]
+        existing_paths = [path for path in default_paths if os.path.exists(path)]
+        
+        if existing_paths:
+            print("Choose conda.exe path:")
+            for i, path in enumerate(existing_paths, 1):
+                print(f"{i}. {path}")
+            print(f"{len(existing_paths) + 1}. Enter custom path")
+            choice = input("Enter your choice (or 'NO' to exit): ")
+            
+            if choice.upper() == 'NO':
+                return 'NO'
+            
+            if choice.isdigit() and 1 <= int(choice) <= len(existing_paths):
+                return existing_paths[int(choice) - 1]
+            elif choice == str(len(existing_paths) + 1):
+                return input("Enter custom conda.exe path: ")
+            else:
+                print("Invalid choice. Please try again.")
+                return get_conda_path()
         else:
-            break
+            return input("Enter conda.exe path (or 'NO' to exit): ")
 
-    return value
+def get_conda_env():
+    # print(">>> get_conda_env >>>")
+    try:
+        env_path = read_from_config("conda_env",check=True)
+    
+        if env_path:  
+            print(f"Using existing conda environment: {env_path}")
+            return env_path
+        else:
+            conda_path = get_conda_path()
+            result = subprocess.run([conda_path, 'env', 'list'], capture_output=True, text=True)
+            # print("result - ",result)
+            env_list = [line.split()[0] for line in result.stdout.splitlines() if line.strip() and not line.startswith('#')]
+            # print("env_list - ",env_list)
 
+            if not env_list:
+                print("No conda environments found.")
+                return None
+            
+            print("Choose Conda environment:")
+            for i, env in enumerate(env_list, 1):
+                print(f"{i}. {env}")
+            print(f"{len(env_list) + 1}. Enter custom environment name")
+            choice = input("Enter your choice (or 'NO' to exit): ")
+            
+            if choice.upper() == 'NO':
+                return 'NO'
+            
+            elif choice.isdigit() and 1 <= int(choice) <= len(env_list):
+                return env_list[int(choice) - 1]
+            
+            elif choice == str(len(env_list) + 1):
+                # custom_env_name = input("Enter a name for this custom environment: ")     
+                custom_path = input("Enter the path for the custom environment: ")
+                # create_env_command = [conda_path, 'create', '-n', custom_env_name, '--prefix', custom_path, '-y']
+                # try:
+                # subprocess.run(create_env_command, check=True)
+                env_list.append(custom_path)
+                
+                # Save the new environment to the config for future use
+                # config = read_from_config('config', check=False)  # Ensure config is defined
+                config = {}
+                
+                config['conda_env'] = custom_path
+                with open(config_file, 'w') as f:
+                    json.dump(config, f, indent=4)
 
-# Функция для получения списка активных требований из файла requirements.txt
+                return custom_path
+                # except subprocess.CalledProcessError as e:
+                #     print(f"Failed to create environment: {e}")
+                #     return None
+                
+            else:
+                print("Invalid choice. Please try again.")
+                return get_conda_env()
+    except subprocess.CalledProcessError:
+        return input("Unable to list Conda environments. Enter environment name (or 'NO' to exit): ")
+
 def get_active_requirements(file_path):
+    # print("__get_active_requirements__",file_path)
     active_requirements = []
     with open(file_path, 'r') as file:
         for line in file:
             line = line.strip()
-            # print("\tget_active_requirements line",line)
-            if line and not line.startswith("#"):  # Игнорировать пустые строки и закомментированные строки
-                # Разделение строки на отдельные пары "пакет-оператор-версия"
+            # print("\t",line)
+            if line and not line.startswith("#"):
                 pairs = line.split(',')
                 gpackage = ""
                 for pair in pairs:
                     pair = pair.strip()
-                    # Поиск паттернов операторов сравнения и разделение строки на имя пакета и версию
                     match = re.match(r'([\w-]+)(?:\[(.*?)\])?(?:([!><=]+)(\d+(?:\.\d+)*))?', pair)
-                    # print("\tget_active_requirements ","pair",pair, match)
-                    if match:  
-                        # print("\tget_active_requirements match.groups() ",match.groups())
+                    if match:
                         package, dopPack, operator, version = match.groups()
-
                         if package == "git":
                             active_requirements.append(f"{package}+{pair[4:]}")
                         elif package == "--extra-index-url":
@@ -77,20 +226,37 @@ def get_active_requirements(file_path):
                                 f"[{dopPack}]" if dopPack else "",
                                 operator if operator else "",
                                 version if version else ""
-                                ]))
-
-
+                            ]))
                     else:
-                        active_requirements.append("".join([gpackage,pair]))
+                        active_requirements.append("".join([gpackage, pair]))
     return active_requirements
 
-
 def get_installed_version(package_name):
+    
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+
+    env_type = config.get('env_type')
     try:
-        result = subprocess.run(['pip', 'show', package_name], capture_output=True, text=True)
+        if env_type == "conda":
+            env_name = config.get('conda_env')
+            result = subprocess.run(
+                [f"{env_name}python.exe", '-m', 'pip', 'show', package_name], 
+                capture_output=True,
+                text=True,
+                check=True
+                )
+        else:
+            result = subprocess.run(
+                ['pip', 'show', package_name], 
+                capture_output=True,
+                text=True,
+                check=True
+                )
+
         if result.returncode == 0:
+            # print("__get_installed_version__",package_name, result.stdout)
             for line in result.stdout.split('\n'):
-                # print(line)
                 if line.startswith('Version:'):
                     return line.split(':', 1)[1].strip()
         return None
@@ -98,203 +264,351 @@ def get_installed_version(package_name):
         print(f"An error occurred: {e}")
         return None
 
-
-
 def get_latest_version(package_name):
     try:
-        # print("\tget_latest_version(package_name)",package_name)
         response = requests.get(f"https://pypi.org/pypi/{package_name}/json")
-        response.raise_for_status()  # Проверка наличия ошибок HTTP
+        response.raise_for_status()
         package_info = response.json()
         latest_version = package_info["info"]["version"]
         return latest_version
     except requests.RequestException as e:
-        print(f"Ошибка при получении данных с PyPI: {e}")
+        print(f"Error while retrieving data from PyPI: {e}")
+        return None
+    
+def get_all_versions(package_name):
+    try:
+        result = subprocess.run(
+            ['pip', 'index', 'versions', package_name], 
+            # capture_output=True,
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE, 
+            text=True,
+            check=True,
+            )
+        
+        if result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                if line.startswith('Available versions:'):
+                    return line.split(':', 1)[1].strip()
+        
+        # return result
+    except requests.RequestException as e:
+        print(f"Error while retrieving data from PyPI: {e}")
         return None
 
-
-# Функция для активации виртуального окружения
 def activate_virtual_environment():
-    activate_this = read_from_config("venv_path")
-    if os.path.exists(activate_this):
-        with open(activate_this) as f:
-            code = compile(
-                f.read().replace("path.decode(\"utf-8\")", "path"), 
-                activate_this, 
-                'exec')
-            exec(code, dict(__file__=activate_this))
-        venv_paths = os.environ['VIRTUAL_ENV'].split(os.pathsep)
-        sys.path[:0] = [str(pathlib.Path(read_from_config("venv_path")).resolve())] + venv_paths
+    # config_file = 'config.json'
+    with open(config_file, 'r') as f:
+        config = json.load(f)
 
-        path_to_cd = activate_this.split("Scripts")[0]
-        print(f"--> Strings to cmd <--\n" + 
-              Fore.BLUE + f"cd /d {path_to_cd}\ncall Scripts\\activate.bat\n" + 
-              Style.RESET_ALL)
+    env_type = config.get('env_type')
 
+    if env_type == 'venv':
+        venv_activate = read_from_config("venv_path")
+        if os.path.exists(venv_activate):
+            with open(venv_activate) as f:
+                code = compile(f.read(), venv_activate, 'exec')
+                exec(code, dict(__file__=venv_activate))
+            venv_paths = os.environ['VIRTUAL_ENV'].split(os.pathsep)
+            sys.path[:0] = [str(pathlib.Path(venv_activate).parent.parent)] + venv_paths
+            path_to_cd = os.path.dirname(os.path.dirname(venv_activate))
+            print(f"--> Strings to cmd if you use venv<--\n" + 
+                Fore.BLUE + f"cd /d {path_to_cd}\ncall Scripts\\activate.bat\n\n" + Style.RESET_ALL)
+        else:
+            print("No valid venv path found.")
+
+    elif env_type == 'conda':
+        if activate_conda_environment():
+            pass
+        else:
+            print("Failed to activate Conda environment.")
     else:
-        print("Путь к виртуальному окружению не найден.")
+        print("No valid virtual environment type found.")
+
+def activate_conda_environment():
+    # print("-> start conda_path def ->")
+    conda_path = read_from_config("conda_path")
+    # print("<> end conda_path def <>", "conda_path = ",conda_path)
+    # print("-> start env_name def ->")
+    env_name = read_from_config("conda_env")
+    # print("<> end env_name def <>", "env_name = ",env_name)
+    # print("-> start project_path def ->")
+    # project_path = read_from_config("project_path")
+    # print("<> end project_path def <>")
+
+    # activate_commands = [
+    #     f'call "{conda_path}" init cmd.exe',
+    #     f'call "{os.environ["COMSPEC"]}" /k "{os.path.dirname(conda_path)}\\activate && '
+    #     f'conda activate {env_name} && '
+    #     f'cd /d {env_name}"'
+    # ]
+    activate_commands_in_cmd = [
+        f"set PATH=%PATH%;{conda_path}",
+        f"call {conda_path} && conda activate {env_name} && cd /d {env_name}"
+
+    ]
+    
+    activate_command = f"call {conda_path} && conda activate {env_name}"
+
+    # call "C:\Users\user\miniconda3\Scripts\activate" && conda activate f:\ComfyUI\env\ && cd /d f:\ComfyUI\env\
+
+    activation_script = "\n".join(activate_commands_in_cmd)
+    # activation_script =  f"call {conda_path} && conda activate {env_name} && cd /d {env_name}"
+
+    print(f"--> Commands to activate Conda environment <--\n" + 
+          Fore.BLUE + activation_script + "\n" + Style.RESET_ALL)
+
+    # process = subprocess.Popen(activation_script, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(activate_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ)
+    # print("process created")
+    stdout, stderr = process.communicate()
+    # print("process communicate", process.returncode)
+    if process.returncode != 0:
+        # print("process.returncode != 0")
+        print(f"Error activating Conda environment: {stderr.decode('windows-1252')}")
+    else:
+        os.environ['PATH'] = os.pathsep.join([env_name, os.environ['PATH']])
+        print(Fore.GREEN + "\nConda environment activated successfully." + Style.RESET_ALL)
+
+    return process.returncode == 0
 
 
-# Функция для разбора условных зависимостей и получения всех пакетов
-def parse_conditional_dependencies(dependency,directory):
-    # print("\t\tparse_conditional_dependencies(dependency)",dependency)
+# def activate_virtual_environment():
+#     # config_file = 'config.json'
+#     with open(config_file, 'r') as f:
+#         config = json.load(f)
+
+#         print(config)
+
+    # env_type = config.get('env_type')
+
+    # if env_type == 'venv':
+    #     venv_activate = read_from_config("venv_path")
+    #     if os.path.exists(venv_activate):
+    #         with open(venv_activate) as f:
+    #             code = compile(
+    #                 f.read().replace("path.decode(\"utf-8\")", "path"), 
+    #                 venv_activate, 
+    #                 'exec')
+    #             exec(code, dict(__file__=venv_activate))
+    #         venv_paths = os.environ['VIRTUAL_ENV'].split(os.pathsep)
+    #         sys.path[:0] = [str(pathlib.Path(read_from_config("venv_path")).resolve())] + venv_paths
+    #         path_to_cd = venv_activate.split("Scripts")[0]
+    #         print(f"--> Strings to cmd if you use venv<--\n" + 
+    #             Fore.BLUE + f"cd /d {path_to_cd}\ncall Scripts\\activate.bat\n\n" + Style.RESET_ALL)
+    #     else:
+    #         print("No valid venv path found.")
+
+    # elif env_type == 'conda':
+    #     conda_activate = read_from_config("conda_env")
+    #     if os.path.exists(conda_activate):
+    #         subprocess.run(['cmd.exe', '/c', conda_activate])
+    #         print(f"--> Strings to cmd if you use conda<--\n" + 
+    #             Fore.BLUE + f"call {conda_activate}\n\n" + Style.RESET_ALL)
+    #     else:
+    #         print("No valid conda environment path found.")
+
+    # else:
+    #     print("No valid virtual environment type found.")
+
+def parse_conditional_dependencies(dependency, directory):
     pattern = re.compile(r'^([\w-]+)(?:\[(.*?)\])?(?:([!><=]+)(\d+(?:\.\d+)*))?')
     match = pattern.match(dependency)
-    if match:  
+    if match:
         package_name = match.group(1)
-        # print("\t\tpackage_name",package_name)
         conditions = match.group(2)
-        # print("\t\tconditions",conditions)
         comparison = match.group(3)
-        # print("\t\tcomparison",comparison)
         version = match.group(4)
-        # print("\t\tversion",version)
         if package_name == "git":
-            packages = {package_name:[None,"+",dependency[4:],directory]}
+            packages = {package_name: [None, "+", dependency[4:], directory]}
         elif package_name == "--extra-index-url":
-            packages = {package_name:[None," ",dependency.rsplit(" ")[1],directory]}
+            packages = {package_name: [None, " ", dependency.rsplit(" ")[1], directory]}
         else:
-            packages = {package_name:[f"[{conditions}]" if conditions else conditions,comparison,version,directory]}
+            packages = {package_name: [f"[{conditions}]" if conditions else conditions, comparison, version, directory]}
         return packages
     else:
-        return [dependency,directory]
+        return [dependency, directory]
 
 def sort_ordered_dict(input_ordered_dict):
+    # print("__sort_ordered_dict__", input_ordered_dict)
     sorted_ordered_dict = OrderedDict()
-    
     for key, values in input_ordered_dict.items():
         sorted_values = sorted(values, key=lambda x: x[-1] if x[-1] is not None else float('inf'))
         sorted_ordered_dict[key] = sorted_values
-    
+    # print("-->> sorted_ordered_dict")
     return sorted_ordered_dict
 
-def sort_nested_lists(lst):
-    for i, item in enumerate(lst):
-        # print("sort_nested_lists i, item",i, item)
-
-        if isinstance(item[-1], list):
-            item[-1] = sorted(item[-1])
-    return(lst)
-
 def combine_names(input_ordered_dict):
-    # Создаем словарь для хранения уникальных имен для каждого ключа
-    unique_names_dict = {}
+    # print("__combine_names__", input_ordered_dict)
+    # unique_names_dict = {}
+    # for key, values in input_ordered_dict.items():
+    #     unique_names_dict[key] = set()
+    #     for sublist in values:
+    #         name = sublist[-1]
+    #         if name is not None:
+    #             unique_names_dict[key].add(name)
 
-    # Находим все уникальные имена и объединяем их в словарь
-    for key, values in input_ordered_dict.items():
-        unique_names_dict[key] = set()  # Создаем пустое множество для каждого ключа
-        for sublist in values:
-            name = sublist[-1]  # Получаем имя из последнего элемента вложенного списка
-            if name is not None:  # Проверяем, что имя не равно None
-                unique_names_dict[key].add(name)
-
-    # Создаем словарь для хранения объединенных значений
     combined_values_dict = {}
-
-    # Обновляем вложенные списки, объединяя строки с одинаковыми первыми тремя элементами
     for key, values in input_ordered_dict.items():
         combined_values_dict[key] = []
         temp_dict = {}
         for sublist in values:
-            sublist_key = tuple(sublist[:-1])  # Преобразуем список в кортеж для использования в качестве ключа
+            sublist_key = tuple(sublist[:-1])
             if sublist_key not in temp_dict:
                 temp_dict[sublist_key] = []
-            temp_dict[sublist_key].append(sublist[-1])
+            if sublist[-1] not in temp_dict[sublist_key]:
+                temp_dict[sublist_key].append(sublist[-1])
 
         for sublist_key, names in temp_dict.items():
             combined_values_dict[key].append(list(sublist_key) + [names])
-
+            
+    # print("-->> combined_values_dict")
     return combined_values_dict
 
+def parse_version(version_str):
+    # Разделение на части: основная версия и любые постфиксы
+    parts = re.split(r'[\.\-]', version_str)
+    version_tuple = []
+    for part in parts:
+        if part.isdigit():
+            version_tuple.append(int(part))
+        else:
+            # Для буквенных частей добавим кортеж с числом и самой строкой
+            version_tuple.append((part,))
+    return tuple(version_tuple)
 
 def main():
     global config_file
+    config_file = 'config.json'
+
 
     try:
-        # Словарь для хранения требований
+        # print("read_from_config")
+        read_from_config('env_type')  # This will ensure env_type is set
         requirements_dict = OrderedDict()
+        # print("activate_virtual_environment")
 
-        # Активируем виртуальное окружение
+        print("--> Some useful commands <--\n" +
+            "check package info - " + Fore.BLUE + 
+                "pip show <PACKAGE_NAME>\n" + Style.RESET_ALL + 
+            "get all available versions of package - " + Fore.BLUE + 
+                "pip index versions <PACKAGE_NAME>\n" + Style.RESET_ALL +
+            "remove all items from the cache - " + Fore.BLUE + 
+                "pip cache purge\n" + Style.RESET_ALL
+            
+            )
+        
         activate_virtual_environment()
-
-        # Обход всех каталогов и поиск файлов requirements.txt
         directory = read_from_config("custom_nodes_path")
-
+        # print("directory",directory)
         root, dirs, files = next(os.walk(directory))
+        # print(root, dirs, files)
+        root = os.path.abspath(root)
+        dirs.append(os.path.dirname(root))
+
         for dir in dirs:
-            # print(dir)
-            # Получаем информацию о подкаталоге
+            # print("dir",dir)
             subroot, subdirs, subfiles = next(os.walk(os.path.join(root, dir)))
-        # for root, dirs, files in os.walk(directory):
+            # print("\t",subroot, subdirs, subfiles)
             for file in subfiles:
                 if file == 'requirements.txt':
                     file_path = os.path.join(root, dir, file)
-                    # print("-->file_path",file_path)
-                    folder = file_path.split(directory)[-1].split("\\")[1]
+                    folder = file_path.split(os.path.abspath(directory))[-1].split("\\")[1]
                     active_requirements = get_active_requirements(file_path)
-                    # print("-->active_requirements",active_requirements)
                     for requirement in active_requirements:
-                        packages = parse_conditional_dependencies(requirement,folder)
-                        # print("\t\t-->packages:",packages)
+                        packages = parse_conditional_dependencies(requirement, folder)
                         for package in packages:
-                            # print("\t\t\t-->package",package)
-
-                        #     package_name, *_ = package.split('==')
                             if package not in requirements_dict:
                                 requirements_dict[package] = [packages[package]]
                             else:
                                 requirements_dict[package].append(packages[package])
 
         sorted_ordered_dict = sort_ordered_dict(requirements_dict)
-
+        # print("sorted_ordered_dict",sorted_ordered_dict)
         result_ordered_dict = combine_names(sorted_ordered_dict)
-
+        # print("result_ordered_dict",result_ordered_dict)
         packages = sorted([i for i in result_ordered_dict], key=str.lower)
+
         for package_name in packages:
-            if package_name in ["git","--extra-index-url"]:
+            if package_name in ["git", "--extra-index-url"]:
                 print(Fore.GREEN + "\nCustom " + Style.RESET_ALL)
-                values = (result_ordered_dict[package_name])
+                values = result_ordered_dict[package_name]
                 for i in values:
                     print(Fore.BLUE + f"\t{package_name}{i[1]}{i[2]}" + Style.RESET_ALL + f" in {i[3]}")
             else:
+                # if package_name in ['numpy']:
                 print(Fore.GREEN + "\n" + package_name + Style.RESET_ALL)
-
-                values = (result_ordered_dict[package_name])
-
+                values = result_ordered_dict[package_name]
                 values_sorted = sorted(values, key=lambda x: x[2] if x[2] is not None else '')
 
-                for i in values_sorted:
-                    print(f"\t{i[0] if i[0] else ''}{i[1]+i[2]+' ' if i[1] else 'any version '}in {i[3]}")
-
-
+                state_of_package = "any"
+                versions = []
                 installed_version = get_installed_version(package_name)
                 latest_version = get_latest_version(package_name)
-                # print("installed_version,latest_version",installed_version,latest_version,installed_version==latest_version)
+
+
+                for i in values_sorted:
+                    installable = f"{i[1] if i[1] else ''}{i[2] if i[2] else 'Any'}" 
+                    print("\t" + installable + f" in {i[-1]}")
+                    
+                    if i[1]:
+                        if "<" in i[1]:
+                            if not versions:
+                                versions = get_all_versions(package_name).split(", ")
+                                # print(versions)
+
+                            versions = [v for v in versions if parse_version(v) <= parse_version(i[2])]
+                            if i[1] == "<":
+                                if i[2] in versions:
+                                    versions.remove(i[2])
+                            state_of_package = f"{i[1]}{i[2]}"
+                        elif "==" in i[1]:
+                            state_of_package = f"{i[1]}{i[2]}"
+                            versions = [i[2]]
+                        # else:
+                        #     versions = [latest_version]
+                        #     pass
+                            
+                    
+                    # print(Fore.BLUE + "\t" + installable + Style.RESET_ALL + 
+                    #     f" in {i[-1]} - {Fore.YELLOW}{installed_version}{Style.RESET_ALL} installed - {Fore.RED}{latest_version}{Style.RESET_ALL} last version")
+                    # print("installed_version,latest_version",installed_version,latest_version,installed_version==latest_version)
+
+
 
                 if not installed_version:
                     print(Fore.RED + "\tNone" + 
                         Fore.CYAN + f" pip install {package_name}{i[0] if i[0] else ''}=={latest_version}" +
                         Style.RESET_ALL )
-                    values = result_ordered_dict[package_name]
-
-                elif installed_version == latest_version:
-                    print(f"\tYou hav a latest {installed_version} version")
+                    # values = result_ordered_dict[package_name]
+                elif installed_version == latest_version or (versions and installed_version == versions[0]):
+                    print(f"\tYou have a latest {installed_version} version")
                 else:
-                    print(Fore.YELLOW + f"\tCan updated from {installed_version} to {latest_version}" + 
-                        Fore.CYAN + f" pip install {package_name}=={latest_version}" +
-                        Style.RESET_ALL + " or update " +
-                        Fore.CYAN + f"pip install --upgrade {package_name}" + 
-                        Style.RESET_ALL
+                    if not versions:
+                        versions = [latest_version]
+
+                    print(
+                        Fore.YELLOW + f"\tCan updated from {installed_version} to {versions[0]}" + 
+                        Fore.CYAN + f" pip install {package_name}=={versions[0]}" + Style.RESET_ALL
                         )
+                    if state_of_package == "any":
+                        print(
+                            Fore.YELLOW + "\tOr update to the latest by command " +
+                            Fore.CYAN + f"pip install --upgrade {package_name}" + Style.RESET_ALL
+                            )
                     # print(f"installed_version")
+                    
+                    # break
+
+
+
+
+
 
     except Exception as e:
         print(f"An error occurred: {e}")
 
-
-# Вызываем основную функцию
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
-
 
 input("\nPress Enter to exit...")
