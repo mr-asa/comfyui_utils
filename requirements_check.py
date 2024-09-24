@@ -375,10 +375,10 @@ def activate_conda_environment():
             f"call {conda_path} && conda activate {env_name} && cd /d {env_name}"
             ]
     else:
-        activate_command = f'source "{os.path.dirname(conda_path)}/bin/activate" {env_name}'
+        activate_command = f'source "{os.path.dirname(conda_path)}/activate" {env_name}'
         activate_commands_in_cmd = [
             f"export PATH=$PATH:{conda_path}",
-            f"source {os.path.dirname(conda_path)}/bin/activate {env_name} && /d {os.path.join(os.path.dirname(conda_path),env_name)}"
+            f"source {os.path.dirname(conda_path)}/activate {env_name} && /d {os.path.join(os.path.dirname(conda_path),env_name)}"
         ]
 
     activation_script = "\n".join(activate_commands_in_cmd)
