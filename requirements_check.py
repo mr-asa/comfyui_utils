@@ -248,8 +248,13 @@ def get_installed_version(package_name):
     try:
         if env_type == "conda":
             env_name = config.get('conda_env')
+
+            if os.name == 'nt':  # Windows
+                python_executable = f"{env_name}\\python.exe"  # Use backslash for Windows paths
+            else:  # Linux or other OS
+                python_executable = f"{env_name}/bin/python"  # Use forward slash for Linux paths            
             result = subprocess.run(
-                [f"{env_name}python.exe", '-m', 'pip', 'show', package_name], 
+                [python_executable, '-m', 'pip', 'show', package_name], 
                 capture_output=True,
                 text=True,
                 check=True
