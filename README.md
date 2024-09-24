@@ -1,5 +1,5 @@
 Some random utilities for quick checks.\
-Copy repository to `...\\{ComfyUI_folder}\{Any_name}` (**other_gits**) for example.\
+Copy repository to `...\{ComfyUI_folder}\{Any_name}` (**other_gits**) for example.\
 
 I wrote all this on the ComfyUI cloned git repository, not the portable one.\
 
