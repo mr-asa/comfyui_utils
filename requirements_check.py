@@ -143,7 +143,7 @@ def get_conda_path():
             if choice.isdigit() and 1 <= int(choice) <= len(existing_paths):
                 selected_path = existing_paths[int(choice) - 1]
                 # Save selected path to config
-                config = read_from_config('config', check=False)
+                config = read_from_config('conda_path', check=False)
                 config['conda_path'] = selected_path
                 with open(config_file, 'w') as f:
                     json.dump(config, f, indent=4)
@@ -151,7 +151,7 @@ def get_conda_path():
             elif choice == str(len(existing_paths) + 1):
                 custom_path = input("Enter custom conda.exe path: ")
                 # Save custom path to config
-                config = read_from_config('config', check=False)
+                config = read_from_config('conda_path', check=False)
                 config['conda_path'] = custom_path
                 with open(config_file, 'w') as f:
                     json.dump(config, f, indent=4)
