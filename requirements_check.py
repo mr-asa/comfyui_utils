@@ -141,12 +141,24 @@ def get_conda_path():
                 return 'NO'
             
             if choice.isdigit() and 1 <= int(choice) <= len(existing_paths):
-                return existing_paths[int(choice) - 1]
+                selected_path = existing_paths[int(choice) - 1]
+                # Save selected path to config
+                config = read_from_config('config', check=False)
+                config['conda_path'] = selected_path
+                with open(config_file, 'w') as f:
+                    json.dump(config, f, indent=4)
+                return selected_path
             elif choice == str(len(existing_paths) + 1):
-                return input("Enter custom conda.exe path: ")
+                custom_path = input("Enter custom conda.exe path: ")
+                # Save custom path to config
+                config = read_from_config('config', check=False)
+                config['conda_path'] = custom_path
+                with open(config_file, 'w') as f:
+                    json.dump(config, f, indent=4)
+                return custom_path
             else:
                 print("Invalid choice. Please try again.")
-                return get_conda_path()
+                # return get_conda_path()
         else:
             return input("Enter conda.exe path (or 'NO' to exit): ")
 
@@ -179,28 +191,30 @@ def get_conda_env():
                 return 'NO'
             
             elif choice.isdigit() and 1 <= int(choice) <= len(env_list):
-                return env_list[int(choice) - 1]
+                # return env_list[int(choice) - 1]
+                
+                selected_env = env_list[int(choice) - 1]
+                # Save selected path to config
+                config = read_from_config('config', check=False)
+                config['conda_path'] = os.path.join(os.path.dirname(os.path.dirname(conda_path)),
+                    selected_env
+                    )
+                
+                with open(config_file, 'w') as f:
+                    json.dump(config, f, indent=4)
+                return selected_env
+
             
             elif choice == str(len(env_list) + 1):
-                # custom_env_name = input("Enter a name for this custom environment: ")     
                 custom_path = input("Enter the path for the custom environment: ")
-                # create_env_command = [conda_path, 'create', '-n', custom_env_name, '--prefix', custom_path, '-y']
-                # try:
-                # subprocess.run(create_env_command, check=True)
                 env_list.append(custom_path)
                 
-                # Save the new environment to the config for future use
-                # config = read_from_config('config', check=False)  # Ensure config is defined
-                config = {}
-                
+                config = read_from_config('conda_env', check=False)
                 config['conda_env'] = custom_path
                 with open(config_file, 'w') as f:
                     json.dump(config, f, indent=4)
 
                 return custom_path
-                # except subprocess.CalledProcessError as e:
-                #     print(f"Failed to create environment: {e}")
-                #     return None
                 
             else:
                 print("Invalid choice. Please try again.")
@@ -250,7 +264,7 @@ def get_installed_version(package_name):
             env_name = config.get('conda_env')
 
             if os.name == 'nt':  # Windows
-                python_executable = f"{env_name}\\python.exe"  # Use backslash for Windows paths
+                python_executable = f"{env_name}python.exe"  # Use backslash for Windows paths
             else:  # Linux or other OS
                 python_executable = f"{env_name}/bin/python"  # Use forward slash for Linux paths            
             result = subprocess.run(
@@ -357,10 +371,10 @@ def activate_conda_environment():
             f"call {conda_path} && conda activate {env_name} && cd /d {env_name}"
             ]
     else:
-        activate_command = f'source "{os.path.dirname(conda_path)}/activate" {env_name}'
+        activate_command = f'source "{os.path.dirname(conda_path)}/bin/activate" {env_name}'
         activate_commands_in_cmd = [
             f"export PATH=$PATH:{conda_path}",
-            f"source {os.path.dirname(conda_path)}/bin/activate {env_name} && cd /d {env_name}"
+            f"source {os.path.dirname(conda_path)}/bin/activate {env_name} && /d {os.path.join(os.path.dirname(conda_path),env_name)}"
         ]
 
     activation_script = "\n".join(activate_commands_in_cmd)
