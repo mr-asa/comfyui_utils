@@ -28,7 +28,7 @@ def choose_environment_type():
 
 def read_from_config(key, check=False):
 
-    config_file = 'config.json'
+    # config_file = 'config.json'
     if not os.path.exists(config_file):
         # Create an empty config file if it does not exist
         with open(config_file, 'w') as f:
@@ -89,6 +89,8 @@ def read_from_config(key, check=False):
                     # else:
                     #     return config.get(key)
 
+            with open(config_file, 'r') as f:
+                config = json.load(f)
 
             # print("\tkey in config.keys()",key in config.keys())
             if key not in config.keys():
@@ -113,6 +115,9 @@ def get_conda_path():
     # print("__get_conda_path__")
     choice = read_from_config("conda_path",check=True)
     print("choice",choice)
+
+    with open(config_file, 'r') as f:
+        config = json.load(f)
 
     if choice:
         return choice
@@ -143,7 +148,6 @@ def get_conda_path():
             if choice.isdigit() and 1 <= int(choice) <= len(existing_paths):
                 selected_path = existing_paths[int(choice) - 1]
                 # Save selected path to config
-                config = read_from_config('conda_path', check=False)
                 config['conda_path'] = selected_path
                 with open(config_file, 'w') as f:
                     json.dump(config, f, indent=4)
@@ -151,7 +155,6 @@ def get_conda_path():
             elif choice == str(len(existing_paths) + 1):
                 custom_path = input("Enter custom conda.exe path: ")
                 # Save custom path to config
-                config = read_from_config('conda_path', check=False)
                 config['conda_path'] = custom_path
                 with open(config_file, 'w') as f:
                     json.dump(config, f, indent=4)
@@ -164,6 +167,9 @@ def get_conda_path():
 
 def get_conda_env():
     # print(">>> get_conda_env >>>")
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
     try:
         env_path = read_from_config("conda_env",check=True)
     
@@ -195,8 +201,7 @@ def get_conda_env():
                 
                 selected_env = env_list[int(choice) - 1]
                 # Save selected path to config
-                config = read_from_config('config', check=False)
-                config['conda_path'] = os.path.join(os.path.dirname(os.path.dirname(conda_path)),
+                config['conda_env'] = os.path.join(os.path.dirname(os.path.dirname(conda_path)),
                     selected_env
                     )
                 
@@ -209,7 +214,6 @@ def get_conda_env():
                 custom_path = input("Enter the path for the custom environment: ")
                 env_list.append(custom_path)
                 
-                config = read_from_config('conda_env', check=False)
                 config['conda_env'] = custom_path
                 with open(config_file, 'w') as f:
                     json.dump(config, f, indent=4)
