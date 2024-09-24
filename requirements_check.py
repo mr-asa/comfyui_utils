@@ -203,6 +203,7 @@ def get_conda_env():
                 # Save selected path to config
                 config['conda_env'] = selected_env
                 config['conda_env_folder'] = os.path.join(os.path.dirname(os.path.dirname(conda_path)),
+                    "envs",
                     selected_env
                     )
                 
@@ -266,7 +267,7 @@ def get_installed_version(package_name):
     env_type = config.get('env_type')
     try:
         if env_type == "conda":
-            env_name = config.get('conda_env')
+            env_name = config.get('conda_env_folder')
 
             if os.name == 'nt':  # Windows
                 python_executable = f"{env_name}python.exe"  # Use backslash for Windows paths
@@ -383,7 +384,8 @@ def activate_conda_environment():
         activate_command = f'source "{os.path.dirname(conda_path)}/activate" {env_folder}'
         activate_commands_in_cmd = [
             f"export PATH=$PATH:{conda_path}",
-            f"source {os.path.dirname(conda_path)}/activate {env_folder} && /d {os.path.join(os.path.dirname(conda_path),env_folder)}"
+            f"source {os.path.dirname(conda_path)}/activate {env_folder}",
+            f"cd {env_folder}"
         ]
 
     activation_script = "\n".join(activate_commands_in_cmd)
