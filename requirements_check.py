@@ -201,7 +201,8 @@ def get_conda_env():
                 
                 selected_env = env_list[int(choice) - 1]
                 # Save selected path to config
-                config['conda_env'] = os.path.join(os.path.dirname(os.path.dirname(conda_path)),
+                config['conda_env'] = selected_env
+                config['conda_env_folder'] = os.path.join(os.path.dirname(os.path.dirname(conda_path)),
                     selected_env
                     )
                 
@@ -365,7 +366,11 @@ def activate_virtual_environment():
 
 def activate_conda_environment():
     conda_path = read_from_config("conda_path")
+    env_folder = read_from_config("conda_env_folder", check=True)
     env_name = read_from_config("conda_env")
+    if not env_folder:
+        env_folder = env_name
+    
     
 
     if is_windows():
@@ -375,10 +380,10 @@ def activate_conda_environment():
             f"call {conda_path} && conda activate {env_name} && cd /d {env_name}"
             ]
     else:
-        activate_command = f'source "{os.path.dirname(conda_path)}/activate" {env_name}'
+        activate_command = f'source "{os.path.dirname(conda_path)}/activate" {env_folder}'
         activate_commands_in_cmd = [
             f"export PATH=$PATH:{conda_path}",
-            f"source {os.path.dirname(conda_path)}/activate {env_name} && /d {os.path.join(os.path.dirname(conda_path),env_name)}"
+            f"source {os.path.dirname(conda_path)}/activate {env_folder} && /d {os.path.join(os.path.dirname(conda_path),env_folder)}"
         ]
 
     activation_script = "\n".join(activate_commands_in_cmd)
@@ -391,7 +396,7 @@ def activate_conda_environment():
     if process.returncode != 0:
         print(f"Error activating Conda environment: {stderr.decode('windows-1252')}")
     else:
-        os.environ['PATH'] = os.pathsep.join([env_name, os.environ['PATH']])
+        os.environ['PATH'] = os.pathsep.join([env_folder, os.environ['PATH']])
         print(Fore.GREEN + "\nConda environment activated successfully." + Style.RESET_ALL)
 
     return process.returncode == 0
