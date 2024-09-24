@@ -9,6 +9,12 @@ from colorama import Fore, Style
 from collections import OrderedDict
 
 
+def is_windows():
+    return os.name == 'nt'
+
+def is_linux():
+    return os.name == 'posix'
+
 def choose_environment_type():
     while True:
         choice = input("Choose environment type (1 for venv, 2 for conda): ").strip()
@@ -21,20 +27,18 @@ def choose_environment_type():
         print("Invalid choice. Please enter 1 for venv, 2 for conda, or 'NO' to exit.")
 
 def read_from_config(key, check=False):
-    # print(f"\tread_from_config",key,"check = ",check)
-    # config_file = 'config.json'
+
+    config_file = 'config.json'
     if not os.path.exists(config_file):
         # Create an empty config file if it does not exist
         with open(config_file, 'w') as f:
             json.dump({}, f, indent=4)
-        # print(f"\tConfig file '{config_file}' created.")
+        print(f"\tConfig file '{config_file}' created.")
 
     with open(config_file, 'r') as f:
         config = json.load(f)
             
-    # print(f"\tReading config for key: {key}")
     value = config.get(key)
-    # print(f"\tvalue = ",value)
 
     if check:
         return value
@@ -113,13 +117,17 @@ def get_conda_path():
     if choice:
         return choice
     else:
-        username = os.environ['USERNAME']
+        username = os.environ['USERNAME'] if is_windows() else os.environ['USER']
+        
         default_paths = [
             fr"C:\ProgramData\Anaconda3\Scripts\conda.exe",
             fr"C:\ProgramData\miniconda3\Scripts\conda.exe",
             fr"C:\Users\{username}\Anaconda3\Scripts\conda.exe",
             fr"C:\Users\{username}\miniconda3\Scripts\conda.exe",
-        ]
+        ] if is_windows() else [
+            fr"/home/{username}/anaconda3/bin/conda",
+            fr"/home/{username}/miniconda3/bin/conda"
+    ]
         existing_paths = [path for path in default_paths if os.path.exists(path)]
         
         if existing_paths:
@@ -306,9 +314,16 @@ def activate_virtual_environment():
     if env_type == 'venv':
         venv_activate = read_from_config("venv_path")
         if os.path.exists(venv_activate):
-            with open(venv_activate) as f:
-                code = compile(f.read(), venv_activate, 'exec')
-                exec(code, dict(__file__=venv_activate))
+
+            if is_windows():
+                activate_script = os.path.join(venv_activate, 'Scripts', 'activate_this.py')
+            else:
+                activate_script = os.path.join(venv_activate, 'bin', 'activate_this.py')
+
+            with open(activate_script) as f:
+                code = compile(f.read(), activate_script, 'exec')
+                exec(code, dict(__file__=activate_script))
+            # Update sys.path accordingly
             venv_paths = os.environ['VIRTUAL_ENV'].split(os.pathsep)
             sys.path[:0] = [str(pathlib.Path(venv_activate).parent.parent)] + venv_paths
             path_to_cd = os.path.dirname(os.path.dirname(venv_activate))
@@ -326,45 +341,31 @@ def activate_virtual_environment():
         print("No valid virtual environment type found.")
 
 def activate_conda_environment():
-    # print("-> start conda_path def ->")
     conda_path = read_from_config("conda_path")
-    # print("<> end conda_path def <>", "conda_path = ",conda_path)
-    # print("-> start env_name def ->")
     env_name = read_from_config("conda_env")
-    # print("<> end env_name def <>", "env_name = ",env_name)
-    # print("-> start project_path def ->")
-    # project_path = read_from_config("project_path")
-    # print("<> end project_path def <>")
-
-    # activate_commands = [
-    #     f'call "{conda_path}" init cmd.exe',
-    #     f'call "{os.environ["COMSPEC"]}" /k "{os.path.dirname(conda_path)}\\activate && '
-    #     f'conda activate {env_name} && '
-    #     f'cd /d {env_name}"'
-    # ]
-    activate_commands_in_cmd = [
-        f"set PATH=%PATH%;{conda_path}",
-        f"call {conda_path} && conda activate {env_name} && cd /d {env_name}"
-
-    ]
     
-    activate_command = f"call {conda_path} && conda activate {env_name}"
 
-    # call "C:\Users\user\miniconda3\Scripts\activate" && conda activate f:\ComfyUI\env\ && cd /d f:\ComfyUI\env\
+    if is_windows():
+        activate_command = f'call "{conda_path}" && conda activate {env_name}'
+        activate_commands_in_cmd = [
+            f"set PATH=%PATH%;{conda_path}",
+            f"call {conda_path} && conda activate {env_name} && cd /d {env_name}"
+            ]
+    else:
+        activate_command = f'source "{conda_path}/activate" {env_name}'
+        activate_commands_in_cmd = [
+            f"export PATH=$PATH:{conda_path}",
+            f"source {conda_path}/activate {env_name} && cd {env_name}"
+        ]
 
     activation_script = "\n".join(activate_commands_in_cmd)
-    # activation_script =  f"call {conda_path} && conda activate {env_name} && cd /d {env_name}"
 
     print(f"--> Commands to activate Conda environment <--\n" + 
           Fore.BLUE + activation_script + "\n" + Style.RESET_ALL)
 
-    # process = subprocess.Popen(activation_script, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     process = subprocess.Popen(activate_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ)
-    # print("process created")
     stdout, stderr = process.communicate()
-    # print("process communicate", process.returncode)
     if process.returncode != 0:
-        # print("process.returncode != 0")
         print(f"Error activating Conda environment: {stderr.decode('windows-1252')}")
     else:
         os.environ['PATH'] = os.pathsep.join([env_name, os.environ['PATH']])
@@ -372,44 +373,6 @@ def activate_conda_environment():
 
     return process.returncode == 0
 
-
-# def activate_virtual_environment():
-#     # config_file = 'config.json'
-#     with open(config_file, 'r') as f:
-#         config = json.load(f)
-
-#         print(config)
-
-    # env_type = config.get('env_type')
-
-    # if env_type == 'venv':
-    #     venv_activate = read_from_config("venv_path")
-    #     if os.path.exists(venv_activate):
-    #         with open(venv_activate) as f:
-    #             code = compile(
-    #                 f.read().replace("path.decode(\"utf-8\")", "path"), 
-    #                 venv_activate, 
-    #                 'exec')
-    #             exec(code, dict(__file__=venv_activate))
-    #         venv_paths = os.environ['VIRTUAL_ENV'].split(os.pathsep)
-    #         sys.path[:0] = [str(pathlib.Path(read_from_config("venv_path")).resolve())] + venv_paths
-    #         path_to_cd = venv_activate.split("Scripts")[0]
-    #         print(f"--> Strings to cmd if you use venv<--\n" + 
-    #             Fore.BLUE + f"cd /d {path_to_cd}\ncall Scripts\\activate.bat\n\n" + Style.RESET_ALL)
-    #     else:
-    #         print("No valid venv path found.")
-
-    # elif env_type == 'conda':
-    #     conda_activate = read_from_config("conda_env")
-    #     if os.path.exists(conda_activate):
-    #         subprocess.run(['cmd.exe', '/c', conda_activate])
-    #         print(f"--> Strings to cmd if you use conda<--\n" + 
-    #             Fore.BLUE + f"call {conda_activate}\n\n" + Style.RESET_ALL)
-    #     else:
-    #         print("No valid conda environment path found.")
-
-    # else:
-    #     print("No valid virtual environment type found.")
 
 def parse_conditional_dependencies(dependency, directory):
     pattern = re.compile(r'^([\w-]+)(?:\[(.*?)\])?(?:([!><=]+)(\d+(?:\.\d+)*))?')
@@ -430,23 +393,13 @@ def parse_conditional_dependencies(dependency, directory):
         return [dependency, directory]
 
 def sort_ordered_dict(input_ordered_dict):
-    # print("__sort_ordered_dict__", input_ordered_dict)
     sorted_ordered_dict = OrderedDict()
     for key, values in input_ordered_dict.items():
         sorted_values = sorted(values, key=lambda x: x[-1] if x[-1] is not None else float('inf'))
         sorted_ordered_dict[key] = sorted_values
-    # print("-->> sorted_ordered_dict")
     return sorted_ordered_dict
 
 def combine_names(input_ordered_dict):
-    # print("__combine_names__", input_ordered_dict)
-    # unique_names_dict = {}
-    # for key, values in input_ordered_dict.items():
-    #     unique_names_dict[key] = set()
-    #     for sublist in values:
-    #         name = sublist[-1]
-    #         if name is not None:
-    #             unique_names_dict[key].add(name)
 
     combined_values_dict = {}
     for key, values in input_ordered_dict.items():
@@ -462,7 +415,6 @@ def combine_names(input_ordered_dict):
         for sublist_key, names in temp_dict.items():
             combined_values_dict[key].append(list(sublist_key) + [names])
             
-    # print("-->> combined_values_dict")
     return combined_values_dict
 
 def parse_version(version_str):
