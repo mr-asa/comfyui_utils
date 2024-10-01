@@ -217,6 +217,7 @@ def get_conda_env():
                 env_list.append(custom_path)
                 
                 config['conda_env'] = custom_path
+                config['conda_env_folder'] = custom_path
                 with open(config_file, 'w') as f:
                     json.dump(config, f, indent=4)
 
