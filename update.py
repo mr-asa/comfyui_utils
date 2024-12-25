@@ -1,5 +1,6 @@
 import os
 import git
+import json
 from colorama import init, Fore, Style
 
 # Initialize colorama
@@ -86,18 +87,26 @@ def get_repository_status(directory):
 def main():
     try:
         # Specify the path to the directory containing the repositories
-        base_directory = os.path.realpath(__file__).rsplit("\\", 3)[0] + "\\custom_nodes"
-        
+        root_directory = os.path.realpath(__file__).replace("\\", "/").rsplit("/", 1)[0]
+        if os.path.exists(os.path.join(root_directory, "config.json")):
+            with open(os.path.join(root_directory, "config.json"), "r") as config_file:
+                config = json.load(config_file)
+                if "custom_nodes_path" in config:
+                    custom_nodes_directory = config["custom_nodes_path"]
+
+        if not custom_nodes_directory:
+            custom_nodes_directory = root_directory.rsplit("/", 2)[0] + "/custom_nodes"
+
         # Get a list of all folders in the base directory
-        directories = [os.path.join(base_directory, d) for d in os.listdir(base_directory) if os.path.isdir(os.path.join(base_directory, d))]
-        directories = [base_directory.rsplit("\\", 1)[0]] + directories
+        directories = [os.path.join(custom_nodes_directory, d) for d in os.listdir(custom_nodes_directory) if os.path.isdir(os.path.join(custom_nodes_directory, d))]
+        directories = [custom_nodes_directory.replace("\\", "/").rsplit("/", 2)[0]] + directories
         
         # Iterate through each folder and check for a GitHub repository
         for directory in directories:
-            print()
-            print(Fore.GREEN + os.path.basename(directory) + Style.RESET_ALL)
             github_repo_path = check_github_repo(directory)
             if github_repo_path:
+                print()
+                print(Fore.GREEN + os.path.basename(directory) + Style.RESET_ALL)
                 get_repository_status(directory)
             else:
                 pass

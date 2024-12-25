@@ -497,7 +497,8 @@ def main():
                 if file == 'requirements.txt':
                     file_path = os.path.join(root, dir, file)
                     # folder = file_path.split(os.path.abspath(directory))[-1].split("\\")[1]
-                    folder = os.path.basename(os.path.abspath(directory))
+                    # folder = os.path.basename(os.path.abspath(directory))
+                    folder = dir
                     active_requirements = get_active_requirements(file_path)
                     for requirement in active_requirements:
                         packages = parse_conditional_dependencies(requirement, folder)
