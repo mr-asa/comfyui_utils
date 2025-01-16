@@ -476,8 +476,12 @@ def main():
                 "pip show <PACKAGE_NAME>\n" + Style.RESET_ALL + 
             "get all available versions of package - " + Fore.BLUE + 
                 "pip index versions <PACKAGE_NAME>\n" + Style.RESET_ALL +
+            "get all deep dependencies from a package (need install pipdeptre module) - " + Fore.BLUE + 
+                "pipdeptree -p <PACKAGE_NAME>\n" + Style.RESET_ALL +
+            "get all reverse dependencies from a package (need install pipdeptre module) - " + Fore.BLUE +
+                "pipdeptree --reverse --packages <PACKAGE_NAME>\n" + Style.RESET_ALL +
             "remove all items from the cache - " + Fore.BLUE + 
-                "pip cache purge\n" + Style.RESET_ALL
+                "pip cache purge\n" + Style.RESET_ALL 
             
             )
         

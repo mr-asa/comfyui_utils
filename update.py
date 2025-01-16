@@ -17,7 +17,7 @@ def check_github_repo(directory):
         else:
             return None
     except Exception as e:
-        print(f"Error checking GitHub repository: {e}")
+        print(Fore.RED + f"\tError checking GitHub repository: {e}" + Style.RESET_ALL)
         return None
 
 # Function to get repository status information
@@ -81,7 +81,7 @@ def get_repository_status(directory):
             print(result)
 
     except Exception as e:
-        print(f"Error getting repository status: {e}")
+        print(Fore.RED + f"\tError getting repository status: {e}" + Style.RESET_ALL)
 
 # Main function to iterate through directories and perform checks
 def main():
