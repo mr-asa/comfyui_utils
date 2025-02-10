@@ -14,10 +14,10 @@ Writes logs of all changes made (commit comments) and changes in files.
 ### requirements_check.py
   
 Compares the version of the installed package with the latest one.\
-Prescribes a list of required packagejs in requrements.txt and the ability to update them.
+Prescribes a list of required packages in requrements.txt and the ability to update them.
 
    
 ---
 ### png_to_json.py
 
-Convert all workflow from .jpeg and .png metadata to .json files\ in chosen folder.
+Convert all workflow from .jpeg and .png metadata to .json files in chosen folder.

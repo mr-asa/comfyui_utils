@@ -7,6 +7,7 @@ import requests
 import subprocess
 from colorama import Fore, Style
 from collections import OrderedDict
+from packaging import version as pkg_version
 
 
 def is_windows():
@@ -28,7 +29,7 @@ def choose_environment_type():
 
 def read_from_config(key, check=False):
 
-    # config_file = 'config.json'
+    global config_file
     if not os.path.exists(config_file):
         # Create an empty config file if it does not exist
         with open(config_file, 'w') as f:
@@ -229,6 +230,253 @@ def get_conda_env():
     except subprocess.CalledProcessError:
         return input("Unable to list Conda environments. Enter environment name (or 'NO' to exit): ")
 
+def get_python_executable():
+    """Get the correct Python executable based on the environment"""
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+
+    env_type = config.get('env_type')
+    
+    if env_type == "conda":
+        env_folder = config.get('conda_env_folder')
+        if env_folder:
+            if is_windows():
+                return os.path.join(env_folder, 'python.exe')
+            else:
+                return os.path.join(env_folder, 'bin', 'python')
+    
+    return sys.executable
+
+def run_in_environment(cmd, **kwargs):
+    """Run a command in the correct environment"""
+    python_exe = get_python_executable()
+    if python_exe != sys.executable:
+        # If using a different Python, convert module commands
+        if cmd[0] == '-m':
+            cmd = cmd[1:]
+        cmd = [python_exe, '-m'] + cmd
+    else:
+        cmd = [python_exe] + cmd
+    
+    return subprocess.run(cmd, **kwargs)
+
+
+def check_pipdeptree_installed():
+    """Check if pipdeptree is installed and install if missing"""
+    try:
+        run_in_environment(['pipdeptree', '--version'], capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print(Fore.YELLOW + "\tInstalling pipdeptree for dependency checking..." + Style.RESET_ALL)
+        try:
+            run_in_environment(['pip', 'install', 'pipdeptree'], check=True)
+            return True
+        except subprocess.CalledProcessError:
+            print(Fore.RED + "\tFailed to install pipdeptree. Dependency checking will be limited." + Style.RESET_ALL)
+            return False
+        
+def normalize_package_name(package_name):
+    """
+    Normalize package name to handle different writing styles
+    (e.g., convert 'package-name' to 'package_name')
+    """
+    return package_name.lower().replace('-', '_')
+
+def get_canonical_package_name(package_name):
+    """
+    Get the canonical name of a package from PyPI.
+    Returns the proper casing and format of the package name.
+    """
+    try:
+        response = requests.get(f"https://pypi.org/pypi/{package_name}/json")
+        if response.status_code == 200:
+            return response.json()["info"]["name"]
+        return package_name
+    except:
+        return package_name
+
+def process_requirements_dict(requirements_dict):
+    """
+    Process and combine requirements with different name formats
+    """
+    normalized_dict = OrderedDict()
+    
+    # First pass: collect all variations of package names
+    name_variations = {}
+    for package_name in requirements_dict:
+        if package_name not in ["git", "--extra-index-url"]:
+            normalized_name = normalize_package_name(package_name)
+            if normalized_name not in name_variations:
+                name_variations[normalized_name] = []
+            name_variations[normalized_name].append(package_name)
+    
+    # Second pass: combine requirements under canonical names
+    for normalized_name, variations in name_variations.items():
+        if len(variations) > 1:
+            # Get canonical name from PyPI
+            canonical_name = get_canonical_package_name(variations[0])
+            # Combine all requirements under the canonical name
+            combined_requirements = []
+            for variant in variations:
+                combined_requirements.extend(requirements_dict[variant])
+            normalized_dict[canonical_name] = combined_requirements
+        else:
+            # Keep original name if no variations exist
+            normalized_dict[variations[0]] = requirements_dict[variations[0]]
+    
+    # Add back non-package entries
+    for key in ["git", "--extra-index-url"]:
+        if key in requirements_dict:
+            normalized_dict[key] = requirements_dict[key]
+            
+    return normalized_dict
+
+def get_package_dependencies(package_name):
+    """Get all dependencies and their version constraints for a package using pipdeptree"""
+    if not check_pipdeptree_installed():
+        return {}
+        
+    try:
+        # Use run_in_environment instead of direct subprocess.run
+        result = run_in_environment(
+            ['pipdeptree', '-p', package_name, '--json-tree'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        try:
+            dependencies = json.loads(result.stdout)
+            if dependencies and isinstance(dependencies, list):
+                # Extract both direct and indirect dependencies
+                all_deps = {}
+                for pkg in dependencies:
+                    if isinstance(pkg, dict):
+                        for dep in pkg.get('dependencies', []):
+                            name = dep.get('package_name')
+                            version = dep.get('installed_version')
+                            if name and version:
+                                all_deps[name] = version
+                return all_deps
+            return {}
+            
+        except json.JSONDecodeError as e:
+            print(Fore.YELLOW + f"\tWarning: Could not parse pipdeptree output: {str(e)}" + Style.RESET_ALL)
+            return {}
+            
+    except subprocess.CalledProcessError as e:
+        print(Fore.YELLOW + f"\tWarning: pipdeptree failed: {str(e)}" + Style.RESET_ALL)
+        return {}
+
+def get_reverse_dependencies(package_name):
+    """Get all packages that depend on the given package using pipdeptree"""
+    if not check_pipdeptree_installed():
+        print("Pipdeptree not installed!")
+        return []
+        
+    try:
+        result = run_in_environment(
+            ['pipdeptree', '--reverse', '--packages', package_name, '--json'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        # print(f"\n===== Raw pipdeptree output for {package_name} =====")
+        # print(result.stdout)
+
+        try:
+            dependencies = json.loads(result.stdout)
+            # Extract all reverse dependencies
+            reverse_deps = []
+            for pkg in dependencies:
+                if isinstance(pkg, dict):
+                    pkg_info = pkg.get('package', {})
+                    # print(pkg_info.get('key'),package_name, pkg_info.get('key') == package_name)
+                    if pkg_info.get('key') == package_name:
+                        # print("YES!")
+                        # for dep in pkg.get('dependencies', []):
+                        reverse_deps.append({
+                            'package_name': pkg.get('dependencies')[0].get('package_name'),
+                            # 'package_name': dep.get('package_name'),
+                            'installed_version': pkg_info.get('installed_version'),
+                            'required_version': pkg_info.get('required_version', '')
+                        })
+            print(f"Processed reverse dependencies: {reverse_deps}")            
+            return reverse_deps
+            
+        except json.JSONDecodeError:
+            print("JSON decoding failed, falling back to text parsing")
+            # Fallback to text parsing
+            result = run_in_environment(
+                ['pipdeptree', '--reverse', '--packages', package_name],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            return parse_pipdeptree_text_output(result.stdout)
+            
+    except subprocess.CalledProcessError as e:
+        print(Fore.YELLOW + f"\tWarning: Could not get reverse dependencies for {package_name}: {str(e)}" + Style.RESET_ALL)
+        return []
+    
+
+def find_max_allowed_version(package_name, available_versions):
+    if not available_versions:
+        return None, None
+
+    try:
+        reverse_deps = get_reverse_dependencies(package_name)
+        if not reverse_deps:
+            return available_versions[0], None
+
+        # Преобразование и парсинг всех доступных версий
+        parsed_versions = [
+            (parse_version(v), v) for v in available_versions
+        ]
+        parsed_versions.sort(key=lambda x: x[0], reverse=True)
+
+        min_allowed = None
+        max_allowed = parsed_versions[0][1]  # Самая новая версия
+        limiting_package = None
+
+        for dep in reverse_deps:
+            dep_name = dep.get('package_name', '')
+            version_spec = dep.get('required_version', '')
+
+            if version_spec and version_spec != "Any":
+                constraints = re.findall(r'([><=!]+)\s*([\d.]+)', version_spec)
+
+                for op, ver in constraints:
+                    parsed_ver = parse_version(ver)
+
+                    if op in ('>', '>='):
+                        # Устанавливаем минимальную разрешённую версию
+                        if min_allowed is None or parsed_ver > min_allowed:
+                            min_allowed = parsed_ver
+                    elif op in ('<', '<='):
+                        # Устанавливаем максимальную разрешённую версию
+                        current_max = parse_version(max_allowed)
+                        limiting_package = dep_name
+                        if parsed_ver < current_max:
+                            max_allowed = ver
+
+        # Фильтруем версии, оставляя только подходящие
+        filtered_versions = [
+            v for parsed_v, v in parsed_versions
+            if (min_allowed is None or parsed_v >= min_allowed) and 
+               (parse_version(max_allowed) is None or parsed_v <= parse_version(max_allowed))
+        ]
+
+        # Важное изменение: < вместо <=
+        if filtered_versions:
+            return filtered_versions[0], limiting_package
+        return None, limiting_package
+
+    except Exception as e:
+        print(Fore.YELLOW + f"\tWarning: Error checking version constraints: {str(e)}" + Style.RESET_ALL)
+        return None, None
+        
 def get_active_requirements(file_path):
     # print("__get_active_requirements__",file_path)
     active_requirements = []
@@ -310,26 +558,23 @@ def get_latest_version(package_name):
         return None
     
 def get_all_versions(package_name):
+    """Get all available versions of a package from PyPI with robust parsing"""
     try:
-        result = subprocess.run(
-            ['pip', 'index', 'versions', package_name], 
-            # capture_output=True,
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE, 
-            text=True,
-            check=True,
-            )
+        response = requests.get(f"https://pypi.org/pypi/{package_name}/json")
+        response.raise_for_status()
+        package_info = response.json()
         
-        if result.returncode == 0:
-            for line in result.stdout.split('\n'):
-                if line.startswith('Available versions:'):
-                    return line.split(':', 1)[1].strip()
+        # Фильтрация и сортировка версий с использованием улучшенного парсера
+        versions = list(package_info["releases"].keys())
         
-        # return result
+        # Сортировка с использованием кастомного парсера версий
+        sorted_versions = sorted(versions, key=parse_version, reverse=True)
+        
+        return sorted_versions
     except requests.RequestException as e:
-        print(f"Error while retrieving data from PyPI: {e}")
-        return None
-
+        print(f"Error while retrieving versions for {package_name} from PyPI: {e}")
+        return []
+    
 def activate_virtual_environment():
     # config_file = 'config.json'
     with open(config_file, 'r') as f:
@@ -404,6 +649,33 @@ def activate_conda_environment():
 
     return process.returncode == 0
 
+def parse_pipdeptree_text_output(output):
+    """Parse pipdeptree text output when JSON parsing fails"""
+    dependencies = []
+    lines = output.split('\n')
+    current_package = None
+    
+    for line in lines:
+        if not line.startswith(' '):
+            # Main package line
+            if '=>' in line:
+                parts = line.split('=>')
+                current_package = {
+                    'package_name': parts[0].strip(),
+                    'installed_version': parts[1].strip() if len(parts) > 1 else '',
+                    'required_version': ''
+                }
+                dependencies.append(current_package)
+        elif current_package and '=>' in line:
+            # Dependency line
+            parts = line.split('=>')
+            dependencies.append({
+                'package_name': parts[0].strip(),
+                'installed_version': parts[1].strip() if len(parts) > 1 else '',
+                'required_version': ''
+            })
+    
+    return dependencies
 
 def parse_conditional_dependencies(dependency, directory):
     pattern = re.compile(r'^([\w-]+)(?:\[(.*?)\])?(?:([!><=]+)(\d+(?:\.\d+)*))?')
@@ -449,16 +721,36 @@ def combine_names(input_ordered_dict):
     return combined_values_dict
 
 def parse_version(version_str):
-    # Разделение на части: основная версия и любые постфиксы
-    parts = re.split(r'[\.\-]', version_str)
-    version_tuple = []
-    for part in parts:
-        if part.isdigit():
-            version_tuple.append(int(part))
-        else:
-            # Для буквенных частей добавим кортеж с числом и самой строкой
-            version_tuple.append((part,))
-    return tuple(version_tuple)
+    """
+    Расширенный парсер версий с обработкой нестандартных форматов
+    """
+    if not version_str:
+        return pkg_version.parse('0')
+
+    # Преобразование специфических нестандартных форматов
+    version_str = str(version_str)
+    
+    # Удаление префиксов вроде 'v', 'ver'
+    version_str = re.sub(r'^[vV]?er?\.?\s*', '', version_str)
+    
+    # Замена нестандартных символов
+    version_str = re.sub(r'[^0-9a-zA-Z\.\-]', '.', version_str)
+    
+    # Обработка особых случаев вроде '2004d'
+    if re.match(r'^\d+[a-zA-Z]$', version_str):
+        # Преобразуем '2004d' в '2004.0.1'
+        match = re.match(r'(\d+)([a-zA-Z])$', version_str)
+        if match:
+            num, letter = match.groups()
+            version_str = f"{num}.0.{ord(letter.lower()) - ord('a') + 1}"
+    
+    try:
+        # Попытка стандартного парсинга
+        return pkg_version.parse(version_str)
+    except pkg_version.InvalidVersion:
+        # Крайний случай - возвращаем версию 0
+        print(f"Warning: Could not parse version '{version_str}'. Using default version.")
+        return pkg_version.parse('0')
 
 def main():
     global config_file
@@ -469,7 +761,6 @@ def main():
         # print("read_from_config")
         read_from_config('env_type')  # This will ensure env_type is set
         requirements_dict = OrderedDict()
-        # print("activate_virtual_environment")
 
         print("--> Some useful commands <--\n" +
             "check package info - " + Fore.BLUE + 
@@ -487,21 +778,16 @@ def main():
         
         activate_virtual_environment()
         directory = read_from_config("custom_nodes_path")
-        # print("directory",directory)
         root, dirs, files = next(os.walk(directory))
-        # print(root, dirs, files)
         root = os.path.abspath(root)
         dirs.append(os.path.dirname(root))
 
+        # Process requirements files and build dictionary
         for dir in dirs:
-            # print("dir",dir)
             subroot, subdirs, subfiles = next(os.walk(os.path.join(root, dir)))
-            # print("\t",subroot, subdirs, subfiles)
             for file in subfiles:
                 if file == 'requirements.txt':
                     file_path = os.path.join(root, dir, file)
-                    # folder = file_path.split(os.path.abspath(directory))[-1].split("\\")[1]
-                    # folder = os.path.basename(os.path.abspath(directory))
                     folder = dir
                     active_requirements = get_active_requirements(file_path)
                     for requirement in active_requirements:
@@ -512,20 +798,21 @@ def main():
                             else:
                                 requirements_dict[package].append(packages[package])
 
-        sorted_ordered_dict = sort_ordered_dict(requirements_dict)
-        # print("sorted_ordered_dict",sorted_ordered_dict)
+
+        normalized_dict = process_requirements_dict(requirements_dict)
+        sorted_ordered_dict = sort_ordered_dict(normalized_dict)
         result_ordered_dict = combine_names(sorted_ordered_dict)
-        # print("result_ordered_dict",result_ordered_dict)
         packages = sorted([i for i in result_ordered_dict], key=str.lower)
 
+        # Process each package
         for package_name in packages:
             if package_name in ["git", "--extra-index-url"]:
                 print(Fore.GREEN + "\nCustom " + Style.RESET_ALL)
                 values = result_ordered_dict[package_name]
                 for i in values:
                     print(Fore.BLUE + f"\t{package_name}{i[1]}{i[2]}" + Style.RESET_ALL + f" in {i[3]}")
+            # elif package_name in ["dill","accelerate","scikit-learn","uv","albumentations","pixeloe"]:
             else:
-                # if package_name in ['numpy']:
                 print(Fore.GREEN + "\n" + package_name + Style.RESET_ALL)
                 values = result_ordered_dict[package_name]
                 values_sorted = sorted(values, key=lambda x: x[2] if x[2] is not None else '')
@@ -535,7 +822,7 @@ def main():
                 installed_version = get_installed_version(package_name)
                 latest_version = get_latest_version(package_name)
 
-
+                # Show required versions from requirements files
                 for i in values_sorted:
                     installable = f"{i[1] if i[1] else ''}{i[2] if i[2] else 'Any'}" 
                     print("\t" + installable + f" in {i[-1]}")
@@ -543,10 +830,8 @@ def main():
                     if i[1]:
                         if "<" in i[1]:
                             if not versions:
-                                versions = get_all_versions(package_name).split(", ")
-                                # print(versions)
-
-                            versions = [v for v in versions if parse_version(v) <= parse_version(i[2])]
+                                all_versions = get_all_versions(package_name)
+                                versions = [v for v in all_versions if parse_version(v) <= parse_version(i[2])]
                             if i[1] == "<":
                                 if i[2] in versions:
                                     versions.remove(i[2])
@@ -554,45 +839,57 @@ def main():
                         elif "==" in i[1]:
                             state_of_package = f"{i[1]}{i[2]}"
                             versions = [i[2]]
-                        # else:
-                        #     versions = [latest_version]
-                        #     pass
-                            
-                    
-                    # print(Fore.BLUE + "\t" + installable + Style.RESET_ALL + 
-                    #     f" in {i[-1]} - {Fore.YELLOW}{installed_version}{Style.RESET_ALL} installed - {Fore.RED}{latest_version}{Style.RESET_ALL} last version")
-                    # print("installed_version,latest_version",installed_version,latest_version,installed_version==latest_version)
 
-
-
+                # Check version status and dependencies
                 if not installed_version:
                     print(Fore.RED + "\tNone" + 
                         Fore.CYAN + f" pip install {package_name}{i[0] if i[0] else ''}=={latest_version}" +
-                        Style.RESET_ALL )
-                    # values = result_ordered_dict[package_name]
+                        Style.RESET_ALL)
                 elif installed_version == latest_version or (versions and installed_version == versions[0]):
-                    print(f"\tYou have a latest {installed_version} version")
+                    print(f"\tYou have the latest {installed_version} version")
                 else:
                     if not versions:
-                        versions = [latest_version]
+                        versions = get_all_versions(package_name)
 
-                    print(
-                        Fore.YELLOW + f"\tCan updated from {installed_version} to {versions[0]}" + 
-                        Fore.CYAN + f" pip install {package_name}=={versions[0]}" + Style.RESET_ALL
-                        )
-                    if state_of_package == "any":
-                        print(
-                            Fore.YELLOW + "\tOr update to the latest by command " +
-                            Fore.CYAN + f"pip install --upgrade {package_name}" + Style.RESET_ALL
+                    # Check dependency constraints
+                    max_allowed_version, limiting_package = find_max_allowed_version(package_name, versions)
+                    print(f"Max allowed version: {max_allowed_version}")
+                    print(f"Limiting package: {limiting_package}")
+
+
+                    if max_allowed_version:
+                    #     if pkg_version.parse(installed_version) < pkg_version.parse(max_allowed_version):
+                        limited = Fore.RED + f" (limited by {limiting_package})" + Style.RESET_ALL
+
+
+                        if pkg_version.parse(max_allowed_version) == pkg_version.parse(installed_version):
+                            print(
+                                f"\tYou have the maximum allowed {installed_version} version" +
+                                limited +
+                                Fore.GREEN + f"\n\t(latest version: {versions[0]})" + Style.RESET_ALL
+                                )
+                        elif pkg_version.parse(max_allowed_version) < pkg_version.parse(versions[0]):
+                            print(
+                                Fore.YELLOW + f"\tCan update from {installed_version} to {max_allowed_version}" +
+                                limited +
+                                Fore.CYAN + f" pip install {package_name}=={max_allowed_version}" + Style.RESET_ALL +
+                                Fore.GREEN + f"\n\t(latest version: {versions[0]})" + Style.RESET_ALL
                             )
-                    # print(f"installed_version")
-                    
-                    # break
-
-
-
-
-
+                        else:
+                            print(
+                                Fore.YELLOW + f"\tCan update from {installed_version} to {max_allowed_version}" + 
+                                Fore.CYAN + f" pip install {package_name}=={max_allowed_version}" + Style.RESET_ALL
+                            )
+                    else:
+                        print(
+                            Fore.YELLOW + f"\tCan update from {installed_version} to {versions[0]}" + 
+                            Fore.CYAN + f" pip install {package_name}=={versions[0]}" + Style.RESET_ALL
+                        )
+                        if state_of_package == "any":
+                            print(
+                                Fore.YELLOW + f"\t\tupdate to the latest ({latest_version}) by command " +
+                                Fore.CYAN + f"pip install --upgrade {package_name}" + Style.RESET_ALL
+                            )
 
     except Exception as e:
         print(f"An error occurred: {e}")

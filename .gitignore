@@ -1,4 +1,3 @@
 .vscode/*
 tests.py
-config.json
-*_old.*
+config*.json
