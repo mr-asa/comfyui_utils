@@ -2,6 +2,9 @@ import os
 import git
 import json
 from colorama import init, Fore, Style
+from requirements_checker.config_manager import config_manager
+from pathlib import Path
+
 
 # Initialize colorama
 init()
@@ -86,20 +89,20 @@ def get_repository_status(directory):
 # Main function to iterate through directories and perform checks
 def main():
     try:
-        # Specify the path to the directory containing the repositories
-        root_directory = os.path.realpath(__file__).replace("\\", "/").rsplit("/", 1)[0]
-        if os.path.exists(os.path.join(root_directory, "config.json")):
-            with open(os.path.join(root_directory, "config.json"), "r") as config_file:
-                config = json.load(config_file)
-                if "custom_nodes_path" in config:
-                    custom_nodes_directory = config["custom_nodes_path"]
 
-        if not custom_nodes_directory:
-            custom_nodes_directory = root_directory.rsplit("/", 2)[0] + "/custom_nodes"
+        env_type = config_manager.get_value('env_type')
+        if env_type == 'conda':
+            config_manager.get_value('conda_path')
+            config_manager.get_value('conda_env')
+            config_manager.get_value('conda_env_folder')
+        custom_nodes_dir = config_manager.get_value('custom_nodes_path')
+
 
         # Get a list of all folders in the base directory
-        directories = [os.path.join(custom_nodes_directory, d) for d in os.listdir(custom_nodes_directory) if os.path.isdir(os.path.join(custom_nodes_directory, d))]
-        directories = [custom_nodes_directory.replace("\\", "/").rsplit("/", 2)[0]] + directories
+        directories = [os.path.join(custom_nodes_dir, d) for d in os.listdir(custom_nodes_dir) if os.path.isdir(os.path.join(custom_nodes_dir, d))]
+        parentDir = Path(custom_nodes_dir).parent
+        print(parentDir)
+        directories.insert(0, str(parentDir))
         
         # Iterate through each folder and check for a GitHub repository
         for directory in directories:

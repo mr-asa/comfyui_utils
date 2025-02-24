@@ -476,7 +476,7 @@ def find_max_allowed_version(package_name, available_versions):
     except Exception as e:
         print(Fore.YELLOW + f"\tWarning: Error checking version constraints: {str(e)}" + Style.RESET_ALL)
         return None, None
-        
+
 def get_active_requirements(file_path):
     # print("__get_active_requirements__",file_path)
     active_requirements = []
@@ -509,7 +509,6 @@ def get_active_requirements(file_path):
     return active_requirements
 
 def get_installed_version(package_name):
-    
     with open(config_file, 'r') as f:
         config = json.load(f)
 
@@ -517,35 +516,36 @@ def get_installed_version(package_name):
     try:
         if env_type == "conda":
             env_name = config.get('conda_env_folder')
-
             if os.name == 'nt':  # Windows
-                python_executable = f"{env_name}python.exe"  # Use backslash for Windows paths
+                python_executable = os.path.join(env_name, 'python.exe')  # Исправлено
             else:  # Linux or other OS
-                python_executable = f"{env_name}/bin/python"  # Use forward slash for Linux paths            
+                python_executable = os.path.join(env_name, 'bin', 'python')  # Исправлено
             result = subprocess.run(
-                [python_executable, '-m', 'pip', 'show', package_name], 
+                [python_executable, '-m', 'pip', 'show', package_name],
                 capture_output=True,
                 text=True,
                 check=True
-                )
+            )
         else:
             result = subprocess.run(
-                ['pip', 'show', package_name], 
+                ['pip', 'show', package_name],
                 capture_output=True,
                 text=True,
                 check=True
-                )
+            )
 
         if result.returncode == 0:
-            # print("__get_installed_version__",package_name, result.stdout)
             for line in result.stdout.split('\n'):
                 if line.startswith('Version:'):
                     return line.split(':', 1)[1].strip()
         return None
+    except subprocess.CalledProcessError:
+        print(Fore.YELLOW + f"\tWarning: Package '{package_name}' is not installed." + Style.RESET_ALL)
+        return None
     except Exception as e:
         print(f"An error occurred: {e}")
         return None
-
+    
 def get_latest_version(package_name):
     try:
         response = requests.get(f"https://pypi.org/pypi/{package_name}/json")
@@ -617,26 +617,29 @@ def activate_conda_environment():
     env_name = read_from_config("conda_env")
     if not env_folder:
         env_folder = env_name
-    
-    
+
+    # Нормализация путей для Windows
+    conda_path = os.path.normpath(conda_path)
+    env_folder = os.path.normpath(env_folder)
+    env_name = os.path.normpath(env_name)
 
     if is_windows():
-        activate_command = f'call "{conda_path}" && conda activate {env_name}'
+        activate_command = f'call "{conda_path}" && conda activate "{env_name}"'  # Добавлены кавычки
         activate_commands_in_cmd = [
-            f"set PATH=%PATH%;{conda_path}",
-            f"call {conda_path} && conda activate {env_name} && cd /d {env_name}"
-            ]
+            f"set PATH=%PATH%;{os.path.dirname(conda_path)}",
+            f"call \"{conda_path}\" && conda activate \"{env_name}\" && cd /d \"{env_name}\""
+        ]
     else:
-        activate_command = f'source "{os.path.dirname(conda_path)}/activate" {env_folder}'
+        activate_command = f'source "{os.path.dirname(conda_path)}/activate" "{env_folder}"'
         activate_commands_in_cmd = [
-            f"export PATH=$PATH:{conda_path}",
-            f"source {os.path.dirname(conda_path)}/activate {env_folder}",
-            f"cd {env_folder}"
+            f"export PATH=$PATH:{os.path.dirname(conda_path)}",
+            f"source \"{os.path.dirname(conda_path)}/activate\" \"{env_folder}\"",
+            f"cd \"{env_folder}\""
         ]
 
     activation_script = "\n".join(activate_commands_in_cmd)
 
-    print(f"--> Commands to activate Conda environment <--\n" + 
+    print(f"--> Commands to activate Conda environment <--\n" +
           Fore.BLUE + activation_script + "\n" + Style.RESET_ALL)
 
     process = subprocess.Popen(activate_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ)
