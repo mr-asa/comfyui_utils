@@ -4,30 +4,30 @@
 ComfyUI Repo Updater
 ====================
 
-Обновляет сначала сам ComfyUI, затем все плагины в каталоге custom_nodes
-(папки с признаком disabled пропускаются).
+Updates the main ComfyUI repo first, then all plugins in the custom_nodes
+directory (disabled folders are skipped by default).
 
-Формат лога для каждого репозитория:
+Log format per repository:
 
---- <Название репозитория> ---
-<web ссылка на репозиторий>
-ветка: <название ветки или DETACHED>
-<лог обновления>
-  - если есть изменения: два блока
-      * Сообщения коммитов (между старым и новым HEAD)
-      * Изменённые файлы в формате: +<added> -<deleted> <path>
-  - если изменений нет: "Правок не было."
+--- <Repository Name> ---
+<web URL to repository>
+branch: <branch name or DETACHED>
+<update log>
+  - if changes: two blocks
+      * Commit messages (old..new HEAD)
+      * Changed files: +<added> -<deleted> <path>
+  - if no changes: "No changes."
 
-Примеры запуска:
+Examples:
     python update_comfy_repos.py --root "F:/ComfyUI/ComfyUI"
     python update_comfy_repos.py --root "/opt/ComfyUI/ComfyUI" --plugins-dir custom_nodes
 
-Политики и переопределения:
-  - POLICIES: настраиваемое поведение при локальных правках и способ pull.
-  - REMOTE_OVERRIDES: задать URL origin для репо, где он не найден.
-  - BRANCH_OVERRIDES: задать ветку, если HEAD detached или нужна нестандартная ветка.
+Options and overrides:
+  - POLICIES: configurable behavior for local changes and pull method.
+  - REMOTE_OVERRIDES: set origin URL for repos where it’s missing.
+  - BRANCH_OVERRIDES: set branch when HEAD is detached or a custom branch is needed.
 
-Никаких сторонних библиотек. Требуется установленный Git в PATH.
+Requires only Git installed in PATH.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 
-# Цвета ANSI
+# ANSI colors
 class C:
     RESET = "\033[0m"
     BOLD = "\033[1m"
@@ -68,14 +68,14 @@ class UpdateResult:
 
 IGNORED_DIRS = {"__pycache__", ".idea", ".vscode", "venv", "env", ".disabled"}
 
-# ===================== Пользовательская конфигурация =====================
+# ===================== User Configuration =====================
 
-# Дефолтная политика. Возможные значения:
+# Default policy. Supported values:
 #   on_local_changes: "stash" | "commit" | "reset" | "skip" | "abort"
 #   pull_method:      "merge" | "rebase"
 #   pull_from:        "origin" | "upstream"
-#   set_remote_if_missing: True/False — добавлять origin из REMOTE_OVERRIDES, если отсутствует
-#   auto_stash_pop:   True/False — автоматически применять stash pop после удачного pull
+#   set_remote_if_missing: True/False — add origin from REMOTE_OVERRIDES if missing
+#   auto_stash_pop:   True/False — automatically run stash pop after a successful pull
 POLICIES: Dict[str, Dict[str, object]] = {
     "default": {
         "on_local_changes": "stash",
@@ -84,26 +84,26 @@ POLICIES: Dict[str, Dict[str, object]] = {
         "set_remote_if_missing": True,
         "auto_stash_pop": True,
     },
-    # Примеры точечных переопределений по имени папки/пути (regex):
+    # Examples of targeted overrides by folder/path name (regex):
     # r"ComfyUI$": {"pull_method": "rebase"},
     # r"MyForkedNode$": {"on_local_changes": "skip", "pull_from": "origin"},
 }
 
-# Если у репозитория нет origin.url, можно указать его здесь.
-# Ключ — имя папки репозитория или абсолютный путь; значение — URL.
+# If a repository is missing origin.url, set it here.
+# Key — repository folder name or absolute path; value — URL.
 REMOTE_OVERRIDES: Dict[str, str] = {
     # "FooNode": "https://github.com/user/FooNode.git",
     # r".*BarNode$": "git@github.com:user/BarNode.git",
 }
 
-# Переопределение веток. Полезно для detached HEAD или нестандартных веток.
+# Branch overrides. Useful for detached HEAD or non-standard branches.
 BRANCH_OVERRIDES: Dict[str, str] = {
     # "ComfyUI": "master",
 }
 
-# Если True, репозитории без .git будут помечены как ошибка с подсказкой.
-# Безопаснее оставить False. Если выставить True, можно попробовать автоинициализацию
-# (git init + remote add), но по умолчанию этот функционал отключён как рискованный.
+# If True, repositories without .git will be flagged with a helpful hint.
+# Safer to keep False. If set to True, the script may try auto-initialization
+# (git init + remote add), but by default this is disabled as risky.
 AUTO_INIT_MISSING_GIT = False
 
 # ========================================================================
@@ -123,12 +123,12 @@ class UpdateResult:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Update ComfyUI and its plugins.")
-    parser.add_argument("--root", required=True, help="Путь к корню репозитория ComfyUI")
-    parser.add_argument("--plugins-dir", default="custom_nodes", help="Каталог с плагинами относительно root")
-    parser.add_argument("--include-disabled", action="store_true", help="Не игнорировать папки с признаком disabled")
-    parser.add_argument("--only", nargs="*", default=None, help="Обновлять только репозитории, содержащие эти подстроки/regex")
-    parser.add_argument("--skip", nargs="*", default=None, help="Пропускать репозитории, соответствующие подстрокам/regex")
-    parser.add_argument("--dry-run", action="store_true", help="Показывать, что будет сделано, без git изменений")
+    parser.add_argument("--root", required=True, help="Path to the ComfyUI repository root")
+    parser.add_argument("--plugins-dir", default="custom_nodes", help="Plugins directory relative to root")
+    parser.add_argument("--include-disabled", action="store_true", help="Do not ignore folders marked as disabled")
+    parser.add_argument("--only", nargs="*", default=None, help="Update only repositories matching these substrings/regex")
+    parser.add_argument("--skip", nargs="*", default=None, help="Skip repositories matching these substrings/regex")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be done without making git changes")
     args = parser.parse_args()
 
     root = os.path.abspath(args.root)
@@ -136,13 +136,13 @@ def main() -> int:
 
     repos: List[str] = []
 
-    # 1) Сначала сам ComfyUI (root)
+    # 1) Add the main ComfyUI repo (root)
     if os.path.isdir(os.path.join(root, ".git")):
         repos.append(root)
     else:
-        print("ВНИМАНИЕ: Папка root не является git-репозиторием:", root)
+        print("Warning: root path is not a git repository:", root)
 
-    # 2) Затем плагины из plugins_dir (только директории верхнего уровня)
+    # 2) Then scan plugins from plugins_dir (top-level directories only)
     if os.path.isdir(plugins_dir):
         for name in sorted(os.listdir(plugins_dir)):
             if name in IGNORED_DIRS:
@@ -150,12 +150,12 @@ def main() -> int:
             path = os.path.join(plugins_dir, name)
             if not os.path.isdir(path):
                 continue
+            if not args.include_disabled and (name.lower().startswith("disabled") or name.lower().endswith(".disabled")):
+                continue
             repos.append(path)
 
-    # Фильтры only/skip
-    # repos = apply_filters(repos, only=args.only, skip=args.skip)
+    repos = apply_filters(repos, only=args.only, skip=args.skip)
 
-    # Обновляем по очереди
     any_errors = False
     for repo_path in repos:
         res = update_repo(repo_path, dry_run=args.dry_run)
@@ -169,7 +169,7 @@ def main() -> int:
 def apply_filters(paths: List[str], only: Optional[List[str]], skip: Optional[List[str]]) -> List[str]:
     def match_any(patterns: List[str], text: str) -> bool:
         for p in patterns:
-            # Поддержка как подстроки, так и regex
+            # Support simple substrings or regex if wrapped as r/.../
             if p.startswith("r/") and p.endswith("/"):
                 if re.search(p[2:-1], text):
                     return True
@@ -177,7 +177,7 @@ def apply_filters(paths: List[str], only: Optional[List[str]], skip: Optional[Li
                 return True
         return False
 
-    out = []
+    out: List[str] = []
     for p in paths:
         if only and not match_any(only, p):
             continue
@@ -187,181 +187,49 @@ def apply_filters(paths: List[str], only: Optional[List[str]], skip: Optional[Li
     return out
 
 
-def is_disabled_dir(name: str, path: str) -> bool:
-    """Определяем, помечена ли папка как disabled различными популярными способами."""
-    low = name.lower()
-    if low.startswith("disabled") or low.endswith(".disabled"):
-        return True
-    markers = [".disabled", "DISABLED", "disabled", "_disabled"]
-    for m in markers:
-        if os.path.exists(os.path.join(path, m)):
-            return True
-    # Специальная папка, куда складывают отключённые плагины
-    if os.path.basename(os.path.dirname(path)).lower() in ("disabled", "custom_nodes_disabled"):
-        return True
-    return False
-
+# ------------------------- Repo update -------------------------
 
 def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
     name = os.path.basename(path.rstrip(os.sep))
 
-    # Собираем политику (regex по ключам POLICIES, fallback на default)
-    policy = dict(POLICIES.get("default", {}))
-    for pat, cfg in POLICIES.items():
-        if pat == "default":
-            continue
-        try:
-            if re.search(pat, path) or re.search(pat, name):
-                policy.update(cfg)
-        except re.error:
-            # Воспринимать как простое совпадение по концу имени
-            if pat in path or pat in name:
-                policy.update(cfg)
-
-    # Получаем origin url (или из overrides), ветку и т.п.
-    web_url = ""
-    branch = ""
-    notes: List[str] = []
+    web_url = to_web_url(get_remote_url(path) or "")
+    branch = get_current_branch(path) or "DETACHED"
 
     if not os.path.isdir(os.path.join(path, ".git")):
-        err = (
-            "Папка не является git-репозиторием. "
-            "Либо инициализируйте git в этой папке, либо укажите URL в REMOTE_OVERRIDES."
-        )
-        # Подсказки
-        notes.extend(remedy_not_git_repo(name, path))
-        return UpdateResult(name, path, web_url, branch or "", False, [], [], notes, error=err)
+        notes = remedy_not_git_repo(name, path)
+        return UpdateResult(name, path, web_url, branch, False, [], [], notes, error="Not a git repository")
 
-    # Cчитываем текущие параметры репозитория
-    remote = (policy.get("pull_from") or "origin").strip()
-    origin_url = get_remote_url(path, remote)
+    # Save original HEAD
+    old_head = get_head_commit(path)
+    notes: List[str] = []
 
-    # Применяем REMOTE_OVERRIDES, если origin отсутствует и политика разрешает
-    override_url = resolve_remote_override(name, path)
-    if not origin_url and override_url and policy.get("set_remote_if_missing", True):
-        if dry_run:
-            notes.append(f"[dry-run] Добавил бы удалённый '{remote}': {override_url}")
-        else:
-            ok, out, err = run_git(["remote", "add", remote, override_url], cwd=path)
-            if ok:
-                origin_url = override_url
-                notes.append(f"Добавлен удалённый '{remote}': {override_url}")
-            else:
-                return UpdateResult(name, path, web_url, branch or "", False, [], [], notes,
-                                    error=f"Не удалось добавить remote '{remote}': {err or out}")
+    # Fetch
+    ok, out, err = run_git(["fetch", "--all", "--tags"], cwd=path)
+    if not ok:
+        return UpdateResult(name, path, web_url, branch, False, [], [], ["git fetch failed"], error=(err or out).strip())
 
-    if not origin_url:
-        err = (
-            f"У репозитория нет удалённого '{remote}'. Укажите URL в REMOTE_OVERRIDES или добавьте remote вручную."
-        )
-        notes.extend(remedy_no_remote(name, path))
-        return UpdateResult(name, path, web_url, branch or "", False, [], [], notes, error=err)
-
-    web_url = to_web_url(origin_url)
-
-    # Определяем ветку
-    branch = get_current_branch(path)
-    if (not branch) or branch == "HEAD":
-        # попробуем overrides
-        forced = resolve_branch_override(name, path)
-        if forced:
-            branch = forced
-            notes.append(f"HEAD detached — использую ветку из BRANCH_OVERRIDES: {branch}")
-        else:
-            notes.append("HEAD detached — попытка пулла без указания ветки может быть небезопасной")
-
-    # Сохраняем старый HEAD
-    old_head = get_head_commit(path) or ""
-
-    # Обработка локальных изменений
-    if working_tree_dirty(path):
-        action = str(policy.get("on_local_changes", "stash"))
-        if action == "skip":
-            return UpdateResult(name, path, web_url, branch or "", False, [], [],
-                                notes + ["Пропускаю: есть локальные изменения (policy: skip)"], error=None)
-        elif action == "abort":
-            return UpdateResult(name, path, web_url, branch or "", False, [], [],
-                                notes + ["Остановлено: есть локальные изменения (policy: abort)"], error=
-                                "Локальные изменения. Измените политику или очистите рабочее дерево.")
-        elif action == "reset":
-            if dry_run:
-                notes.append("[dry-run] Выполнил бы: git reset --hard")
-            else:
-                ok, out, err = run_git(["reset", "--hard"], cwd=path)
-                if not ok:
-                    return UpdateResult(name, path, web_url, branch or "", False, [], [], notes,
-                                        error=f"Не удалось выполнить reset --hard: {err or out}")
-                notes.append("Выполнен reset --hard (локальные изменения отброшены)")
-        elif action == "commit":
-            if dry_run:
-                notes.append("[dry-run] Выполнил бы auto-commit локальных изменений")
-            else:
-                run_git(["add", "-A"], cwd=path)
-                msg = f"chore: auto-commit before update ({datetime.now().isoformat(timespec='seconds')})"
-                ok, out, err = run_git(["commit", "-m", msg], cwd=path)
-                if ok:
-                    notes.append("Сделан auto-commit локальных изменений")
-                else:
-                    # могло быть нечего коммитить
-                    if "nothing to commit" in (out + err).lower():
-                        pass
-                    else:
-                        return UpdateResult(name, path, web_url, branch or "", False, [], [], notes,
-                                            error=f"Ошибка auto-commit: {err or out}")
-        else:  # stash (по умолчанию)
-            if dry_run:
-                notes.append("[dry-run] Выполнил бы: git stash push -u")
-            else:
-                msg = f"auto-stash: update script {datetime.now().isoformat(timespec='seconds')}"
-                ok, out, err = run_git(["stash", "push", "-u", "-m", msg], cwd=path)
-                if ok:
-                    notes.append("Сделан stash локальных изменений")
-                else:
-                    return UpdateResult(name, path, web_url, branch or "", False, [], [], notes,
-                                        error=f"Не удалось выполнить stash: {err or out}")
-
-    # Выполняем pull
-    pull_args = ["pull"]
-    method = str(policy.get("pull_method", "merge"))
-    if method == "rebase":
-        pull_args.append("--rebase")
-    pull_args.append(str(policy.get("pull_from", "origin")))
-    if branch:
-        pull_args.append(branch)
-
+    # Pull
+    pull_args = ["pull", "--rebase"]
     if dry_run:
-        notes.append("[dry-run] Выполнил бы: git " + " ".join(shlex.quote(a) for a in pull_args))
-        new_head = old_head
+        notes.append("[dry-run] Would run: git " + " ".join(shlex.quote(a) for a in pull_args))
         changed = False
         commit_msgs: List[str] = []
         numstat: List[Tuple[int, int, str]] = []
     else:
         ok, out, err = run_git(pull_args, cwd=path)
         if not ok:
-            # типичные подсказки при ошибках pull
-            hints = remedy_pull_failure(out, err)
-            notes.extend(hints)
-            return UpdateResult(name, path, web_url, branch or "", False, [], [], notes,
-                                error=f"Не удалось выполнить git pull: {(err or out).strip()}")
+            tips = remedy_pull_failure(out, err)
+            return UpdateResult(name, path, web_url, branch, False, [], [], tips, error=f"git pull failed: {(err or out).strip()}")
 
-        # Новый HEAD
-        new_head = get_head_commit(path) or ""
-        changed = old_head != new_head and bool(old_head)
-
+        # New HEAD
+        new_head = get_head_commit(path)
+        changed = (new_head and new_head != old_head)
         if changed:
             commit_msgs = get_commit_messages(path, old_head, new_head)
             numstat = get_numstat(path, old_head, new_head)
         else:
             commit_msgs = []
             numstat = []
-
-        # Авто-возврат stash
-        if policy.get("auto_stash_pop", True) and stash_has_items(path):
-            ok, out, err = run_git(["stash", "pop"], cwd=path)
-            if ok:
-                notes.append("stash pop выполнен")
-            else:
-                notes.append("Не удалось применить stash pop — возможно, конфликты. Оставлен в stash.")
 
     return UpdateResult(name, path, web_url, branch or "", changed, commit_msgs, numstat, notes, error=None)
 
@@ -375,11 +243,11 @@ def run_git(args: List[str], cwd: str) -> Tuple[bool, str, str]:
         err = proc.stderr.decode("utf-8", errors="replace")
         return proc.returncode == 0, out, err
     except FileNotFoundError:
-        return False, "", "Git не найден в PATH. Установите Git."
+        return False, "", "Git not found in PATH. Install Git."
 
 
 def get_remote_url(path: str, remote: str = "origin") -> str:
-    ok, out, err = run_git(["config", f"--get", f"remote.{remote}.url"], cwd=path)
+    ok, out, _ = run_git(["config", f"--get", f"remote.{remote}.url"], cwd=path)
     return out.strip() if ok else ""
 
 
@@ -393,33 +261,21 @@ def to_web_url(remote_url: str) -> str:
 
 
 def get_current_branch(path: str) -> str:
-    ok, out, err = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path)
+    ok, out, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path)
     if ok:
         return out.strip()
     return ""
 
 
 def get_head_commit(path: str) -> str:
-    ok, out, err = run_git(["rev-parse", "HEAD"], cwd=path)
+    ok, out, _ = run_git(["rev-parse", "HEAD"], cwd=path)
     return out.strip() if ok else ""
-
-
-def working_tree_dirty(path: str) -> bool:
-    ok, out, err = run_git(["status", "--porcelain"], cwd=path)
-    return bool(out.strip()) if ok else False
-
-
-def stash_has_items(path: str) -> bool:
-    ok, out, err = run_git(["stash", "list"], cwd=path)
-    if not ok:
-        return False
-    return bool(out.strip())
 
 
 def get_commit_messages(path: str, old: str, new: str) -> List[str]:
     if not old or not new:
         return []
-    ok, out, err = run_git(["log", "--pretty=format:%s", f"{old}..{new}"], cwd=path)
+    ok, out, _ = run_git(["log", "--pretty=format:%s", f"{old}..{new}"], cwd=path)
     if not ok:
         return []
     return [line.strip() for line in out.splitlines() if line.strip()]
@@ -428,7 +284,7 @@ def get_commit_messages(path: str, old: str, new: str) -> List[str]:
 def get_numstat(path: str, old: str, new: str) -> List[Tuple[int, int, str]]:
     if not old or not new:
         return []
-    ok, out, err = run_git(["diff", "--numstat", f"{old}..{new}"], cwd=path)
+    ok, out, _ = run_git(["diff", "--numstat", f"{old}..{new}"], cwd=path)
     if not ok:
         return []
     items: List[Tuple[int, int, str]] = []
@@ -445,103 +301,60 @@ def get_numstat(path: str, old: str, new: str) -> List[Tuple[int, int, str]]:
     return items
 
 
-# ------------------------- Overrides & Remedies -------------------------
-
-def resolve_remote_override(name: str, path: str) -> Optional[str]:
-    # 1) точное совпадение по имени или пути
-    if name in REMOTE_OVERRIDES:
-        return REMOTE_OVERRIDES[name]
-    if path in REMOTE_OVERRIDES:
-        return REMOTE_OVERRIDES[path]
-    # 2) regex-ключи
-    for k, v in REMOTE_OVERRIDES.items():
-        try:
-            if re.search(k, name) or re.search(k, path):
-                return v
-        except re.error:
-            if k in name or k in path:
-                return v
-    return None
-
-
-def resolve_branch_override(name: str, path: str) -> Optional[str]:
-    if name in BRANCH_OVERRIDES:
-        return BRANCH_OVERRIDES[name]
-    if path in BRANCH_OVERRIDES:
-        return BRANCH_OVERRIDES[path]
-    for k, v in BRANCH_OVERRIDES.items():
-        try:
-            if re.search(k, name) or re.search(k, path):
-                return v
-        except re.error:
-            if k in name or k in path:
-                return v
-    return None
-
+# ------------------------- Remedies -------------------------
 
 def remedy_not_git_repo(name: str, path: str) -> List[str]:
     return [
-        "Варианты решения:",
-        "  • Инициализировать репозиторий: git init; git remote add origin <URL>; git fetch; git checkout <ветка>",
-        "  • Либо в скрипте указать REMOTE_OVERRIDES для этого пути/имени и вручную выполнить clone/init.",
-        "  • Если папка — просто архив без git, проще удалить её и заново установить через git clone.",
-        'Подсказка по скрипту: REMOTE_OVERRIDES["%s"] = "https://github.com/user/%s.git"' % (name, name),
-    ]
-
-
-def remedy_no_remote(name: str, path: str) -> List[str]:
-    return [
-        "Варианты решения:",
-        "  • Добавить удалённый вручную: git remote add origin <URL>",
-        "  • Или прописать REMOTE_OVERRIDES вверху скрипта и запустить снова.",
-        'Подсказка по скрипту: REMOTE_OVERRIDES[r"%s"] = "https://github.com/user/%s.git"' % (re.escape(name), name),
+        "Fix suggestions:",
+        "  • Initialize repository: git init; git remote add origin <URL>; git fetch; git checkout <branch>",
+        "  • Or set REMOTE_OVERRIDES for this name/path and clone/init manually.",
+        "  • If it's just an unpacked folder without git, consider deleting and reinstall via git clone.",
+        'Script hint: REMOTE_OVERRIDES["%s"] = "https://github.com/user/%s.git"' % (name, name),
     ]
 
 
 def remedy_pull_failure(out: str, err: str) -> List[str]:
     text = (out + "\n" + err).lower()
-    tips = ["Что можно сделать:"]
+    tips = ["What you can try:"]
     if "would be overwritten by merge" in text or "local changes" in text:
         tips += [
-            "  • Есть локальные правки. Установите политику on_local_changes: 'stash' | 'commit' | 'reset' | 'skip' | 'abort'",
-            "  • Пример: POLICIES[r'YourRepo'] = {'on_local_changes': 'stash'}",
+            "  • You have local edits. Set on_local_changes policy: 'stash' | 'commit' | 'reset' | 'skip' | 'abort'",
         ]
     if "divergent branches" in text or "rebase" in text:
         tips += [
-            "  • Ветки разошлись. Попробуйте pull_method='rebase' или решите конфликты вручную.",
-            "  • Пример: POLICIES[r'YourRepo'] = {'pull_method': 'rebase'}",
+            "  • Branches diverged. Try pull_method='rebase' or resolve conflicts manually.",
         ]
     if "couldn't find remote ref" in text or "repository not found" in text:
         tips += [
-            "  • Проверьте существование ветки/URL. Задайте BRANCH_OVERRIDES или REMOTE_OVERRIDES.",
+            "  • Check branch/URL existence. Consider BRANCH_OVERRIDES or REMOTE_OVERRIDES.",
         ]
     if "permission denied" in text or "authenticat" in text:
         tips += [
-            "  • Проблемы авторизации. Проверьте SSH-ключи/токены или используйте https URL.",
+            "  • Auth issues. Verify SSH keys/tokens or use https URL.",
         ]
     tips += [
-        "  • Если это форк, можно использовать pull_from='upstream' для получения обновлений с апстрима.",
-        "  • Или пропустить проблемный репозиторий с on_local_changes='skip' и вернуться к нему позже.",
+        "  • If it's a fork, pull from 'upstream' to get upstream changes.",
+        "  • Or skip the problematic repo and return later.",
     ]
     return tips
 
 
-# ------------------------- Report printing -------------------------
+# ------------------------- Reporting -------------------------
 
 def print_report(res: UpdateResult) -> None:
     title = f"{C.BOLD}{C.CYAN}{res.name}{C.RESET}"
     print(title)
 
     if res.web_url:
-        print(f"\t🔗 {C.MAGENTA}{res.web_url}{C.RESET}")
+        print(f"\t→ {C.MAGENTA}{res.web_url}{C.RESET}")
     else:
-        print(f"\t(локальный путь: {res.path})")
+        print(f"\t(local path: {res.path})")
 
     if res.branch:
-        print(f"\t➡️  ветка: {C.YELLOW}{res.branch}{C.RESET}")
+        print(f"\t➡️  branch: {C.YELLOW}{res.branch}{C.RESET}")
 
     if res.error:
-        print(f"\t❌ {C.RED}ОШИБКА: {res.error}{C.RESET}")
+        print(f"\t❌ {C.RED}ERROR: {res.error}{C.RESET}")
         for n in res.notes:
             print(f"\t   {C.GRAY}{n}{C.RESET}")
         print()
@@ -549,25 +362,26 @@ def print_report(res: UpdateResult) -> None:
 
     if res.changed:
         if res.commit_messages:
-            print(f"\t📌 Сообщения коммитов:")
+            print(f"\t📌 Commit messages:")
             for msg in res.commit_messages:
                 print(f"\t   - {msg}")
         if res.numstat:
-            print(f"\n\t⚠️  Изменённые файлы:")
+            print(f"\n\t⚠️  Changed files:")
             for added, deleted, path in res.numstat:
                 print(f"\t   +{added} -{deleted}  {path}")
-        print(f"\t✅ Обновлено")
+        print(f"\t✅ Updated")
     else:
-        print(f"\t✅ Нет изменений")
+        print(f"\t✅ No changes")
 
     for n in res.notes:
         print(f"\t{C.GRAY}{n}{C.RESET}")
 
     print()
 
+
 if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\nПрервано пользователем.")
+        print("\nInterrupted by user.")
         sys.exit(130)
