@@ -119,14 +119,14 @@ def check_dependencies() -> None:
     required = ['colorama', 'requests', 'packaging']
     missing = []
 
-    # Проверяем наличие каждой библиотеки
+    # Check for each required module
     for module in required:
         try:
             __import__(module)
         except ImportError:
             missing.append(module)
 
-    # Устанавливаем отсутствующие библиотеки
+    # Install missing modules
     if missing:
         print(f"{colors.WARNING}The following required packages are missing: {', '.join(missing)}{colors.RESET}")
         print(f"{colors.INFO}Installing missing dependencies...{colors.RESET}")

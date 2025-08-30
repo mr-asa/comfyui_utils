@@ -144,7 +144,7 @@ class PackageManager:
             response.raise_for_status()
             package_info = response.json()
             versions = list(package_info["releases"].keys())
-            # Фильтруем валидные версии
+            # Filter valid versions only
             valid_versions = []
             for v in versions:
                 try:

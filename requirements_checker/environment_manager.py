@@ -262,7 +262,7 @@ class EnvironmentManager:
         Returns:
             bool: True if activation was successful, False otherwise
         """
-        from .utils import colors, print_section_header, format_command  # Добавляем нужные импорты
+        from .utils import colors, print_section_header, format_command  # Add required imports
 
         conda_path = config_manager.get_value("conda_path")
         env_folder = config_manager.get_value("conda_env_folder", check_only=True)
@@ -291,22 +291,22 @@ class EnvironmentManager:
                 f"cd \"{env_folder}\""
             ]
 
-        # Выводим команды в унифицированном стиле
+        # Print commands in a unified style
         print_section_header("Commands to activate Conda environment")
         for cmd in activate_commands:
             print(f"{format_command(cmd)}")
 
-        # Формируем путь к Python в среде
+        # Build path to Python in the environment
         python_path = os.path.join(env_folder, 'python.exe' if self.is_windows() else 'bin/python')
         if not os.path.exists(python_path):
             print(f"Error: Python executable not found at {python_path}")
             return False
 
-        # Обновляем PATH
+        # Update PATH
         conda_bin = os.path.dirname(conda_path)
         os.environ['PATH'] = os.pathsep.join([conda_bin, env_folder, os.environ['PATH']])
         
-        # Обновляем sys.executable
+        # Update sys.executable
         sys.executable = python_path
         
         print(Fore.GREEN + f"\nConda environment activated successfully: {env_folder}" + Style.RESET_ALL)

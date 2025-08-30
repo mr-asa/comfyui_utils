@@ -186,7 +186,7 @@ class ConfigManager:
             elif choice == 'NO':
                 sys.exit("Exiting script as requested.")
             else:
-                if os.path.exists(choice) or not os.path.isabs(choice):  # Разрешаем имена окружений
+                if os.path.exists(choice) or not os.path.isabs(choice):  # Allow environment names as non-absolute
                     return choice
                 print("Invalid path or environment name. Please enter a valid value or choose Y/N.")
         
@@ -196,7 +196,7 @@ class ConfigManager:
                 return default_env
             elif env == 'NO':
                 sys.exit("Exiting script as requested.")
-            elif os.path.exists(env) or not os.path.isabs(env):  # Разрешаем имена окружений
+            elif os.path.exists(env) or not os.path.isabs(env):  # Allow environment names as non-absolute
                 return env
             print("Invalid path or environment name. Please enter a valid value.")
 

@@ -102,7 +102,7 @@ class RequirementsParser:
                 if not line or line.startswith("#"):
                     continue
 
-                # Обработка специальных случаев: git и --extra-index-url
+                # Handle special cases: git and --extra-index-url
                 if line.startswith("git+"):
                     active_requirements.append(line)
                     continue
@@ -110,8 +110,8 @@ class RequirementsParser:
                     active_requirements.append(line)
                     continue
 
-                # Парсинг стандартных требований с поддержкой сложных спецификаторов
-                # Пример: package[extra1,extra2]>=1.0,<2.0,!=1.5
+                # Parse standard requirements with complex specifiers
+                # Example: package[extra1,extra2]>=1.0,<2.0,!=1.5
                 pattern = r'^([\w-]+)(?:\[([^\]]*)\])?(.*)$'
                 match = re.match(pattern, line)
                 if match:
@@ -120,19 +120,19 @@ class RequirementsParser:
                     if extras:
                         requirement += f"[{extras}]"
 
-                    # Парсим все спецификаторы версий
+                    # Parse all version specifiers
                     if version_specs:
                         spec_pattern = r'([><=!~]+)(\d+(?:\.\d+)*)'
                         specs = re.findall(spec_pattern, version_specs)
                         if specs:
                             requirement += ",".join(f"{op}{ver}" for op, ver in specs)
                         else:
-                            # Если спецификаторы не распознаны, добавляем как есть
+                            # If specifiers not recognized, keep as-is
                             requirement += version_specs.strip()
 
                     active_requirements.append(requirement)
                 else:
-                    # Если строка не соответствует шаблону, добавляем как есть
+                    # If line doesn't match the pattern, keep as-is
                     active_requirements.append(line)
 
         return active_requirements
