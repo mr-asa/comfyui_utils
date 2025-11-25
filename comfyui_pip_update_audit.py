@@ -41,9 +41,40 @@ colorama_init(autoreset=True)
 
 
 # --------- utils ---------
-def load_config(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+def load_or_init_config(path: str) -> dict:
+    """
+    Ensure config.json exists and contains the fields this script needs.
+    Uses requirements_checker's interactive prompts when available.
+    """
+    try:
+        # Import locally to avoid hard dependency if the package is moved
+        from requirements_checker.config_manager import ConfigManager  # type: ignore
+    except Exception:
+        # Fallback: create an empty file if it doesn't exist
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({}, f, indent=4)
+            print(f"Config file created at {path}. Please fill required fields manually.")
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    cm = ConfigManager(path)
+    try:
+        cfg = cm.read_config()
+    except json.JSONDecodeError:
+        cfg = {}
+        cm.write_config(cfg)
+
+    # Prompt for missing essentials so scripts can run on a fresh machine
+    env_type = cm.get_value("env_type")
+    if env_type == "conda":
+        for key in ("conda_path", "conda_env", "conda_env_folder"):
+            cm.get_value(key)
+    elif env_type == "venv":
+        cm.get_value("venv_path")
+
+    cm.get_value("custom_nodes_path")
+    return cm.read_config()
 
 
 def guess_paths(cfg: dict) -> Tuple[str, str]:
@@ -197,7 +228,7 @@ def progress(label: str, i: int, n: int) -> None:
 # --------- main ---------
 def main() -> None:
     here = os.path.abspath(os.path.dirname(__file__))
-    cfg = load_config(os.path.join(here, "config.json"))
+    cfg = load_or_init_config(os.path.join(here, "config.json"))
     comfy_root, custom_nodes = guess_paths(cfg)
     pip = pip_cmd(cfg)
 
@@ -347,4 +378,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

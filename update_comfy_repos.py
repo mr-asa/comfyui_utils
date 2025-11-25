@@ -41,6 +41,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+try:
+    from requirements_checker.config_manager import ConfigManager  # type: ignore
+except Exception:
+    ConfigManager = None  # type: ignore
+
 
 # ANSI colors
 class C:
@@ -121,17 +126,50 @@ class UpdateResult:
     error: Optional[str] = None
 
 
+def load_or_init_config(path: str) -> Dict[str, object]:
+    """Ensure config exists; prompt for custom_nodes_path if possible."""
+    if ConfigManager is None:
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("{}")
+            print(f"Config file created at {path}. Please fill in custom_nodes_path.")
+        try:
+            import json
+            return json.load(open(path, encoding="utf-8"))
+        except Exception:
+            return {}
+
+    cm = ConfigManager(path)
+    try:
+        cfg = cm.read_config()
+    except Exception:
+        cfg = {}
+        cm.write_config(cfg)
+    cm.get_value("custom_nodes_path")
+    return cm.read_config()
+
+
 def main() -> int:
+    here = os.path.abspath(os.path.dirname(__file__))
+    cfg = load_or_init_config(os.path.join(here, "config.json"))
+    default_custom_nodes = cfg.get("custom_nodes_path")
+    default_root = os.path.dirname(default_custom_nodes) if default_custom_nodes else None
+    default_plugins_dir = os.path.basename(default_custom_nodes) if default_custom_nodes else "custom_nodes"
+
     parser = argparse.ArgumentParser(description="Update ComfyUI and its plugins.")
-    parser.add_argument("--root", required=True, help="Path to the ComfyUI repository root")
-    parser.add_argument("--plugins-dir", default="custom_nodes", help="Plugins directory relative to root")
+    parser.add_argument("--root", default=None, help="Path to the ComfyUI repository root")
+    parser.add_argument("--plugins-dir", default=default_plugins_dir, help="Plugins directory relative to root")
     parser.add_argument("--include-disabled", action="store_true", help="Do not ignore folders marked as disabled")
     parser.add_argument("--only", nargs="*", default=None, help="Update only repositories matching these substrings/regex")
     parser.add_argument("--skip", nargs="*", default=None, help="Skip repositories matching these substrings/regex")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without making git changes")
     args = parser.parse_args()
 
-    root = os.path.abspath(args.root)
+    root_arg = args.root or default_root
+    if not root_arg:
+        parser.error("--root is required if config.json lacks custom_nodes_path")
+
+    root = os.path.abspath(root_arg)
     plugins_dir = os.path.join(root, args.plugins_dir)
 
     repos: List[str] = []

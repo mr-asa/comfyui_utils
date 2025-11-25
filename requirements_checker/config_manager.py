@@ -9,7 +9,7 @@ import json
 import sys
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, List, Set
 from dataclasses import dataclass
 
 @dataclass
@@ -73,6 +73,12 @@ class ConfigManager:
         """
         config = self.read_config()
         value = config.get(key)
+
+        # Basic validation for paths to avoid stale/invalid defaults
+        if not check_only and value:
+            if key in ('custom_nodes_path', 'venv_path') and not os.path.exists(value):
+                print(f"Path for '{key}' not found: {value}. Please enter a valid path.")
+                value = None
         
         if check_only or value is not None:
             return value
@@ -87,6 +93,8 @@ class ConfigManager:
             value = self._prompt_conda_env_folder()
         elif key == 'custom_nodes_path':
             value = self._prompt_custom_nodes_path()
+        elif key == 'venv_path':
+            value = self._prompt_venv_path()
         else:
             return None
         
@@ -229,32 +237,148 @@ class ConfigManager:
             print("Invalid path. Please enter a valid directory path.")
 
     def _prompt_custom_nodes_path(self) -> str:
-        """Prompt user for custom nodes path with easy default selection."""
-        default_path = r"f:\ComfyUI\ComfyUI\custom_nodes"
+        """Prompt user for custom nodes path with auto-discovery near ComfyUI."""
+        candidates = self._find_candidate_custom_nodes()
+
+        if candidates:
+            print("Found possible custom_nodes folders:")
+            for idx, path in enumerate(candidates, 1):
+                print(f"  {idx}. {path}")
+
+            while True:
+                choice = input("Choose custom_nodes (Enter for 1st, number, or custom path; 'NO' to exit): ").strip()
+                if choice == "":
+                    candidate = candidates[0]
+                elif choice.upper() == "NO":
+                    sys.exit("Exiting script as requested.")
+                elif choice.isdigit() and 1 <= int(choice) <= len(candidates):
+                    candidate = candidates[int(choice) - 1]
+                else:
+                    candidate = choice
+
+                if os.path.exists(candidate):
+                    return candidate
+                print("Invalid path. Please enter a valid option.")
+
         while True:
-            choice = input(
-                f"Custom nodes path: '{default_path}'. Use it? (Y/N, or enter new path): "
-            ).strip().upper()
-            if choice == 'Y' or choice == '':
-                return default_path
-            elif choice == 'N':
-                break
-            elif choice == 'NO':
+            path = input("Enter custom_nodes path (or 'NO' to exit): ").strip()
+            if path.upper() == "NO":
                 sys.exit("Exiting script as requested.")
-            else:
-                if os.path.exists(choice):
-                    return choice
-                print("Invalid path. Please enter a valid path or choose Y/N.")
-        
-        while True:
-            path = input(f"Enter custom nodes path (default: {default_path}, or 'NO' to exit): ").strip().upper()
-            if path == 'Y' or path == '':
-                return default_path
-            elif path == 'NO':
-                sys.exit("Exiting script as requested.")
-            elif os.path.exists(path):
+            if os.path.exists(path):
                 return path
             print("Invalid path. Please enter a valid directory path.")
+
+    def _prompt_venv_path(self) -> str:
+        """Prompt user for venv path, preferring auto-discovered candidates near ComfyUI."""
+        candidates = self._find_candidate_venvs()
+
+        if candidates:
+            print("Found possible virtual environments:")
+            for idx, path in enumerate(candidates, 1):
+                print(f"  {idx}. {path}")
+
+            while True:
+                choice = input("Choose venv (Enter for 1st, number, or custom path; 'NO' to exit): ").strip()
+                if choice == "":
+                    candidate = candidates[0]
+                elif choice.upper() == "NO":
+                    sys.exit("Exiting script as requested.")
+                elif choice.isdigit() and 1 <= int(choice) <= len(candidates):
+                    candidate = candidates[int(choice) - 1]
+                else:
+                    candidate = choice
+
+                if os.path.exists(candidate):
+                    return candidate
+                print("Invalid path. Please enter a valid option.")
+
+        while True:
+            path = input("Enter venv path (or 'NO' to exit): ").strip()
+            if path.upper() == "NO":
+                sys.exit("Exiting script as requested.")
+            if os.path.exists(path):
+                return path
+            print("Invalid path. Please enter a valid directory path.")
+
+    # -------- helpers --------
+    def _is_windows(self) -> bool:
+        return os.name == "nt"
+
+    def _find_candidate_venvs(self) -> List[str]:
+        """
+        Try to auto-detect venv folders near the ComfyUI tree where this repo lives.
+        Looks for common names and verifies python executable exists inside.
+        """
+        search_roots = self._candidate_roots_near_comfy()
+        names = {"venv", ".venv", "env"}
+        seen: Set[Path] = set()
+        candidates: List[str] = []
+
+        def maybe_add(path: Path) -> None:
+            if path in seen or not path.is_dir():
+                return
+            py = path / ("Scripts/python.exe" if self._is_windows() else "bin/python")
+            if py.exists():
+                candidates.append(str(path))
+                seen.add(path)
+
+        for root in search_roots:
+            if not root.exists():
+                continue
+            for child in root.iterdir():
+                lname = child.name.lower()
+                if lname in names or lname.startswith("env"):
+                    maybe_add(child)
+            # Also consider the root itself if it's named like a venv folder
+            if root.name.lower() in names or root.name.lower().startswith("env"):
+                maybe_add(root)
+
+        return candidates
+
+    def _find_candidate_custom_nodes(self) -> List[str]:
+        """
+        Auto-detect custom_nodes folders near the ComfyUI tree.
+        """
+        search_roots = self._candidate_roots_near_comfy()
+        candidates: List[str] = []
+        seen: Set[Path] = set()
+
+        for root in search_roots:
+            if not root.exists():
+                continue
+            if root.name.lower() == "comfyui":
+                cn = root / "custom_nodes"
+                if cn.is_dir() and cn not in seen:
+                    candidates.append(str(cn))
+                    seen.add(cn)
+            for child in root.iterdir():
+                if child.name.lower() == "custom_nodes" and child.is_dir() and child not in seen:
+                    candidates.append(str(child))
+                    seen.add(child)
+        return candidates
+
+    def _candidate_roots_near_comfy(self) -> List[Path]:
+        """
+        Build a small list of paths near this repo, stopping at the nearest ComfyUI folder
+        or a few parents to avoid scanning too high.
+        """
+        here = Path(__file__).resolve()
+        search_roots: List[Path] = []
+
+        for p in here.parents:
+            search_roots.append(p)
+            if p.name.lower() == "comfyui":
+                break
+            if len(search_roots) >= 3:
+                break
+
+        # Add parent of the highest collected root to catch sibling envs
+        if search_roots:
+            top_parent = search_roots[-1].parent
+            if top_parent not in search_roots:
+                search_roots.append(top_parent)
+
+        return search_roots
 
     def get_environment_config(self) -> EnvironmentConfig:
         """
