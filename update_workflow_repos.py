@@ -177,6 +177,10 @@ def main() -> int:
     print(f"Updating repositories in: {workflows_dir}\n")
 
     for child in sorted(workflows_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        if not (child / ".git").exists():
+            continue
         report = update_repo(child)
         print_report(report)
 
