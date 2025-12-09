@@ -5,3 +5,4 @@ example.py
 __pycache__*
 *.log
 tmp_*
+*.txt

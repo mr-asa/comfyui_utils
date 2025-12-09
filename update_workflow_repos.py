@@ -5,7 +5,7 @@ Workflow Repo Updater
 =====================
 
 Updates every Git repository located in the relative
-``../user/default/workflows`` directory (relative to this script).
+``../user/default/workflows/github`` directory (relative to this script).
 Non‑Git folders are detected and reported as skipped.
 
 Log format per repository:
@@ -153,15 +153,15 @@ def resolve_workflows_dir(custom_path: str | None) -> Path:
     if custom_path:
         return Path(custom_path).expanduser().resolve()
     base_dir = Path(__file__).resolve().parents[2]
-    return base_dir / "user" / "default" / "workflows"
+    return base_dir / "user" / "default" / "workflows" / "github"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Update Git repos in workflows directory")
+    parser = argparse.ArgumentParser(description="Update Git repos in workflows/github directory")
     parser.add_argument(
         "--root",
         dest="root",
-        help="Optional path to workflows directory (defaults to ../user/default/workflows)",
+        help="Optional path to workflows directory (defaults to ../user/default/workflows/github)",
     )
     return parser.parse_args()
 
