@@ -100,12 +100,13 @@ def find_reqs(folder: str) -> List[str]:
     return [os.path.join(folder, f) for f in os.listdir(folder) if REQ_FILE_RE.match(f)]
 
 
-def parse_req_file(path: str) -> List[Requirement]:
+def parse_req_file(path: str) -> Tuple[List[Requirement], List[str]]:
     try:
         txt = open(path, encoding="utf-8").read()
     except Exception:
-        return []
+        return [], []
     reqs: List[Requirement] = []
+    extras: List[str] = []
     for line in txt.splitlines():
         s = line.strip()
         if not s or s.startswith("#") or s.startswith("-"):
@@ -113,8 +114,9 @@ def parse_req_file(path: str) -> List[Requirement]:
         try:
             reqs.append(Requirement(s))
         except Exception:
-            pass
-    return reqs
+            # Keep unparsed entries (e.g. VCS/URL requirements) so we can surface them later
+            extras.append(s)
+    return reqs, extras
 
 
 @dataclass
@@ -265,15 +267,22 @@ def main() -> None:
 
     # Collect constraints from requirements
     allc: Dict[str, List[SourceConstraint]] = {}
+    extra_reqs: List[Tuple[str, str, str]] = []  # repo, file, raw line
     for reqf in find_reqs(comfy_root):
-        for r in parse_req_file(reqf):
+        reqs, extras = parse_req_file(reqf)
+        for r in reqs:
             n = canonicalize_name(r.name)
             allc.setdefault(n, []).append(SourceConstraint("ComfyUI", reqf, r.specifier))
+        for raw in extras:
+            extra_reqs.append(("ComfyUI", reqf, raw))
     for pl in plugin_dirs(custom_nodes):
         for reqf in find_reqs(pl):
-            for r in parse_req_file(reqf):
+            reqs, extras = parse_req_file(reqf)
+            for r in reqs:
                 n = canonicalize_name(r.name)
                 allc.setdefault(n, []).append(SourceConstraint(os.path.basename(pl), reqf, r.specifier))
+            for raw in extras:
+                extra_reqs.append((os.path.basename(pl), reqf, raw))
 
     names = sorted(allc)
     reports: Dict[str, PackageReport] = {}
@@ -286,9 +295,16 @@ def main() -> None:
     # PyPI info
     for i, n in enumerate(names, 1):
         vs = fetch_pypi(n)
-        reports[n].available_versions = vs
-        specs = [c.spec for c in reports[n].constraints if str(c.spec)]
-        reports[n].max_allowed = choose_max(vs, specs)
+        rpt = reports[n]
+        rpt.available_versions = vs
+        specs = [c.spec for c in rpt.constraints if str(c.spec)]
+        rpt.max_allowed = choose_max(vs, specs)
+        if specs and not rpt.max_allowed:
+            uniq_specs = ", ".join(sorted(set(str(s) for s in specs)))
+            if not vs:
+                rpt.update_error = f"No releases found on PyPI; constraint(s): {uniq_specs}"
+            else:
+                rpt.update_error = f"No release satisfies {uniq_specs}; latest available is {vs[-1]}"
         progress(f"PyPI ({n})", i, len(names))
 
     # Candidates
@@ -352,6 +368,8 @@ def main() -> None:
             s = str(c.spec) if str(c.spec) else "(no specifier)"
             print(f"    - {c.repo} [requirements.txt] requires {Fore.YELLOW}{s}{Style.RESET_ALL}")
         print(" - Max allowed:", Fore.CYAN if tgt else Fore.RED, (tgt or "-"), Style.RESET_ALL)
+        if r.update_error:
+            print(" - Constraint issue:", Fore.RED + (r.update_error or "") + Style.RESET_ALL)
 
         if action == "install":
             print(" - Update: " + Fore.RED + f"Not installed; will be added at {tgt}" + Style.RESET_ALL)
@@ -374,6 +392,13 @@ def main() -> None:
     if downgrades:
         down_cmd = " ".join(pip) + " install " + cmdline(downgrades)
         print("Downgrades:\n  " + Fore.BLUE + down_cmd + Style.RESET_ALL)
+    if extra_reqs:
+        extra_unique = sorted(set(raw for _, _, raw in extra_reqs))
+        print("VCS/URL requirements:")
+        for repo, file, raw in extra_reqs:
+            print(f"  - {repo} [{file}] -> {raw}")
+        extra_cmd = " ".join(pip) + " install " + " ".join(extra_unique)
+        print("Install VCS/URL entries:\n  " + Fore.BLUE + extra_cmd + Style.RESET_ALL)
 
 
 if __name__ == "__main__":
