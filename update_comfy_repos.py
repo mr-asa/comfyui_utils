@@ -35,6 +35,7 @@ import argparse
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -45,6 +46,18 @@ try:
     from requirements_checker.config_manager import ConfigManager  # type: ignore
 except Exception:
     ConfigManager = None  # type: ignore
+
+
+def _configure_console_encoding() -> None:
+    # Avoid UnicodeEncodeError on Windows consoles with non-UTF encodings (e.g. cp1251).
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(errors="replace")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
+_configure_console_encoding()
 
 
 # ANSI colors
@@ -69,6 +82,7 @@ class UpdateResult:
     commit_messages: List[str]
     numstat: List[Tuple[int, int, str]]
     notes: List[str]
+    skipped: Optional[str] = None
     error: Optional[str] = None
 
 IGNORED_DIRS = {"__pycache__", ".idea", ".vscode", "venv", "env", ".disabled"}
@@ -112,18 +126,6 @@ BRANCH_OVERRIDES: Dict[str, str] = {
 AUTO_INIT_MISSING_GIT = False
 
 # ========================================================================
-
-@dataclass
-class UpdateResult:
-    name: str
-    path: str
-    web_url: str
-    branch: str
-    changed: bool
-    commit_messages: List[str]
-    numstat: List[Tuple[int, int, str]]  # (added, deleted, path)
-    notes: List[str]
-    error: Optional[str] = None
 
 
 def load_or_init_config(path: str) -> Dict[str, object]:
@@ -246,6 +248,76 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
     if not ok:
         return UpdateResult(name, path, web_url, branch, False, [], [], ["git fetch failed"], error=(err or out).strip())
 
+    # Local changes: ask what to do before pulling (so we don't spam an error log)
+    dirty, status_out = repo_dirty(path)
+    stashed = False
+    if dirty and not dry_run:
+        local_lines = summarize_porcelain(status_out, limit=30)
+        if local_lines:
+            notes.append("Local changes (git status --porcelain):")
+            notes.extend(["  " + ln for ln in local_lines])
+        action = prompt_local_changes_action(name, path, web_url, branch, status_out)
+        if action == "3":
+            return UpdateResult(
+                name,
+                path,
+                web_url,
+                branch,
+                False,
+                [],
+                [],
+                notes + ["Skipped due to local changes (user choice)."],
+                skipped="Local changes present",
+                error=None,
+            )
+        if action == "4":
+            remote_url = get_remote_url(path) or ""
+            ok, info = reclone_repo(path, remote_url, branch)
+            if not ok:
+                return UpdateResult(
+                    name,
+                    path,
+                    web_url,
+                    branch,
+                    False,
+                    [],
+                    [],
+                    notes + ["Re-clone failed."],
+                    error=info,
+                )
+
+            # After re-clone, compute changes vs old_head when possible
+            new_head = get_head_commit(path)
+            changed = (new_head and new_head != old_head)
+            commit_msgs = get_commit_messages(path, old_head, new_head) if changed else []
+            numstat = get_numstat(path, old_head, new_head) if changed else []
+            notes.append(info)
+            return UpdateResult(name, path, web_url, branch, changed, commit_msgs, numstat, notes, error=None)
+        if action == "1":
+            ok, out, err = run_git(["reset", "--hard"], cwd=path)
+            if not ok:
+                return UpdateResult(
+                    name, path, web_url, branch, False, [], [], notes, error=f"git reset --hard failed: {(err or out).strip()}"
+                )
+            ok, out, err = run_git(["clean", "-fd"], cwd=path)
+            if not ok:
+                return UpdateResult(
+                    name, path, web_url, branch, False, [], [], notes, error=f"git clean -fd failed: {(err or out).strip()}"
+                )
+            notes.append("Local changes discarded (reset --hard + clean -fd).")
+        if action == "2":
+            stash_msg = f"comfyui-updater {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            ok, out, err = run_git(["stash", "push", "-u", "-m", stash_msg], cwd=path)
+            if not ok:
+                return UpdateResult(
+                    name, path, web_url, branch, False, [], [], notes, error=f"git stash failed: {(err or out).strip()}"
+                )
+            if "no local changes" in (out + err).lower():
+                notes.append("No stash created (no local changes to save).")
+            else:
+                stashed = True
+                notes.append(f"Stashed local changes: {stash_msg}")
+
     # Pull
     pull_args = ["pull", "--rebase"]
     if dry_run:
@@ -257,7 +329,35 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
         ok, out, err = run_git(pull_args, cwd=path)
         if not ok:
             tips = remedy_pull_failure(out, err)
-            return UpdateResult(name, path, web_url, branch, False, [], [], tips, error=f"git pull failed: {(err or out).strip()}")
+            combined = (out or "") + "\n" + (err or "")
+            conflict_paths = extract_conflict_paths(combined)
+            if conflict_paths:
+                tips = tips + ["Conflicting paths:"] + [f"  {p}" for p in conflict_paths]
+            return UpdateResult(
+                name,
+                path,
+                web_url,
+                branch,
+                False,
+                [],
+                [],
+                tips,
+                error=f"git pull failed: {(err or out).strip()}",
+            )
+
+        if stashed:
+            ok, out, err = run_git(["stash", "pop"], cwd=path)
+            if not ok:
+                notes.append("Stash pop reported conflicts; resolve manually (stash likely kept).")
+                details = (err or out).strip()
+                if details:
+                    notes.append("stash pop output: " + details)
+                conflict_paths = extract_conflict_paths((out or "") + "\n" + (err or ""))
+                if conflict_paths:
+                    notes.append("stash pop conflicting paths:")
+                    notes.extend(["  " + p for p in conflict_paths])
+            else:
+                notes.append("Restored local changes (stash pop).")
 
         # New HEAD
         new_head = get_head_commit(path)
@@ -282,6 +382,181 @@ def run_git(args: List[str], cwd: str) -> Tuple[bool, str, str]:
         return proc.returncode == 0, out, err
     except FileNotFoundError:
         return False, "", "Git not found in PATH. Install Git."
+
+
+def repo_dirty(path: str) -> Tuple[bool, str]:
+    # Ignore untracked files in the "local changes" prompt to keep logs short.
+    # Conflicting/untracked paths that block a pull are still captured from git pull output.
+    ok, out, err = run_git(["status", "--porcelain", "--untracked-files=no"], cwd=path)
+    if not ok:
+        return False, (err or out).strip()
+    return bool(out.strip()), out.strip()
+
+
+def summarize_porcelain(status_out: str, limit: int = 30) -> List[str]:
+    lines = [ln.rstrip() for ln in status_out.splitlines() if ln.strip()]
+    if not lines:
+        return []
+    if len(lines) <= limit:
+        return lines
+    return lines[:limit] + [f"... (+{len(lines) - limit} more)"]
+
+
+def extract_conflict_paths(git_output: str, limit: int = 40) -> List[str]:
+    """
+    Best-effort extraction of file paths from common Git conflict messages.
+    Useful to show which files are blocking the update.
+    """
+    out = git_output or ""
+    paths: List[str] = []
+
+    if "would be overwritten by merge" in out.lower():
+        in_list = False
+        for line in out.splitlines():
+            l = line.rstrip("\r\n")
+            if "would be overwritten by merge" in l.lower():
+                in_list = True
+                continue
+            if in_list:
+                if not l.strip():
+                    break
+                if l.lstrip().lower().startswith(("please", "aborting", "hint:")):
+                    break
+                candidate = l.strip()
+                if candidate:
+                    paths.append(candidate)
+                    if len(paths) >= limit:
+                        break
+
+    if len(paths) < limit:
+        m = re.compile(r"^CONFLICT .* in (.+)$")
+        for line in out.splitlines():
+            mm = m.match(line.strip())
+            if mm:
+                paths.append(mm.group(1).strip())
+                if len(paths) >= limit:
+                    break
+
+    if len(paths) < limit and "untracked working tree files would be overwritten" in out.lower():
+        in_list = False
+        for line in out.splitlines():
+            l = line.rstrip("\r\n")
+            if "untracked working tree files would be overwritten" in l.lower():
+                in_list = True
+                continue
+            if in_list:
+                if not l.strip():
+                    break
+                candidate = l.strip()
+                if candidate and not candidate.lower().startswith(("please", "aborting", "hint:")):
+                    paths.append(candidate)
+                    if len(paths) >= limit:
+                        break
+
+    seen = set()
+    uniq: List[str] = []
+    for p in paths:
+        if p not in seen:
+            uniq.append(p)
+            seen.add(p)
+    return uniq
+
+
+def prompt_local_changes_action(name: str, path: str, web_url: str, branch: str, status_out: str) -> str:
+    print(f"\t{C.YELLOW}⚠️  Local changes detected.{C.RESET}")
+    if web_url:
+        print(f"\t   Repo: {C.MAGENTA}{web_url}{C.RESET}")
+    print(f"\t   Path: {path}")
+    if branch:
+        print(f"\t   Branch: {branch}")
+    preview = summarize_porcelain(status_out, limit=12)
+    if preview:
+        print(f"\t   {C.GRAY}git status --porcelain:{C.RESET}")
+        for ln in preview:
+            print(f"\t   {C.GRAY}{ln}{C.RESET}")
+
+    print("\tChoose an action:")
+    print("\t  1 - replace from remote (discard local changes)")
+    print("\t  2 - merge with local changes (update, then re-apply my changes)")
+    print("\t  3 - skip this repository and continue")
+    print("\t  4 - re-clone repository (overwrite folder completely)")
+
+    if not sys.stdin.isatty():
+        print(f"\t{C.GRAY}stdin is not interactive; defaulting to option 3 (skip).{C.RESET}")
+        return "3"
+
+    while True:
+        try:
+            choice = input("\tYour choice [1/2/3/4] (default 3): ").strip() or "3"
+        except (EOFError, KeyboardInterrupt):
+            return "3"
+        if choice in {"1", "2", "3", "4"}:
+            return choice
+        print("\tPlease enter 1, 2, 3, or 4.")
+
+
+def reclone_repo(path: str, remote_url: str, branch: str) -> Tuple[bool, str]:
+    """
+    Re-clone the repository into the same folder name:
+      1) clone into a temp folder in parent dir
+      2) rename current folder to .bak_<timestamp>
+      3) rename temp -> original
+      4) delete backup
+    """
+    if not remote_url:
+        return False, "Missing remote URL (origin)."
+
+    parent = os.path.dirname(path.rstrip(os.sep))
+    base = os.path.basename(path.rstrip(os.sep))
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tmp = os.path.join(parent, f"{base}.tmp_clone_{ts}")
+    bak = os.path.join(parent, f"{base}.bak_{ts}")
+
+    clone_args = ["clone", "--no-tags", "--depth", "1"]
+    if branch and branch != "DETACHED":
+        clone_args += ["--branch", branch]
+    clone_args += [remote_url, tmp]
+
+    ok, out, err = run_git(clone_args, cwd=parent)
+    if not ok:
+        try:
+            if os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+        return False, (err or out).strip() or "git clone failed"
+
+    try:
+        os.replace(path, bak)
+    except Exception as e:
+        try:
+            if os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+        return False, f"Failed to rename existing folder to backup: {e}"
+
+    try:
+        os.replace(tmp, path)
+    except Exception as e:
+        # Attempt rollback
+        try:
+            os.replace(bak, path)
+        except Exception:
+            pass
+        try:
+            if os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+        return False, f"Failed to move fresh clone into place: {e}"
+
+    try:
+        shutil.rmtree(bak, ignore_errors=True)
+    except Exception:
+        pass
+
+    return True, "Repository re-cloned (local folder overwritten)."
 
 
 def get_remote_url(path: str, remote: str = "origin") -> str:
@@ -390,6 +665,13 @@ def print_report(res: UpdateResult) -> None:
 
     if res.branch:
         print(f"\t➡️  branch: {C.YELLOW}{res.branch}{C.RESET}")
+
+    if res.skipped:
+        print(f"\t{C.GRAY}⏭️  Skipped: {res.skipped}{C.RESET}")
+        for n in res.notes:
+            print(f"\t{C.GRAY}{n}{C.RESET}")
+        print()
+        return
 
     if res.error:
         print(f"\t❌ {C.RED}ERROR: {res.error}{C.RESET}")
