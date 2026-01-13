@@ -71,7 +71,9 @@ def load_or_init_config(path: str) -> dict:
         for key in ("conda_path", "conda_env", "conda_env_folder"):
             cm.get_value(key)
     elif env_type == "venv":
-        cm.get_value("venv_path")
+        cfg_now = cm.read_config()
+        if not cfg_now.get("venv_path") and not cfg_now.get("venv_paths"):
+            cm.get_value("venv_path")
 
     cm.get_value("custom_nodes_path")
     return cm.read_config()
@@ -117,6 +119,122 @@ def parse_req_file(path: str) -> Tuple[List[Requirement], List[str]]:
             # Keep unparsed entries (e.g. VCS/URL requirements) so we can surface them later
             extras.append(s)
     return reqs, extras
+
+
+def _norm_path(path: str) -> str:
+    return os.path.normpath(path.strip())
+
+
+def _unique_paths(paths: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for p in paths:
+        if not p:
+            continue
+        norm = os.path.normcase(os.path.normpath(p))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(os.path.normpath(p))
+    return out
+
+
+def _load_venv_paths(cfg: dict) -> List[str]:
+    paths: List[str] = []
+    venv_paths = cfg.get("venv_paths")
+    if isinstance(venv_paths, list):
+        for p in venv_paths:
+            if isinstance(p, str) and p.strip():
+                paths.append(p.strip())
+    venv_path = cfg.get("venv_path")
+    if isinstance(venv_path, str) and venv_path.strip():
+        paths.append(venv_path.strip())
+    return _unique_paths(paths)
+
+
+def _save_config(path: str, cfg: dict) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4)
+
+
+def _venv_has_pip(path: str) -> bool:
+    pip_exe = os.path.join(path, "Scripts", "pip.exe")
+    pip_bin = os.path.join(path, "bin", "pip")
+    return os.path.exists(pip_exe) or os.path.exists(pip_bin)
+
+
+def _confirm_venv_path(path: str) -> bool:
+    if not os.path.isdir(path):
+        print("Path does not exist.")
+        return False
+    if not _venv_has_pip(path):
+        ans = input("Pip not found in this venv. Use anyway? [y/N]: ").strip().lower()
+        if ans not in ("y", "yes"):
+            return False
+    return True
+
+
+def select_venv(cfg: dict, config_path: str) -> dict:
+    paths = _load_venv_paths(cfg)
+    current = cfg.get("venv_path") or ""
+    current_norm = os.path.normcase(os.path.normpath(current)) if current else ""
+    if not paths:
+        print("No venv paths found in config.")
+
+    while True:
+        print(Style.BRIGHT + "--> Select venv for updates <--" + Style.RESET_ALL)
+        for idx, p in enumerate(paths, 1):
+            mark = "*" if current_norm and os.path.normcase(os.path.normpath(p)) == current_norm else " "
+            print(f" {idx}){mark} {p}")
+        print(" A) Add new venv")
+        if paths:
+            default_idx = 1
+            if current_norm:
+                for i, p in enumerate(paths, 1):
+                    if os.path.normcase(os.path.normpath(p)) == current_norm:
+                        default_idx = i
+                        break
+            choice = input(f"Choice [{default_idx}]: ").strip()
+        else:
+            choice = input("Choice [A]: ").strip()
+
+        if not choice:
+            if paths:
+                selected = paths[default_idx - 1]
+                if _confirm_venv_path(selected):
+                    break
+                continue
+            choice = "A"
+
+        if choice.lower() in ("a", "add", "n", "new"):
+            new_path = input("New venv path: ").strip()
+            if not new_path:
+                print("No path provided.")
+                continue
+            new_path = _norm_path(new_path)
+            if not _confirm_venv_path(new_path):
+                continue
+            paths = _unique_paths(paths + [new_path])
+            selected = new_path
+            break
+
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(paths):
+                selected = paths[idx - 1]
+                if not _confirm_venv_path(selected):
+                    continue
+                break
+
+        print("Invalid choice, try again.")
+
+    cfg["venv_path"] = selected
+    cfg["venv_paths"] = paths
+    try:
+        _save_config(config_path, cfg)
+    except Exception as e:
+        print(f"Warning: failed to update config.json: {e}")
+    return cfg
 
 
 @dataclass
@@ -212,6 +330,16 @@ def choose_max(versions: List[Version], specs: List[SpecifierSet]) -> Optional[V
 
 
 def pip_cmd(cfg: dict) -> List[str]:
+    env_type = (cfg.get("env_type") or "").lower()
+    if env_type == "venv":
+        venv = cfg.get("venv_path") or ""
+        if venv:
+            c = os.path.join(venv, "Scripts", "pip.exe")
+            if os.path.exists(c):
+                return [c]
+            c = os.path.join(venv, "bin", "pip")
+            if os.path.exists(c):
+                return [c]
     env = cfg.get("conda_env_folder") or cfg.get("conda_env") or ""
     if env:
         c = os.path.join(env, "Scripts", "pip.exe")
@@ -350,7 +478,10 @@ def progress(label: str, i: int, n: int) -> None:
 # --------- main ---------
 def main() -> None:
     here = os.path.abspath(os.path.dirname(__file__))
-    cfg = load_or_init_config(os.path.join(here, "config.json"))
+    cfg_path = os.path.join(here, "config.json")
+    cfg = load_or_init_config(cfg_path)
+    if (cfg.get("env_type") or "").lower() == "venv":
+        cfg = select_venv(cfg, cfg_path)
     comfy_root, custom_nodes = guess_paths(cfg)
     pip = pip_cmd(cfg)
 
