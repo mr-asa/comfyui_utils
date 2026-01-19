@@ -40,12 +40,15 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 try:
     from requirements_checker.config_manager import ConfigManager  # type: ignore
 except Exception:
     ConfigManager = None  # type: ignore
+
+from comfyui_root import default_custom_nodes, resolve_comfyui_root
 
 
 def _configure_console_encoding() -> None:
@@ -129,7 +132,7 @@ AUTO_INIT_MISSING_GIT = False
 
 
 def load_or_init_config(path: str) -> Dict[str, object]:
-    """Ensure config exists; prompt for custom_nodes_path if possible."""
+    """Ensure config exists and return current settings."""
     if ConfigManager is None:
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8") as f:
@@ -147,40 +150,43 @@ def load_or_init_config(path: str) -> Dict[str, object]:
     except Exception:
         cfg = {}
         cm.write_config(cfg)
-    cm.get_value("custom_nodes_path")
-    return cm.read_config()
+    return cfg
 
 
 def main() -> int:
     here = os.path.abspath(os.path.dirname(__file__))
-    cfg = load_or_init_config(os.path.join(here, "config.json"))
-    default_custom_nodes = cfg.get("custom_nodes_path")
-    default_root = os.path.dirname(default_custom_nodes) if default_custom_nodes else None
-    default_plugins_dir = os.path.basename(default_custom_nodes) if default_custom_nodes else "custom_nodes"
-
+    config_path = os.path.join(here, "config.json")
+    cfg = load_or_init_config(config_path)
     parser = argparse.ArgumentParser(description="Update ComfyUI and its plugins.")
     parser.add_argument("--root", default=None, help="Path to the ComfyUI repository root")
-    parser.add_argument("--plugins-dir", default=default_plugins_dir, help="Plugins directory relative to root")
+    parser.add_argument("--plugins-dir", default=None, help="Plugins directory relative to root")
     parser.add_argument("--include-disabled", action="store_true", help="Do not ignore folders marked as disabled")
     parser.add_argument("--only", nargs="*", default=None, help="Update only repositories matching these substrings/regex")
     parser.add_argument("--skip", nargs="*", default=None, help="Skip repositories matching these substrings/regex")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without making git changes")
     args = parser.parse_args()
 
-    root_arg = args.root or default_root
-    if not root_arg:
-        parser.error("--root is required if config.json lacks custom_nodes_path")
-
-    root = os.path.abspath(root_arg)
-    plugins_dir = os.path.join(root, args.plugins_dir)
+    comfy_root = resolve_comfyui_root(config_path, cli_root=args.root, start_path=Path(here))
+    if args.plugins_dir:
+        plugins_dir = os.path.join(str(comfy_root), args.plugins_dir)
+    else:
+        cfg_custom_nodes = cfg.get("custom_nodes_path")
+        if isinstance(cfg_custom_nodes, str) and cfg_custom_nodes.strip():
+            custom_nodes_path = Path(cfg_custom_nodes).expanduser().resolve()
+            if custom_nodes_path.is_dir() and custom_nodes_path.parent == comfy_root:
+                plugins_dir = str(custom_nodes_path)
+            else:
+                plugins_dir = str(default_custom_nodes(comfy_root))
+        else:
+            plugins_dir = str(default_custom_nodes(comfy_root))
 
     repos: List[str] = []
 
     # 1) Add the main ComfyUI repo (root)
-    if os.path.isdir(os.path.join(root, ".git")):
-        repos.append(root)
+    if os.path.isdir(os.path.join(str(comfy_root), ".git")):
+        repos.append(str(comfy_root))
     else:
-        print("Warning: root path is not a git repository:", root)
+        print("Warning: root path is not a git repository:", comfy_root)
 
     # 2) Then scan plugins from plugins_dir (top-level directories only)
     if os.path.isdir(plugins_dir):

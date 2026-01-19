@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
 
+from comfyui_root import default_workflows_dir, resolve_comfyui_root
 
 def _configure_console_encoding() -> None:
     for s in (sys.stdout, sys.stderr):
@@ -563,11 +564,16 @@ def print_report(report: RepoReport) -> None:
         print(f" {C.GREEN}No changes{C.RESET}\n")
 
 
-def resolve_workflows_dir(custom_path: str | None) -> Path:
+def resolve_workflows_dir(
+    custom_path: str | None,
+    config_path: str,
+    comfyui_root_arg: str | None,
+    start_path: Path,
+) -> Path:
     if custom_path:
         return Path(custom_path).expanduser().resolve()
-    base_dir = Path(__file__).resolve().parents[2]
-    return base_dir / "user" / "default" / "workflows" / "github"
+    comfy_root = resolve_comfyui_root(config_path, cli_root=comfyui_root_arg, start_path=start_path)
+    return default_workflows_dir(comfy_root)
 
 
 def parse_args() -> argparse.Namespace:
@@ -577,12 +583,21 @@ def parse_args() -> argparse.Namespace:
         dest="root",
         help="Optional path to workflows directory (defaults to ../user/default/workflows/github)",
     )
+    parser.add_argument(
+        "--comfyui-root",
+        dest="comfyui_root",
+        help="Optional path to ComfyUI root (used when --root is not provided)",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    workflows_dir = resolve_workflows_dir(args.root)
+    script_dir = Path(__file__).resolve().parent
+    config_path = str(script_dir / "config.json")
+    workflows_dir = resolve_workflows_dir(
+        args.root, config_path, args.comfyui_root, script_dir
+    )
 
     if not workflows_dir.exists():
         print(f"Workflows directory not found: {workflows_dir}")

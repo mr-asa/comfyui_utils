@@ -5,6 +5,7 @@ from typing import Optional, Tuple, List
 import os
 import ctypes
 
+from comfyui_root import default_workflows_dir, resolve_comfyui_root
 
 # Simple ANSI color helper with Windows enablement
 def _enable_ansi_on_windows() -> None:
@@ -46,7 +47,9 @@ def prompt_exit() -> None:
 
 def pick_target_root(script_dir: Path) -> Optional[Path]:
     repos_file = script_dir / "clone-workflow_repos.txt"
-    default_target = (script_dir / ".." / ".." / "user" / "default" / "workflows" / "github").resolve()
+    config_path = str(script_dir / "config.json")
+    comfy_root = resolve_comfyui_root(config_path, start_path=script_dir)
+    default_target = default_workflows_dir(comfy_root).resolve()
 
     info(f"Default clone path: {default_target}")
     print("1 - yes")

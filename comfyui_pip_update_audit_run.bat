@@ -31,6 +31,6 @@ if errorlevel 1 if exist "%VENV_PY%" set "PYTHON_EXE=%VENV_PY%"
 @REM echo SCRIPT_DIR = %SCRIPT_DIR%
 @REM echo PYTHON_EXE = %PYTHON_EXE%
 
-"%PYTHON_EXE%" "%SCRIPT_DIR%comfyui_pip_update_audit.py"
+"%PYTHON_EXE%" "%SCRIPT_DIR%comfyui_pip_update_audit.py" %*
 
 pause
