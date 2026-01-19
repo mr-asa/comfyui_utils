@@ -168,7 +168,7 @@ def _split_items(raw_items: list[str]) -> list[str]:
 
 def _load_json(path: str) -> dict:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -306,7 +306,7 @@ def load_or_init_config(path: str) -> dict:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({}, f, indent=4)
             print(f"Config file created at {path}. Please fill required fields manually.")
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
 
     cm = ConfigManager(path)
@@ -326,26 +326,38 @@ def load_or_init_config(path: str) -> dict:
         if not cfg_now.get("venv_path") and not cfg_now.get("venv_paths"):
             cm.get_value("venv_path")
 
-    cm.get_value("custom_nodes_path")
+    cfg_now = cm.read_config()
+    if not cfg_now.get("custom_nodes_path") and not cfg_now.get("custom_nodes_paths"):
+        cm.get_value("custom_nodes_path")
     return cm.read_config()
 
 
-def guess_paths(cfg: dict, comfy_root: Optional[str] = None) -> Tuple[str, str]:
-    cn = cfg.get("custom_nodes_path")
-    if isinstance(cn, str) and cn.strip():
-        return os.path.dirname(str(cn).rstrip("\\/")), str(cn)
-    if comfy_root:
-        root = str(comfy_root)
-        return root, str(default_custom_nodes(Path(root)))
+def guess_paths(cfg: dict, comfy_root: Optional[str] = None) -> Tuple[str, List[str]]:
+    root = str(comfy_root) if comfy_root else ""
+    paths = _load_custom_nodes_paths(cfg, root)
+    if paths:
+        return root or os.path.dirname(paths[0].rstrip("\\/")), paths
     sys.exit("custom_nodes_path missing in config.json")
 
 
 def plugin_dirs(custom_nodes: str) -> List[str]:
     out: List[str] = []
-    for n in sorted(os.listdir(custom_nodes)):
+    if not os.path.isdir(custom_nodes):
+        print(f"custom_nodes_path is not a directory: {custom_nodes}")
+        return out
+    try:
+        entries = sorted(os.listdir(custom_nodes))
+    except OSError as e:
+        print(f"Failed to list custom_nodes_path: {custom_nodes} ({e})")
+        return out
+    for n in entries:
         p = os.path.join(custom_nodes, n)
-        if os.path.isdir(p) and not n.endswith(".disable"):
-            out.append(p)
+        try:
+            if os.path.isdir(p) and not n.endswith(".disable"):
+                out.append(p)
+        except OSError:
+            # Skip broken/inaccessible junctions or special entries
+            continue
     return out
 
 
@@ -396,6 +408,46 @@ def _unique_paths(paths: List[str]) -> List[str]:
         seen.add(norm)
         out.append(os.path.normpath(p))
     return out
+
+
+def _norm_real_path(path: str) -> str:
+    try:
+        return os.path.normcase(os.path.normpath(os.path.realpath(path)))
+    except Exception:
+        return os.path.normcase(os.path.normpath(path))
+
+
+def _dedupe_dirs(paths: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for p in paths:
+        if not p:
+            continue
+        norm = os.path.normcase(os.path.normpath(p))
+        real = _norm_real_path(p)
+        if norm in seen or real in seen:
+            continue
+        if not os.path.isdir(p):
+            continue
+        out.append(os.path.normpath(p))
+        seen.add(norm)
+        seen.add(real)
+    return out
+
+
+def _load_custom_nodes_paths(cfg: dict, comfy_root: str = "") -> List[str]:
+    paths: List[str] = []
+    raw_list = cfg.get("custom_nodes_paths")
+    if isinstance(raw_list, list):
+        for p in raw_list:
+            if isinstance(p, str) and p.strip():
+                paths.append(p.strip())
+    cn = cfg.get("custom_nodes_path")
+    if isinstance(cn, str) and cn.strip():
+        paths.append(cn.strip())
+    if not paths and comfy_root:
+        paths.append(str(default_custom_nodes(Path(comfy_root))))
+    return _dedupe_dirs(paths)
 
 
 def _load_venv_paths(cfg: dict) -> List[str]:
@@ -912,7 +964,7 @@ def main() -> None:
 
     cfg = load_or_init_config(cfg_path)
     comfy_root = resolve_comfyui_root(cfg_path, start_path=Path(here))
-    if not cfg.get("custom_nodes_path"):
+    if not cfg.get("custom_nodes_path") and not cfg.get("custom_nodes_paths"):
         cn_path = default_custom_nodes(comfy_root)
         if cn_path.is_dir():
             cfg["custom_nodes_path"] = str(cn_path)
@@ -922,7 +974,7 @@ def main() -> None:
                 pass
     if (cfg.get("env_type") or "").lower() == "venv":
         cfg = select_venv(cfg, cfg_path)
-    comfy_root, custom_nodes = guess_paths(cfg, comfy_root=str(comfy_root))
+    comfy_root, custom_nodes_paths = guess_paths(cfg, comfy_root=str(comfy_root))
     pip = pip_cmd(cfg)
 
     if args.hold_pkg or args.pin_pkg:
@@ -1035,7 +1087,11 @@ def main() -> None:
             if not nm_c and url:
                 nm_c = infer_name_from_url(url)
             extra_reqs.append(VcsReport("ComfyUI", reqf, raw, nm_c, url, ref))
-    for pl in plugin_dirs(custom_nodes):
+    plugin_paths: List[str] = []
+    for cn in custom_nodes_paths:
+        plugin_paths.extend(plugin_dirs(cn))
+    plugin_paths = _dedupe_dirs(plugin_paths)
+    for pl in plugin_paths:
         for reqf in find_reqs(pl):
             reqs, extras = parse_req_file(reqf)
             for r in reqs:

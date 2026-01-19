@@ -13,6 +13,8 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
   reports skipped non-repo folders.
 - `comfyui_pip_update_audit.py` scans `requirements.txt` in the ComfyUI root and top-level
   custom nodes, compares installed vs latest versions, and prints update commands.
+- `run_comfyui.bat` launches ComfyUI with venv selection and custom-nodes presets via junctions.
+- `custom_nodes_link_manager.py` manages custom nodes junction links (compare repo vs custom_nodes, add/remove).
 - `requirements_checker/` provides a richer requirements audit with config-driven environment
   selection (venv/conda), custom paths, and per-package status reporting.
 - `clone-workflow_repos.py` clones workflow repos from `clone-workflow_repos.txt` into the
@@ -30,10 +32,100 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
   and `extra_model_paths.yaml.example`.
 - If `Comfyui_root` is missing or invalid, the scripts search upward and save it to `config.json`.
 
+## config.json template
+
+Example with comments (JSONC). Remove comments in a real `config.json`.
+
+```jsonc
+{
+  // ComfyUI root (auto-detected, but can be pinned)
+  "Comfyui_root": "C:/ComfyUI/ComfyUI",
+  // Alternative keys for the same value
+  "comfyui_root": "C:/ComfyUI/ComfyUI",
+  "COMFYUI_ROOT": "C:/ComfyUI/ComfyUI",
+
+  // Single custom_nodes path (legacy, still supported)
+  "custom_nodes_path": "C:/ComfyUI/ComfyUI/custom_nodes",
+  // Multiple custom_nodes paths (new). Duplicates/junctions are de-duped.
+  "custom_nodes_paths": [
+    "D:/ComfyUI/custom_nodes",
+    "E:/ComfyUI_nodes"
+  ],
+
+  // Environment type: "venv" or "conda"
+  "env_type": "venv",
+
+  // Venv: active path + known paths
+  "venv_path": "C:/ComfyUI/venv",
+  "venv_paths": [
+    "C:/ComfyUI/venv",
+    "D:/ComfyUI_envs/venv"
+  ],
+
+  // Conda: conda.exe path and environment name/folder
+  "conda_path": "C:/Users/USER/miniconda3/Scripts/conda.exe",
+  "conda_env": "comfyui",
+  "conda_env_folder": "C:/Users/USER/miniconda3/envs/comfyui",
+
+  // Optional project path (used by requirements_checker)
+  "project_path": "C:/ComfyUI",
+
+  // Path to custom nodes repository folder for run_comfyui.bat
+  "custom_nodes_repo_path": "D:/ComfyUI/custom_nodes_repo",
+
+  // Hold/Pin per environment (env_key = venv_path | conda_env_folder | conda_env | "default")
+  "holds": {
+    "C:/ComfyUI/venv": {
+      "hold_packages": ["torch", "torchvision"],
+      "pin_packages": {
+        "numpy": "1.26.4"
+      }
+    },
+    "conda:comfyui": {
+      "hold_packages": ["xformers"],
+      "pin_packages": {}
+    }
+  },
+
+  // Legacy: no per-env scoping (still supported, but prefer "holds")
+  "hold_packages": ["pkg1", "pkg2"],
+  "pin_packages": {
+    "pkg3": "1.2.3"
+  }
+}
+```
+
 ## Launchers
 
 - Windows: `*.bat` files.
 - Linux: `*.sh` equivalents (same names, run with `bash` or `./file.sh`).
+
+## Custom nodes manager (custom_nodes_link_manager.py)
+
+### Concept: moving nodes
+
+Core idea: keep all real nodes in a single `custom_nodes_repo` folder, while
+`custom_nodes` contains only junction links. This gives one source of truth,
+easier maintenance, and fast enable/disable of node sets without moving files.
+
+### Utility
+
+- Shows two columns: folders in `custom_nodes_repo` and active junctions in `custom_nodes`.
+- Commands: `a <n>` add link, `r <n>` remove link, `s` sync, `q` quit.
+- Sync adds missing links and removes extra junctions.
+- `custom_nodes_repo_path` comes from `config.json` or is requested.
+- `custom_nodes_path`/`custom_nodes_paths` defines the target `custom_nodes`.
+
+## ComfyUI launcher (run_comfyui.bat)
+
+- Reads ComfyUI root from `config.json` (`Comfyui_root`/`comfyui_root`/`COMFYUI_ROOT`) or searches upward.
+- Lists `.venv*` folders and launches the selected `python.exe`.
+- Applies custom nodes presets by creating junctions into `custom_nodes` from `custom_nodes_repo`.
+- Cleans only junction folders; real directories are left intact.
+- Presets are defined in `run_comfyui_presets_config.json` (`whitelist`/`blacklist` + `nodes` list).
+- The `current` preset is a no-op.
+- Creates a default `run_comfyui_presets_config.json` on first run if missing.
+- Updates ComfyUI frontend packages before launch.
 
 ## comfyui_pip_update_audit.py highlights
 

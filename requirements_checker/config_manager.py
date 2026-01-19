@@ -49,7 +49,7 @@ class ConfigManager:
         Returns:
             Dict containing configuration data
         """
-        return json.loads(self.config_path.read_text())
+        return json.loads(self.config_path.read_text(encoding="utf-8-sig"))
 
     def write_config(self, config: Dict[str, Any]) -> None:
         """

@@ -1,6 +1,6 @@
 .vscode/*
 /tests.py
-config*.json
+*config*.json
 example.py
 __pycache__*
 *.log

@@ -34,26 +34,75 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+_CUSTOM_NODES_PATHS_CACHE: Optional[List[str]] = None
+
+def _norm_real_path(path: str) -> str:
+    try:
+        return os.path.normcase(os.path.normpath(os.path.realpath(path)))
+    except Exception:
+        return os.path.normcase(os.path.normpath(path))
+
+
+def _dedupe_dirs(paths: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for p in paths:
+        if not p:
+            continue
+        norm = os.path.normcase(os.path.normpath(p))
+        real = _norm_real_path(p)
+        if norm in seen or real in seen:
+            continue
+        if not os.path.isdir(p):
+            continue
+        out.append(os.path.normpath(p))
+        seen.add(norm)
+        seen.add(real)
+    return out
+
+
+def get_custom_nodes_paths() -> List[str]:
+    global _CUSTOM_NODES_PATHS_CACHE
+    if _CUSTOM_NODES_PATHS_CACHE is not None:
+        return _CUSTOM_NODES_PATHS_CACHE
+
+    cfg = config_manager.read_config()
+    paths: List[str] = []
+    raw_list = cfg.get("custom_nodes_paths")
+    if isinstance(raw_list, list):
+        for p in raw_list:
+            if isinstance(p, str) and p.strip():
+                paths.append(p.strip())
+    single = cfg.get("custom_nodes_path")
+    if isinstance(single, str) and single.strip():
+        paths.append(single.strip())
+
+    _CUSTOM_NODES_PATHS_CACHE = _dedupe_dirs(paths)
+    return _CUSTOM_NODES_PATHS_CACHE
+
+
 def simplify_package_name(full_path: str) -> str:
     """Simplify package name based on its location relative to config paths."""
-    custom_nodes_path = config_manager.get_value("custom_nodes_path")
-    if not custom_nodes_path:
+    custom_nodes_paths = get_custom_nodes_paths()
+    if not custom_nodes_paths:
         return os.path.basename(full_path.rstrip(os.sep))  # Fallback
     
-    # Compute ComfyUI root as the parent directory of custom_nodes
-    base_path = os.path.dirname(custom_nodes_path)
-    
+    full_path_norm = os.path.normcase(os.path.normpath(full_path))
+
     # Check if the path is the root requirements.txt
-    root_requirements = os.path.join(base_path, "requirements.txt")
-    if full_path == root_requirements:
-        return "ComfyUI"
+    for cn in custom_nodes_paths:
+        base_path = os.path.dirname(cn)
+        root_requirements = os.path.normcase(os.path.normpath(os.path.join(base_path, "requirements.txt")))
+        if full_path_norm == root_requirements:
+            return "ComfyUI"
     
     # Handle paths inside custom_nodes
-    if full_path.startswith(custom_nodes_path):
-        # Strip custom_nodes_path and take the first segment after it
-        relative_path = full_path[len(custom_nodes_path):].lstrip(os.sep)
-        package_name = relative_path.split(os.sep)[0]
-        return package_name
+    for cn in sorted(custom_nodes_paths, key=len, reverse=True):
+        cn_norm = os.path.normcase(os.path.normpath(cn))
+        if full_path_norm.startswith(cn_norm):
+            relative_path = full_path_norm[len(cn_norm):].lstrip(os.sep)
+            package_name = relative_path.split(os.sep)[0]
+            return package_name
     
     # For other cases return the last path segment
     return os.path.basename(full_path.rstrip(os.sep))
@@ -174,7 +223,13 @@ def main() -> None:
             config_manager.get_value('conda_path')
             config_manager.get_value('conda_env')
             config_manager.get_value('conda_env_folder')
-        custom_nodes_dir = config_manager.get_value('custom_nodes_path')
+        custom_nodes_dirs = get_custom_nodes_paths()
+        if not custom_nodes_dirs:
+            fallback = config_manager.get_value('custom_nodes_path')
+            if fallback:
+                custom_nodes_dirs = _dedupe_dirs([fallback])
+                global _CUSTOM_NODES_PATHS_CACHE
+                _CUSTOM_NODES_PATHS_CACHE = custom_nodes_dirs
 
         requirements_dict = OrderedDict()
 
@@ -184,36 +239,58 @@ def main() -> None:
         env_manager.activate_virtual_environment()
 
         # Add root requirements.txt
-        root_requirements_path = os.path.join(os.path.dirname(custom_nodes_dir), "requirements.txt")
         parser = RequirementsParser()
-        if os.path.exists(root_requirements_path):
-            requirements = parser.get_active_requirements(Path(root_requirements_path))
-            for req in requirements:
-                parsed = parser.parse_conditional_dependencies(req, os.path.dirname(root_requirements_path))
-                for key, value in parsed.items():
-                    if key not in requirements_dict:
-                        requirements_dict[key] = []
-                    if isinstance(value, PackageRequirement):
-                        requirements_dict[key].append([value.extras, value.operator, value.version, value.directory])
-                    else:
-                        requirements_dict[key].append([value.url, None, None, value.directory])
+        seen_root_reqs: set[str] = set()
+        for custom_nodes_dir in custom_nodes_dirs:
+            root_requirements_path = os.path.join(os.path.dirname(custom_nodes_dir), "requirements.txt")
+            root_req_norm = _norm_real_path(root_requirements_path)
+            if root_req_norm in seen_root_reqs:
+                continue
+            seen_root_reqs.add(root_req_norm)
+            if os.path.exists(root_requirements_path):
+                requirements = parser.get_active_requirements(Path(root_requirements_path))
+                for req in requirements:
+                    parsed = parser.parse_conditional_dependencies(req, os.path.dirname(root_requirements_path))
+                    for key, value in parsed.items():
+                        if key not in requirements_dict:
+                            requirements_dict[key] = []
+                        if isinstance(value, PackageRequirement):
+                            requirements_dict[key].append([value.extras, value.operator, value.version, value.directory])
+                        else:
+                            requirements_dict[key].append([value.url, None, None, value.directory])
 
-        # Process custom_nodes
-        if os.path.exists(custom_nodes_dir):
-            for root, dirs, files in os.walk(custom_nodes_dir):
-                for file in files:
-                    if file == 'requirements.txt':
-                        file_path = os.path.join(root, file)
-                        requirements = parser.get_active_requirements(Path(file_path))
-                        for req in requirements:
-                            parsed = parser.parse_conditional_dependencies(req, root)
-                            for key, value in parsed.items():
-                                if key not in requirements_dict:
-                                    requirements_dict[key] = []
-                                if isinstance(value, PackageRequirement):
-                                    requirements_dict[key].append([value.extras, value.operator, value.version, value.directory])
-                                else:
-                                    requirements_dict[key].append([value.url, None, None, value.directory])
+        # Process custom_nodes (top-level only)
+        seen_nodes: set[str] = set()
+        for custom_nodes_dir in custom_nodes_dirs:
+            if not os.path.exists(custom_nodes_dir):
+                continue
+            try:
+                entries = sorted(os.listdir(custom_nodes_dir))
+            except OSError:
+                entries = []
+            for name in entries:
+                if name == ".disabled" or name.endswith(".disable") or name.endswith(".disabled"):
+                    continue
+                node_dir = os.path.join(custom_nodes_dir, name)
+                if not os.path.isdir(node_dir):
+                    continue
+                node_real = _norm_real_path(node_dir)
+                if node_real in seen_nodes:
+                    continue
+                seen_nodes.add(node_real)
+                file_path = os.path.join(node_dir, "requirements.txt")
+                if not os.path.isfile(file_path):
+                    continue
+                requirements = parser.get_active_requirements(Path(file_path))
+                for req in requirements:
+                    parsed = parser.parse_conditional_dependencies(req, node_dir)
+                    for key, value in parsed.items():
+                        if key not in requirements_dict:
+                            requirements_dict[key] = []
+                        if isinstance(value, PackageRequirement):
+                            requirements_dict[key].append([value.extras, value.operator, value.version, value.directory])
+                        else:
+                            requirements_dict[key].append([value.url, None, None, value.directory])
 
         # Further processing of results
         normalized_dict = RequirementsParser.process_requirements_dict(requirements_dict)

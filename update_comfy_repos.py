@@ -130,6 +130,48 @@ AUTO_INIT_MISSING_GIT = False
 
 # ========================================================================
 
+def _norm_real_path(path: str) -> str:
+    try:
+        return os.path.normcase(os.path.normpath(os.path.realpath(path)))
+    except Exception:
+        return os.path.normcase(os.path.normpath(path))
+
+
+def _dedupe_dirs(paths: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for p in paths:
+        if not p:
+            continue
+        norm = os.path.normcase(os.path.normpath(p))
+        real = _norm_real_path(p)
+        if norm in seen or real in seen:
+            continue
+        if not os.path.isdir(p):
+            continue
+        out.append(os.path.normpath(p))
+        seen.add(norm)
+        seen.add(real)
+    return out
+
+
+def _load_plugins_dirs(cfg: Dict[str, object], comfy_root: Path, override_dir: Optional[str]) -> List[str]:
+    if override_dir:
+        return _dedupe_dirs([os.path.join(str(comfy_root), override_dir)])
+
+    paths: List[str] = []
+    raw_list = cfg.get("custom_nodes_paths")
+    if isinstance(raw_list, list):
+        for p in raw_list:
+            if isinstance(p, str) and p.strip():
+                paths.append(p.strip())
+    raw_single = cfg.get("custom_nodes_path")
+    if isinstance(raw_single, str) and raw_single.strip():
+        paths.append(raw_single.strip())
+    if not paths:
+        paths.append(str(default_custom_nodes(comfy_root)))
+    return _dedupe_dirs(paths)
+
 
 def load_or_init_config(path: str) -> Dict[str, object]:
     """Ensure config exists and return current settings."""
@@ -140,7 +182,7 @@ def load_or_init_config(path: str) -> Dict[str, object]:
             print(f"Config file created at {path}. Please fill in custom_nodes_path.")
         try:
             import json
-            return json.load(open(path, encoding="utf-8"))
+            return json.load(open(path, encoding="utf-8-sig"))
         except Exception:
             return {}
 
@@ -167,18 +209,7 @@ def main() -> int:
     args = parser.parse_args()
 
     comfy_root = resolve_comfyui_root(config_path, cli_root=args.root, start_path=Path(here))
-    if args.plugins_dir:
-        plugins_dir = os.path.join(str(comfy_root), args.plugins_dir)
-    else:
-        cfg_custom_nodes = cfg.get("custom_nodes_path")
-        if isinstance(cfg_custom_nodes, str) and cfg_custom_nodes.strip():
-            custom_nodes_path = Path(cfg_custom_nodes).expanduser().resolve()
-            if custom_nodes_path.is_dir() and custom_nodes_path.parent == comfy_root:
-                plugins_dir = str(custom_nodes_path)
-            else:
-                plugins_dir = str(default_custom_nodes(comfy_root))
-        else:
-            plugins_dir = str(default_custom_nodes(comfy_root))
+    plugins_dirs = _load_plugins_dirs(cfg, comfy_root, args.plugins_dir)
 
     repos: List[str] = []
 
@@ -189,7 +220,10 @@ def main() -> int:
         print("Warning: root path is not a git repository:", comfy_root)
 
     # 2) Then scan plugins from plugins_dir (top-level directories only)
-    if os.path.isdir(plugins_dir):
+    seen_repos: set[str] = set()
+    for plugins_dir in plugins_dirs:
+        if not os.path.isdir(plugins_dir):
+            continue
         for name in sorted(os.listdir(plugins_dir)):
             if name in IGNORED_DIRS:
                 continue
@@ -198,6 +232,10 @@ def main() -> int:
                 continue
             if not args.include_disabled and (name.lower().startswith("disabled") or name.lower().endswith(".disabled")):
                 continue
+            real = _norm_real_path(path)
+            if real in seen_repos:
+                continue
+            seen_repos.add(real)
             repos.append(path)
 
     repos = apply_filters(repos, only=args.only, skip=args.skip)

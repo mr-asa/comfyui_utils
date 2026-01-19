@@ -13,6 +13,8 @@
   сообщает о пропущенных папках без Git.
 - `comfyui_pip_update_audit.py` сканирует `requirements.txt` в корне ComfyUI и в верхнем уровне
   `custom_nodes`, сравнивает установленные версии с последними и печатает команды обновления.
+- `run_comfyui.bat` запускает ComfyUI с выбором окружения и пресетами custom nodes через junction.
+- `custom_nodes_link_manager.py` управляет junction-ссылками custom nodes (сравнение repo и custom_nodes, добавление/удаление).
 - `requirements_checker/` дает расширенную проверку требований с выбором окружения (venv/conda),
   пользовательскими путями и статусами по каждому пакету.
 - `clone-workflow_repos.py` клонирует репозитории воркфлоу из `clone-workflow_repos.txt`
@@ -30,10 +32,101 @@
   и `extra_model_paths.yaml.example`.
 - Если `Comfyui_root` отсутствует или невалиден, скрипты ищут корень вверх и сохраняют его в `config.json`.
 
+## config.json (шаблон)
+
+Ниже пример с комментариями (JSONC). В реальном `config.json` комментарии удалить.
+
+```jsonc
+{
+  // Корень ComfyUI (автоопределяется, но можно зафиксировать)
+  "Comfyui_root": "C:/ComfyUI/ComfyUI",
+  // Альтернативные ключи на тот же смысл
+  "comfyui_root": "C:/ComfyUI/ComfyUI",
+  "COMFYUI_ROOT": "C:/ComfyUI/ComfyUI",
+
+  // Один путь к custom_nodes (legacy, поддерживается везде)
+  "custom_nodes_path": "C:/ComfyUI/ComfyUI/custom_nodes",
+  // Несколько путей к custom_nodes (новое). Повторы/Junction-дубликаты отфильтруются.
+  "custom_nodes_paths": [
+    "D:/ComfyUI/custom_nodes",
+    "E:/ComfyUI_nodes"
+  ],
+
+  // Тип окружения: "venv" или "conda"
+  "env_type": "venv",
+
+  // Venv: текущий путь + список известных
+  "venv_path": "C:/ComfyUI/venv",
+  "venv_paths": [
+    "C:/ComfyUI/venv",
+    "D:/ComfyUI_envs/venv"
+  ],
+
+  // Conda: путь к conda.exe и имя/путь окружения
+  "conda_path": "C:/Users/USER/miniconda3/Scripts/conda.exe",
+  "conda_env": "comfyui",
+  "conda_env_folder": "C:/Users/USER/miniconda3/envs/comfyui",
+
+  // Необязательный путь к проекту (используется requirements_checker)
+  "project_path": "C:/ComfyUI",
+
+  // Путь к каталогу-репозиторию custom nodes для run_comfyui.bat
+  "custom_nodes_repo_path": "D:/ComfyUI/custom_nodes_repo",
+
+  // Hold/Pin: пер-окружение (env_key = venv_path | conda_env_folder | conda_env | "default")
+  "holds": {
+    "C:/ComfyUI/venv": {
+      "hold_packages": ["torch", "torchvision"],
+      "pin_packages": {
+        "numpy": "1.26.4"
+      }
+    },
+    "conda:comfyui": {
+      "hold_packages": ["xformers"],
+      "pin_packages": {}
+    }
+  },
+
+  // Legacy: без привязки к окружению (поддерживается, но лучше "holds")
+  "hold_packages": ["pkg1", "pkg2"],
+  "pin_packages": {
+    "pkg3": "1.2.3"
+  }
+}
+```
+
 ## Лаунчеры
 
 - Windows: файлы `*.bat`.
 - Linux: аналоги `*.sh` (запуск через `bash` или `./file.sh`).
+
+## Менеджер custom nodes (custom_nodes_link_manager.py)
+
+### Концепция переноса нод
+
+Основная идея: все реальные ноды хранятся в одном каталоге `custom_nodes_repo`,
+а папка `custom_nodes` содержит только junction-ссылки. Это дает единый источник
+ноды, упрощает обслуживание и позволяет быстро включать/выключать наборы нод
+без перемещения файлов.
+
+### Утилита
+
+- Показывает две колонки: папки в `custom_nodes_repo` и активные junction-ссылки в `custom_nodes`.
+- Команды: `a <n>` добавить ссылку, `r <n>` убрать ссылку, `s` синхронизация, `q` выход.
+- Синхронизация: добавляет отсутствующие ссылки и удаляет лишние (junction).
+- Путь к `custom_nodes_repo` берется из `config.json` (`custom_nodes_repo_path`) или спрашивается.
+- Путь к `custom_nodes` берется из `custom_nodes_path`/`custom_nodes_paths`.
+
+## Загрузчик ComfyUI (run_comfyui.bat)
+
+- Берет корень ComfyUI из `config.json` (ключ `Comfyui_root`/`comfyui_root`/`COMFYUI_ROOT`) или ищет вверх.
+- Показывает список venv `.venv*` и запускает выбранный `python.exe`.
+- Поддерживает пресеты custom nodes через junction в `custom_nodes` из `custom_nodes_repo`.
+- Чистит только junction-папки, реальные каталоги не трогает.
+- Пресеты задаются в `run_comfyui_presets_config.json` (режимы `whitelist`/`blacklist`, список `nodes`).
+- Пресет `current` ничего не меняет.
+- При первом запуске создается дефолтный `run_comfyui_presets_config.json`, если его нет.
+- Перед запуском обновляет frontend-пакеты ComfyUI.
 
 ## Особенности comfyui_pip_update_audit.py
 
