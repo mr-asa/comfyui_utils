@@ -25,7 +25,7 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
 
 ## Path handling
 
-- Scripts no longer assume a fixed folder layout.
+- Scripts not assume a fixed folder layout.
 - `comfyui_root.py` validates a root by checking `custom_nodes`, `models`, `main.py`,
   and `extra_model_paths.yaml.example`.
 - If `Comfyui_root` is missing or invalid, the scripts search upward and save it to `config.json`.
