@@ -15,6 +15,7 @@
   `custom_nodes`, сравнивает установленные версии с последними и печатает команды обновления.
 - `run_comfyui.bat` запускает ComfyUI с выбором окружения и пресетами custom nodes через junction.
 - `custom_nodes_link_manager.py` управляет junction-ссылками custom nodes (сравнение repo и custom_nodes, добавление/удаление).
+- `partial_repo_sync.py` синхронизирует выбранные файлы/папки из git-репозитория в целевой каталог.
 - `requirements_checker/` дает расширенную проверку требований с выбором окружения (venv/conda),
   пользовательскими путями и статусами по каждому пакету.
 - `clone-workflow_repos.py` клонирует репозитории воркфлоу из `clone-workflow_repos.txt`
@@ -116,6 +117,14 @@
 - Синхронизация: добавляет отсутствующие ссылки и удаляет лишние (junction).
 - Путь к `custom_nodes_repo` берется из `config.json` (`custom_nodes_repo_path`) или спрашивается.
 - Путь к `custom_nodes` берется из `custom_nodes_path`/`custom_nodes_paths`.
+
+## Частичная синхронизация репозиториев (partial_repo_sync.py)
+
+- Синхронизирует только выбранные файлы/каталоги из git-репозитория (не весь репозиторий).
+- Использует локальный кэш и git sparse-checkout, затем копирует выбранные пути в `target`.
+- Задания: `partial_repo_sync_config.json` (repo, branch, target, paths).
+- В `paths` можно указать регулярки: `re:^styles/.*\\.json$` или `regex:^styles/` (пути в git с `/`).
+- Запуск через `partial_repo_sync_run.bat`.
 
 ## Загрузчик ComfyUI (run_comfyui.bat)
 

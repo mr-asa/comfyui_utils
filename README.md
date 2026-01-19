@@ -15,6 +15,7 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
   custom nodes, compares installed vs latest versions, and prints update commands.
 - `run_comfyui.bat` launches ComfyUI with venv selection and custom-nodes presets via junctions.
 - `custom_nodes_link_manager.py` manages custom nodes junction links (compare repo vs custom_nodes, add/remove).
+- `partial_repo_sync.py` syncs selected files/folders from a git repo into a target folder.
 - `requirements_checker/` provides a richer requirements audit with config-driven environment
   selection (venv/conda), custom paths, and per-package status reporting.
 - `clone-workflow_repos.py` clones workflow repos from `clone-workflow_repos.txt` into the
@@ -115,6 +116,14 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 - Sync adds missing links and removes extra junctions.
 - `custom_nodes_repo_path` comes from `config.json` or is requested.
 - `custom_nodes_path`/`custom_nodes_paths` defines the target `custom_nodes`.
+
+## Partial repo sync (partial_repo_sync.py)
+
+- Syncs only selected files/directories from a git repo (not the full repo).
+- Uses a local cache and git sparse-checkout, then copies selected paths into `target`.
+- Jobs: `partial_repo_sync_config.json` (repo, branch, target, paths).
+- `paths` can use regex patterns: `re:^styles/.*\\.json$` or `regex:^styles/` (git paths use `/`).
+- Launcher: `partial_repo_sync_run.bat`.
 
 ## ComfyUI launcher (run_comfyui.bat)
 
