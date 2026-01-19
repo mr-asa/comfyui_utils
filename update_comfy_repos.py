@@ -24,7 +24,7 @@ Examples:
 
 Options and overrides:
   - POLICIES: configurable behavior for local changes and pull method.
-  - REMOTE_OVERRIDES: set origin URL for repos where it’s missing.
+  - REMOTE_OVERRIDES: set origin URL for repos where it's missing.
   - BRANCH_OVERRIDES: set branch when HEAD is detached or a custom branch is needed.
 
 Requires only Git installed in PATH.
@@ -74,6 +74,8 @@ class C:
     MAGENTA = "\033[35m"
     GRAY = "\033[90m"
 
+_PRINTED_HEADERS: set[str] = set()
+
 
 @dataclass
 class UpdateResult:
@@ -96,8 +98,8 @@ IGNORED_DIRS = {"__pycache__", ".idea", ".vscode", "venv", "env", ".disabled"}
 #   on_local_changes: "stash" | "commit" | "reset" | "skip" | "abort"
 #   pull_method:      "merge" | "rebase"
 #   pull_from:        "origin" | "upstream"
-#   set_remote_if_missing: True/False — add origin from REMOTE_OVERRIDES if missing
-#   auto_stash_pop:   True/False — automatically run stash pop after a successful pull
+#   set_remote_if_missing: True/False -- add origin from REMOTE_OVERRIDES if missing
+#   auto_stash_pop:   True/False -- automatically run stash pop after a successful pull
 POLICIES: Dict[str, Dict[str, object]] = {
     "default": {
         "on_local_changes": "stash",
@@ -112,7 +114,7 @@ POLICIES: Dict[str, Dict[str, object]] = {
 }
 
 # If a repository is missing origin.url, set it here.
-# Key — repository folder name or absolute path; value — URL.
+# Key -- repository folder name or absolute path; value -- URL.
 REMOTE_OVERRIDES: Dict[str, str] = {
     # "FooNode": "https://github.com/user/FooNode.git",
     # r".*BarNode$": "git@github.com:user/BarNode.git",
@@ -168,6 +170,9 @@ def _load_plugins_dirs(cfg: Dict[str, object], comfy_root: Path, override_dir: O
     raw_single = cfg.get("custom_nodes_path")
     if isinstance(raw_single, str) and raw_single.strip():
         paths.append(raw_single.strip())
+    repo_path = cfg.get("custom_nodes_repo_path")
+    if isinstance(repo_path, str) and repo_path.strip():
+        paths.append(repo_path.strip())
     if not paths:
         paths.append(str(default_custom_nodes(comfy_root)))
     return _dedupe_dirs(paths)
@@ -506,13 +511,24 @@ def extract_conflict_paths(git_output: str, limit: int = 40) -> List[str]:
     return uniq
 
 
-def prompt_local_changes_action(name: str, path: str, web_url: str, branch: str, status_out: str) -> str:
-    print(f"\t{C.YELLOW}⚠️  Local changes detected.{C.RESET}")
+def print_repo_header(name: str, path: str, web_url: str, branch: str) -> None:
+    title = f"{C.BOLD}{C.CYAN}{name}{C.RESET}"
+    print(title)
+
     if web_url:
-        print(f"\t   Repo: {C.MAGENTA}{web_url}{C.RESET}")
-    print(f"\t   Path: {path}")
+        print(f"\t-> {C.MAGENTA}{web_url}{C.RESET}")
+    else:
+        print(f"\t(local path: {path})")
+
     if branch:
-        print(f"\t   Branch: {branch}")
+        print(f"\t-> branch: {C.YELLOW}{branch}{C.RESET}")
+    _PRINTED_HEADERS.add(name)
+
+
+def prompt_local_changes_action(name: str, path: str, web_url: str, branch: str, status_out: str) -> str:
+    print_repo_header(name, path, web_url, branch)
+    print(f"\t{C.YELLOW}Local changes detected.{C.RESET}")
+    print(f"\t   Path: {path}")
     preview = summarize_porcelain(status_out, limit=12)
     if preview:
         print(f"\t   {C.GRAY}git status --porcelain:{C.RESET}")
@@ -537,7 +553,6 @@ def prompt_local_changes_action(name: str, path: str, web_url: str, branch: str,
         if choice in {"1", "2", "3", "4"}:
             return choice
         print("\tPlease enter 1, 2, 3, or 4.")
-
 
 def reclone_repo(path: str, remote_url: str, branch: str) -> Tuple[bool, str]:
     """
@@ -663,9 +678,9 @@ def get_numstat(path: str, old: str, new: str) -> List[Tuple[int, int, str]]:
 def remedy_not_git_repo(name: str, path: str) -> List[str]:
     return [
         "Fix suggestions:",
-        "  • Initialize repository: git init; git remote add origin <URL>; git fetch; git checkout <branch>",
-        "  • Or set REMOTE_OVERRIDES for this name/path and clone/init manually.",
-        "  • If it's just an unpacked folder without git, consider deleting and reinstall via git clone.",
+        "  * Initialize repository: git init; git remote add origin <URL>; git fetch; git checkout <branch>",
+        "  * Or set REMOTE_OVERRIDES for this name/path and clone/init manually.",
+        "  * If it's just an unpacked folder without git, consider deleting and reinstall via git clone.",
         'Script hint: REMOTE_OVERRIDES["%s"] = "https://github.com/user/%s.git"' % (name, name),
     ]
 
@@ -675,23 +690,23 @@ def remedy_pull_failure(out: str, err: str) -> List[str]:
     tips = ["What you can try:"]
     if "would be overwritten by merge" in text or "local changes" in text:
         tips += [
-            "  • You have local edits. Set on_local_changes policy: 'stash' | 'commit' | 'reset' | 'skip' | 'abort'",
+            "  * You have local edits. Set on_local_changes policy: 'stash' | 'commit' | 'reset' | 'skip' | 'abort'",
         ]
     if "divergent branches" in text or "rebase" in text:
         tips += [
-            "  • Branches diverged. Try pull_method='rebase' or resolve conflicts manually.",
+            "  * Branches diverged. Try pull_method='rebase' or resolve conflicts manually.",
         ]
     if "couldn't find remote ref" in text or "repository not found" in text:
         tips += [
-            "  • Check branch/URL existence. Consider BRANCH_OVERRIDES or REMOTE_OVERRIDES.",
+            "  * Check branch/URL existence. Consider BRANCH_OVERRIDES or REMOTE_OVERRIDES.",
         ]
     if "permission denied" in text or "authenticat" in text:
         tips += [
-            "  • Auth issues. Verify SSH keys/tokens or use https URL.",
+            "  * Auth issues. Verify SSH keys/tokens or use https URL.",
         ]
     tips += [
-        "  • If it's a fork, pull from 'upstream' to get upstream changes.",
-        "  • Or skip the problematic repo and return later.",
+        "  * If it's a fork, pull from 'upstream' to get upstream changes.",
+        "  * Or skip the problematic repo and return later.",
     ]
     return tips
 
@@ -699,26 +714,31 @@ def remedy_pull_failure(out: str, err: str) -> List[str]:
 # ------------------------- Reporting -------------------------
 
 def print_report(res: UpdateResult) -> None:
-    title = f"{C.BOLD}{C.CYAN}{res.name}{C.RESET}"
-    print(title)
+    header_printed = res.name in _PRINTED_HEADERS
+    if header_printed:
+        _PRINTED_HEADERS.discard(res.name)
 
-    if res.web_url:
-        print(f"\t→ {C.MAGENTA}{res.web_url}{C.RESET}")
-    else:
-        print(f"\t(local path: {res.path})")
+    if not header_printed:
+        title = f"{C.BOLD}{C.CYAN}{res.name}{C.RESET}"
+        print(title)
 
-    if res.branch:
-        print(f"\t➡️  branch: {C.YELLOW}{res.branch}{C.RESET}")
+        if res.web_url:
+            print(f"\t-> {C.MAGENTA}{res.web_url}{C.RESET}")
+        else:
+            print(f"\t(local path: {res.path})")
+
+        if res.branch:
+            print(f"\t-> branch: {C.YELLOW}{res.branch}{C.RESET}")
 
     if res.skipped:
-        print(f"\t{C.GRAY}⏭️  Skipped: {res.skipped}{C.RESET}")
+        print(f"\t{C.GRAY}SKIP: {res.skipped}{C.RESET}")
         for n in res.notes:
             print(f"\t{C.GRAY}{n}{C.RESET}")
         print()
         return
 
     if res.error:
-        print(f"\t❌ {C.RED}ERROR: {res.error}{C.RESET}")
+        print(f"\t{C.RED}ERROR: {res.error}{C.RESET}")
         for n in res.notes:
             print(f"\t   {C.GRAY}{n}{C.RESET}")
         print()
@@ -726,16 +746,16 @@ def print_report(res: UpdateResult) -> None:
 
     if res.changed:
         if res.commit_messages:
-            print(f"\t📌 Commit messages:")
+            print(f"\tCommits:")
             for msg in res.commit_messages:
                 print(f"\t   - {msg}")
         if res.numstat:
-            print(f"\n\t⚠️  Changed files:")
+            print(f"\n\tChanged files:")
             for added, deleted, path in res.numstat:
                 print(f"\t   +{added} -{deleted}  {path}")
-        print(f"\t✅ Updated")
+        print(f"\t{C.GREEN}OK{C.RESET} Updated")
     else:
-        print(f"\t✅ No changes")
+        print(f"\t{C.GREEN}OK{C.RESET} No changes")
 
     for n in res.notes:
         print(f"\t{C.GRAY}{n}{C.RESET}")
