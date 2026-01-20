@@ -111,8 +111,10 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 
 ### Utility
 
-- Shows two columns: folders in `custom_nodes_repo` and active junctions in `custom_nodes`.
+- Shows a compact two-column list of repo nodes; linked items are marked with `=>`.
+- Numbering runs top-to-bottom per column (first column, then second).
 - Commands: `a <n>` add link, `r <n>` remove link, `s` sync, `q` quit.
+- Index selection supports single numbers, ranges, and lists (`3`, `2-6`, `1,4,9`, `1 3-5`).
 - Sync adds missing links and removes extra junctions.
 - `custom_nodes_repo_path` comes from `config.json` or is requested.
 - `custom_nodes_path`/`custom_nodes_paths` defines the target `custom_nodes`.

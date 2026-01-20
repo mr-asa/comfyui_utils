@@ -173,23 +173,25 @@ def _scan_links(custom_nodes_dir: str, repo_dir: str) -> List[LinkedNode]:
 
 
 def _print_panels(repo_nodes: List[str], links: List[LinkedNode]) -> None:
-    left = [f"[{i}] {name}" for i, name in enumerate(repo_nodes, 1)]
-    link_map = {ln.name: ln for ln in links}
-    right_lines: List[str] = []
-    for i, name in enumerate(repo_nodes, 1):
-        if name in link_map:
-            right_lines.append(f"[{i}] {name}")
-        else:
-            right_lines.append(f"[{i}]")
+    link_set = {ln.name for ln in links}
+    entries = [
+        f"{'=> ' if name in link_set else '   '}[{i}] {name}"
+        for i, name in enumerate(repo_nodes, 1)
+    ]
+    rows = (len(entries) + 1) // 2
+    left_entries = entries[:rows]
+    right_entries = entries[rows:]
+    left_w = max([len(s) for s in left_entries], default=0)
 
-    left_w = max([len(s) for s in left], default=0)
     print()
-    print("Repo nodes".ljust(left_w + 4) + "Linked nodes (junctions)")
-    print("-" * (left_w + 3) + "  " + "-" * 30)
-    for i in range(len(left)):
-        l = left[i]
-        r = right_lines[i]
-        print(l.ljust(left_w + 4) + r)
+    print("Nodes ('=>' is linked)")
+    for i in range(rows):
+        left = left_entries[i]
+        right = right_entries[i] if i < len(right_entries) else ""
+        if right:
+            print(left.ljust(left_w + 4) + right)
+        else:
+            print(left)
     print()
     print("Commands: a <n|n-m|n,n>=add, r <n|n-m|n,n>=remove, s=sync, q=quit, ?=help, enter=refresh")
 
