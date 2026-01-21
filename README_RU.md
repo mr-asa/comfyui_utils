@@ -7,22 +7,22 @@
 
 ## Что включено
 
-- `update_comfy_repos.py` обновляет основной репозиторий ComfyUI и все репозитории в `custom_nodes`
+- <img src="ico/update_comfy_repos_run.ico" width="16" height="16" alt=""> `update_comfy_repos.py` обновляет основной репозиторий ComfyUI и все репозитории в `custom_nodes`
   (пропускает отключенные папки), пишет детальный лог с коммитами и измененными файлами.
-- `update_workflow_repos.py` обновляет все Git-репозитории в `user/default/workflows/github` и
+- <img src="ico/update_workflow_repos_run.ico" width="16" height="16" alt=""> `update_workflow_repos.py` обновляет все Git-репозитории в `user/default/workflows/github` и
   сообщает о пропущенных папках без Git.
-- `comfyui_pip_update_audit.py` сканирует `requirements.txt` в корне ComfyUI и в верхнем уровне
+- <img src="ico/comfyui_pip_update_audit_run.ico" width="16" height="16" alt=""> `comfyui_pip_update_audit.py` сканирует `requirements.txt` в корне ComfyUI и в верхнем уровне
   `custom_nodes`, сравнивает установленные версии с последними и печатает команды обновления.
-- `run_comfyui.bat` запускает ComfyUI с выбором окружения и пресетами custom nodes через junction.
-- `custom_nodes_link_manager.py` управляет junction-ссылками custom nodes (сравнение repo и custom_nodes, добавление/удаление).
-- `partial_repo_sync.py` синхронизирует выбранные файлы/папки из git-репозитория в целевой каталог.
+- <img src="ico/run_comfyui.ico" width="16" height="16" alt=""> `run_comfyui.bat` запускает ComfyUI с выбором окружения и пресетами custom nodes через junction.
+- <img src="ico/custom_nodes_link_manager_run.ico" width="16" height="16" alt=""> `custom_nodes_link_manager.py` управляет junction-ссылками custom nodes (сравнение repo и custom_nodes, добавление/удаление).
+- <img src="ico/partial_repo_sync_run.ico" width="16" height="16" alt=""> `partial_repo_sync.py` синхронизирует выбранные файлы/папки из git-репозитория в целевой каталог.
 - `requirements_checker/` дает расширенную проверку требований с выбором окружения (venv/conda),
   пользовательскими путями и статусами по каждому пакету.
-- `clone-workflow_repos.py` клонирует репозитории воркфлоу из `clone-workflow_repos.txt`
+- <img src="ico/clone_workflow_repos_run.ico" width="16" height="16" alt=""> `clone-workflow_repos.py` клонирует репозитории воркфлоу из `clone-workflow_repos.txt`
   в папку `github` (предлагает выбрать путь).
 - `make_tmp_custom_nodes.py` создает `tmp_custom_nodes.json` со списком загруженных/отключенных
   нод и их URL репозиториев, полезно для сбора плагинов в единый список/репозиторий.
-- `png_to_json.py` сканирует папку с `.png/.jpeg`, читает метаданные ComfyUI `workflow`
+- <img src="ico/png_to_json_run.ico" width="16" height="16" alt=""> `png_to_json.py` сканирует папку с `.png/.jpeg`, читает метаданные ComfyUI `workflow`
   и пишет `.json` рядом с каждым изображением, где есть workflow.
 - `comfyui_root.py` определяет корневую папку ComfyUI через config, валидацию и поиск вверх.
 
@@ -101,6 +101,11 @@
 - Windows: файлы `*.bat`.
 - Linux: аналоги `*.sh` (запуск через `bash` или `./file.sh`).
 
+## Ярлыки
+
+- Windows: `powershell -ExecutionPolicy Bypass -File create_windows_links.ps1` (создает `.lnk` в `run_windows`).
+- Linux: `bash create_linux_links.sh` (создает `.desktop` в `run_linux`).
+
 ## Менеджер custom nodes (custom_nodes_link_manager.py)
 
 ### Концепция переноса нод
@@ -167,4 +172,5 @@ python comfyui_pip_update_audit.py --unpin pkg1 pkg2
 ---
 
 > [!WARNING]
-> Проверено на Windows и venv-окружениях.
+> Я работаю сейчас на Windows и venv-окружениях. Эта связка тестируется.
+> PS. Утилиты пишу для себя, стараюсь обновлять не ломая функционал. Дополняю по мере появления идей

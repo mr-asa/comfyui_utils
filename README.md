@@ -7,22 +7,22 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
 
 ## What is included
 
-- `update_comfy_repos.py` updates the main ComfyUI repo and every repo in `custom_nodes` (skips
+- <img src="ico/update_comfy_repos_run.ico" width="16" height="16" alt=""> `update_comfy_repos.py` updates the main ComfyUI repo and every repo in `custom_nodes` (skips
   disabled folders), and writes a detailed change log with commit messages and file diffs.
-- `update_workflow_repos.py` updates all Git repos under `user/default/workflows/github` and
+- <img src="ico/update_workflow_repos_run.ico" width="16" height="16" alt=""> `update_workflow_repos.py` updates all Git repos under `user/default/workflows/github` and
   reports skipped non-repo folders.
-- `comfyui_pip_update_audit.py` scans `requirements.txt` in the ComfyUI root and top-level
+- <img src="ico/comfyui_pip_update_audit_run.ico" width="16" height="16" alt=""> `comfyui_pip_update_audit.py` scans `requirements.txt` in the ComfyUI root and top-level
   custom nodes, compares installed vs latest versions, and prints update commands.
-- `run_comfyui.bat` launches ComfyUI with venv selection and custom-nodes presets via junctions.
-- `custom_nodes_link_manager.py` manages custom nodes junction links (compare repo vs custom_nodes, add/remove).
-- `partial_repo_sync.py` syncs selected files/folders from a git repo into a target folder.
+- <img src="ico/run_comfyui.ico" width="16" height="16" alt=""> `run_comfyui.bat` launches ComfyUI with venv selection and custom-nodes presets via junctions.
+- <img src="ico/custom_nodes_link_manager_run.ico" width="16" height="16" alt=""> `custom_nodes_link_manager.py` manages custom nodes junction links (compare repo vs custom_nodes, add/remove).
+- <img src="ico/partial_repo_sync_run.ico" width="16" height="16" alt=""> `partial_repo_sync.py` syncs selected files/folders from a git repo into a target folder.
 - `requirements_checker/` provides a richer requirements audit with config-driven environment
   selection (venv/conda), custom paths, and per-package status reporting.
-- `clone-workflow_repos.py` clones workflow repos from `clone-workflow_repos.txt` into the
+- <img src="ico/clone_workflow_repos_run.ico" width="16" height="16" alt=""> `clone-workflow_repos.py` clones workflow repos from `clone-workflow_repos.txt` into the
   workflows `github` folder (prompts for target path).
 - `make_tmp_custom_nodes.py` generates `tmp_custom_nodes.json` with loaded/disabled nodes and
   their repo URLs, useful for collecting all plugins into a single list/repository.
-- `png_to_json.py` scans a folder of `.png/.jpeg` images, reads ComfyUI `workflow` metadata,
+- <img src="ico/png_to_json_run.ico" width="16" height="16" alt=""> `png_to_json.py` scans a folder of `.png/.jpeg` images, reads ComfyUI `workflow` metadata,
   and writes a matching `.json` file next to each image that contains a workflow.
 - `comfyui_root.py` resolves the ComfyUI root using config, validation, and upward search.
 
@@ -101,6 +101,11 @@ Example with comments (JSONC). Remove comments in a real `config.json`.
 - Windows: `*.bat` files.
 - Linux: `*.sh` equivalents (same names, run with `bash` or `./file.sh`).
 
+## Shortcuts
+
+- Windows: `powershell -ExecutionPolicy Bypass -File create_windows_links.ps1` (creates `.lnk` in `run_windows`).
+- Linux: `bash create_linux_links.sh` (creates `.desktop` in `run_linux`).
+
 ## Custom nodes manager (custom_nodes_link_manager.py)
 
 ### Concept: moving nodes
@@ -166,4 +171,5 @@ python comfyui_pip_update_audit.py --unpin pkg1 pkg2
 ---
 
 > [!WARNING]
-> Tested on Windows and venv environment.
+> I currently work on Windows and venv environments. This combo is what gets tested.
+> PS. I write these utilities for myself, try to update without breaking functionality, and add features as ideas appear.

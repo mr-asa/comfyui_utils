@@ -113,6 +113,13 @@ POLICIES: Dict[str, Dict[str, object]] = {
     # r"MyForkedNode$": {"on_local_changes": "skip", "pull_from": "origin"},
 }
 
+# Local-change ignore patterns. Matching paths are auto-discarded before pull.
+# Use regex patterns that match paths shown by `git status --porcelain`.
+LOCAL_CHANGES_IGNORE_PATTERNS: List[str] = [
+    r"^__pycache__/.*\.pyc$",
+    r"\.pyc$",
+]
+
 # If a repository is missing origin.url, set it here.
 # Key -- repository folder name or absolute path; value -- URL.
 REMOTE_OVERRIDES: Dict[str, str] = {
@@ -298,7 +305,7 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
         return UpdateResult(name, path, web_url, branch, False, [], [], ["git fetch failed"], error=(err or out).strip())
 
     # Local changes: ask what to do before pulling (so we don't spam an error log)
-    dirty, status_out = repo_dirty(path)
+    dirty, status_out, ignored_paths = repo_dirty(path)
     stashed = False
     if dirty and not dry_run:
         local_lines = summarize_porcelain(status_out, limit=30)
@@ -366,6 +373,12 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
             else:
                 stashed = True
                 notes.append(f"Stashed local changes: {stash_msg}")
+    elif ignored_paths and not dry_run:
+        ok, err_msg = clean_ignored_changes(path, ignored_paths)
+        if ok:
+            notes.append("Ignored local changes discarded (cache files).")
+        elif err_msg:
+            notes.append("Failed to discard ignored local changes: " + err_msg)
 
     # Pull
     pull_args = ["pull", "--rebase"]
@@ -433,13 +446,14 @@ def run_git(args: List[str], cwd: str) -> Tuple[bool, str, str]:
         return False, "", "Git not found in PATH. Install Git."
 
 
-def repo_dirty(path: str) -> Tuple[bool, str]:
+def repo_dirty(path: str) -> Tuple[bool, str, List[str]]:
     # Ignore untracked files in the "local changes" prompt to keep logs short.
     # Conflicting/untracked paths that block a pull are still captured from git pull output.
     ok, out, err = run_git(["status", "--porcelain", "--untracked-files=no"], cwd=path)
     if not ok:
-        return False, (err or out).strip()
-    return bool(out.strip()), out.strip()
+        return False, (err or out).strip(), []
+    kept_lines, _ignored_lines, ignored_paths = filter_porcelain(out)
+    return bool(kept_lines), "\n".join(kept_lines).strip(), ignored_paths
 
 
 def summarize_porcelain(status_out: str, limit: int = 30) -> List[str]:
@@ -449,6 +463,50 @@ def summarize_porcelain(status_out: str, limit: int = 30) -> List[str]:
     if len(lines) <= limit:
         return lines
     return lines[:limit] + [f"... (+{len(lines) - limit} more)"]
+
+
+_IGNORED_STATUS_REGEX = [re.compile(p) for p in LOCAL_CHANGES_IGNORE_PATTERNS]
+
+
+def _extract_porcelain_path(line: str) -> str:
+    if len(line) < 4:
+        return ""
+    raw = line[3:].strip()
+    if " -> " in raw:
+        raw = raw.split(" -> ", 1)[-1].strip()
+    if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
+        raw = raw[1:-1]
+    return raw
+
+
+def _is_ignored_status_path(path: str) -> bool:
+    if not path:
+        return False
+    norm = path.replace("\\", "/")
+    return any(rx.search(norm) for rx in _IGNORED_STATUS_REGEX)
+
+
+def filter_porcelain(status_out: str) -> Tuple[List[str], List[str], List[str]]:
+    kept: List[str] = []
+    ignored: List[str] = []
+    ignored_paths: List[str] = []
+    for line in status_out.splitlines():
+        if not line.strip():
+            continue
+        p = _extract_porcelain_path(line)
+        if _is_ignored_status_path(p):
+            ignored.append(line.rstrip())
+            ignored_paths.append(p)
+        else:
+            kept.append(line.rstrip())
+    return kept, ignored, ignored_paths
+
+
+def clean_ignored_changes(path: str, ignored_paths: List[str]) -> Tuple[bool, str]:
+    if not ignored_paths:
+        return True, ""
+    ok, out, err = run_git(["checkout", "--", *ignored_paths], cwd=path)
+    return ok, (err or out).strip()
 
 
 def extract_conflict_paths(git_output: str, limit: int = 40) -> List[str]:
