@@ -293,28 +293,54 @@ if defined PYTHON_EXE if exist "%PYTHON_EXE%" set "PY_FMT=%PYTHON_EXE%"
 exit /b 0
 
 :after_links
-echo ======================================
-echo Updating ComfyUI frontend packages
-echo ======================================
-echo.
-
-"!PYTHON_EXE!" -m pip --version >nul 2>&1
-if errorlevel 1 goto no_pip
-
-"!PYTHON_EXE!" -m pip install -U pip
-if errorlevel 1 goto pip_upgrade_fail
-
-"!PYTHON_EXE!" -m pip install -U comfyui-frontend-package comfyui-workflow-templates comfyui-embedded-docs
-if errorlevel 1 goto pkgs_fail
-
-echo.
-echo Packages updated.
-echo.
-
 rem =========================================================
 rem Launch ComfyUI
 rem =========================================================
-set "COMFY_ARGS=--front-end-version Comfy-Org/ComfyUI_frontend@latest --preview-method latent2rgb --preview-size 512"
+set "FLAGS_SCRIPT=%START%run_comfyui.ps1"
+set "FLAGS_CONFIG=%START%run_comfyui_flags_config.json"
+set "FLAGS_OUT=%TEMP%\comfyui_flags_out.txt"
+set "COMFY_ARGS="
+set "UPDATE_FRONTEND=1"
+set "FLAGS_PRESETS="
+powershell -NoProfile -ExecutionPolicy Bypass -File "%FLAGS_SCRIPT%" -ConfigPath "%FLAGS_CONFIG%" -OutPath "%FLAGS_OUT%"
+if errorlevel 1 goto flags_fail
+if not exist "%FLAGS_OUT%" goto flags_fail
+for /f "usebackq tokens=1* delims==" %%A in ("%FLAGS_OUT%") do (
+  if /I "%%A"=="COMFY_ARGS" set "COMFY_ARGS=%%B"
+  if /I "%%A"=="UPDATE_FRONTEND" set "UPDATE_FRONTEND=%%B"
+  if /I "%%A"=="FLAGS_PRESETS" set "FLAGS_PRESETS=%%B"
+)
+del /q "%FLAGS_OUT%" >nul 2>&1
+
+echo.
+echo Selected presets: %FLAGS_PRESETS%
+echo Launch args: %COMFY_ARGS%
+echo.
+
+if "%UPDATE_FRONTEND%"=="1" (
+  echo ======================================
+  echo Updating ComfyUI frontend packages
+  echo ======================================
+  echo.
+
+  "!PYTHON_EXE!" -m pip --version >nul 2>&1
+  if errorlevel 1 goto no_pip
+
+  "!PYTHON_EXE!" -m pip install -U pip
+  if errorlevel 1 goto pip_upgrade_fail
+
+  "!PYTHON_EXE!" -m pip install -U comfyui-frontend-package comfyui-workflow-templates comfyui-embedded-docs
+  if errorlevel 1 goto pkgs_fail
+
+  echo.
+  echo Packages updated.
+  echo.
+) else (
+  echo ======================================
+  echo Skipping ComfyUI frontend package update
+  echo ======================================
+  echo.
+)
 "!PYTHON_EXE!" "%ROOT%main.py" %COMFY_ARGS%
 pause
 exit /b 0
@@ -385,6 +411,12 @@ exit /b 1
 :pkgs_fail
 echo.
 echo ERROR: Failed to update one or more packages.
+pause
+exit /b 1
+
+:flags_fail
+echo.
+echo ERROR: Failed to resolve launch flags.
 pause
 exit /b 1
 

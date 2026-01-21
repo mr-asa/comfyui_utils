@@ -11,11 +11,11 @@
   (пропускает отключенные папки), пишет детальный лог с коммитами и измененными файлами.
 - <img src="ico/update_workflow_repos_run.ico" width="16" height="16" alt=""> `update_workflow_repos.py` обновляет все Git-репозитории в `user/default/workflows/github` и
   сообщает о пропущенных папках без Git.
-- <img src="ico/comfyui_pip_update_audit_run.ico" width="16" height="16" alt=""> `comfyui_pip_update_audit.py` сканирует `requirements.txt` в корне ComfyUI и в верхнем уровне
+- <img src="ico/comfyui_pip_update_audit_run.ico" width="16" height="16" alt=""> [`comfyui_pip_update_audit.py`](#обновление-виртуального-окружения-comfyui_pip_update_auditpy) сканирует `requirements.txt` в корне ComfyUI и в верхнем уровне
   `custom_nodes`, сравнивает установленные версии с последними и печатает команды обновления.
-- <img src="ico/run_comfyui.ico" width="16" height="16" alt=""> `run_comfyui.bat` запускает ComfyUI с выбором окружения и пресетами custom nodes через junction.
-- <img src="ico/custom_nodes_link_manager_run.ico" width="16" height="16" alt=""> `custom_nodes_link_manager.py` управляет junction-ссылками custom nodes (сравнение repo и custom_nodes, добавление/удаление).
-- <img src="ico/partial_repo_sync_run.ico" width="16" height="16" alt=""> `partial_repo_sync.py` синхронизирует выбранные файлы/папки из git-репозитория в целевой каталог.
+- <img src="ico/run_comfyui.ico" width="16" height="16" alt=""> [`run_comfyui.bat`](#загрузчик-comfyui-run_comfyui-bat) запускает ComfyUI с выбором окружения и пресетами custom nodes через junction.
+- <img src="ico/custom_nodes_link_manager_run.ico" width="16" height="16" alt=""> [`custom_nodes_link_manager.py`](#менеджер-custom-nodes-custom_nodes_link_managerpy) управляет junction-ссылками custom nodes (сравнение repo и custom_nodes, добавление/удаление).
+- <img src="ico/partial_repo_sync_run.ico" width="16" height="16" alt=""> [`partial_repo_sync.py`](#частичная-синхронизация-репозиториев-partial_repo_syncpy) синхронизирует выбранные файлы/папки из git-репозитория в целевой каталог.
 - `requirements_checker/` дает расширенную проверку требований с выбором окружения (venv/conda),
   пользовательскими путями и статусами по каждому пакету.
 - <img src="ico/clone_workflow_repos_run.ico" width="16" height="16" alt=""> `clone-workflow_repos.py` клонирует репозитории воркфлоу из `clone-workflow_repos.txt`
@@ -137,14 +137,19 @@
 
 - Берет корень ComfyUI из `config.json` (ключ `Comfyui_root`/`comfyui_root`/`COMFYUI_ROOT`) или ищет вверх.
 - Показывает список venv `.venv*` и запускает выбранный `python.exe`.
-- Поддерживает пресеты custom nodes через junction в `custom_nodes` из `custom_nodes_repo`.
-- Чистит только junction-папки, реальные каталоги не трогает.
-- Пресеты задаются в `run_comfyui_presets_config.json` (режимы `whitelist`/`blacklist`, список `nodes`).
-- Пресет `current` ничего не меняет.
+- Поддерживает пресеты custom nodes через junction в `custom_nodes` из папки `custom_nodes_repo`.
+  - Пресет `current` ничего не меняет.
+  - Пресеты задаются в `run_comfyui_presets_config.json` (режимы `whitelist`/`blacklist`, список `nodes`).
+  - Чистит только junction-папки, реальные каталоги не трогает.
 - При первом запуске создается дефолтный `run_comfyui_presets_config.json`, если его нет.
-- Перед запуском обновляет frontend-пакеты ComfyUI.
+- Флаги запуска задаются в `run_comfyui_flags_config.json` списком объектов (`name`, `keys`, `comment`).
+  - `current` хранит список активных имен. Нажмите Enter для текущих или введите номера через пробел.
+  - Перед запуском обновляет frontend-пакеты ComfyUI.
+  - Используйте `@no_update` в пресете, чтобы пропустить обновление frontend-пакетов.
 
-## Особенности comfyui_pip_update_audit.py
+## Обновление виртуального окружения (comfyui_pip_update_audit.py)
+
+### Особенности
 
 - Сканирует только `requirements.txt` (корень и верхний уровень custom nodes).
 - Объединяет дубликаты ограничений и считает max allowed версию.
@@ -153,7 +158,7 @@
 - Проверяет обратные зависимости установленных пакетов, чтобы ловить конфликты до установки.
 - Корректно обрабатывает inline-комментарии в `requirements.txt` (например `pkg  # comment`).
 
-## Hold / pin (comfyui_pip_update_audit.py)
+### Hold / pin 
 
 - Hold: исключает пакеты из обновления для текущего окружения.
 - Pin: фиксирует пакет на конкретной версии для текущего окружения.
@@ -172,5 +177,5 @@ python comfyui_pip_update_audit.py --unpin pkg1 pkg2
 ---
 
 > [!WARNING]
-> Я работаю сейчас на Windows и venv-окружениях. Эта связка тестируется.
+> Я работаю сейчас на Windows и venv-окружениях. Эта связка тестируется.\
 > PS. Утилиты пишу для себя, стараюсь обновлять не ломая функционал. Дополняю по мере появления идей

@@ -141,6 +141,9 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 - Presets are defined in `run_comfyui_presets_config.json` (`whitelist`/`blacklist` + `nodes` list).
 - The `current` preset is a no-op.
 - Creates a default `run_comfyui_presets_config.json` on first run if missing.
+- Launch flags are defined in `run_comfyui_flags_config.json` as a list of objects (`name`, `keys`, `comment`).
+- `current` is a list of active preset names. Press Enter to use it or enter numbers separated by spaces.
+- Use `@no_update` in a preset to skip frontend package updates for that run.
 - Updates ComfyUI frontend packages before launch.
 
 ## comfyui_pip_update_audit.py highlights
