@@ -193,7 +193,7 @@ def _print_panels(repo_nodes: List[str], links: List[LinkedNode]) -> None:
         else:
             print(left)
     print()
-    print("Commands: a <n|n-m|n,n>=add, r <n|n-m|n,n>=remove, s=sync, q=quit, ?=help, enter=refresh")
+    print("Commands: a [n|n-m|n,n]=add, r [n|n-m|n,n]=remove, i [n|n-m|n,n]=invert, s=sync, q=quit, ?=help, enter=refresh")
 
 
 def _mklink_junction(src: str, dst: str) -> bool:
@@ -253,6 +253,27 @@ def _sync(repo_dir: str, custom_nodes_dir: str, repo_nodes: List[str], links: Li
     return msgs
 
 
+def _invert(
+    repo_dir: str,
+    custom_nodes_dir: str,
+    repo_nodes: List[str],
+    links: List[LinkedNode],
+    names: Optional[List[str]] = None,
+) -> List[str]:
+    link_map = {ln.name: ln for ln in links}
+    scope = names if names is not None else repo_nodes
+    to_add = [n for n in scope if n not in link_map]
+    to_remove = [link_map[n] for n in scope if n in link_map]
+
+    print(f"Will add: {len(to_add)}, remove: {len(to_remove)}")
+    msgs: List[str] = []
+    for ln in to_remove:
+        msgs.append(_remove_link(custom_nodes_dir, ln))
+    for name in to_add:
+        msgs.append(_add_link(repo_dir, custom_nodes_dir, name))
+    return msgs
+
+
 def _parse_indices(text: str, max_index: int) -> List[int]:
     if not text:
         return []
@@ -301,8 +322,9 @@ def main() -> int:
         if cmd.lower() in ("q", "quit", "exit"):
             return 0
         if cmd in ("?", "h", "help"):
-            print("a <n>: add repo node by index")
-            print("r <n>: remove linked node by index")
+            print("a [n]: add repo nodes (all or by index)")
+            print("r [n]: remove linked nodes (all or by index)")
+            print("i [n]: invert (add unlinked, remove linked) for repo nodes")
             print("s: sync (mirror repo -> custom_nodes via junctions)")
             print("    - adds links for repo nodes missing in custom_nodes")
             print("    - removes junctions that are not present in repo")
@@ -313,8 +335,19 @@ def main() -> int:
                 print(msg)
             continue
         parts = cmd.split()
+        if parts[0].lower() in ("a", "r", "i") and len(parts) == 1:
+            if parts[0].lower() == "a":
+                for name in repo_nodes:
+                    print(_add_link(repo_dir, custom_nodes_dir, name))
+            elif parts[0].lower() == "r":
+                for ln in links:
+                    print(_remove_link(custom_nodes_dir, ln))
+            else:
+                for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links):
+                    print(msg)
+            continue
         if len(parts) < 2:
-            print("Invalid command. Example: a 3 or r 10-23")
+            print("Invalid command. Example: a, r 10-23, i 1-5")
             continue
         action = parts[0].lower()
         selection = " ".join(parts[1:])
@@ -334,6 +367,10 @@ def main() -> int:
                     print(f"Not linked: {name}")
                     continue
                 print(_remove_link(custom_nodes_dir, ln))
+        elif action == "i":
+            names = [repo_nodes[idx - 1] for idx in idxs]
+            for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links, names):
+                print(msg)
         else:
             print("Unknown command.")
 
