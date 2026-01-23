@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import sys
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -52,6 +53,7 @@ class RepoReport:
     changed: bool
     commit_messages: List[str]
     numstat: List[Tuple[int, int, str]]
+    notes: List[str]
     skipped: str | None = None
     error: str | None = None
 
@@ -163,6 +165,89 @@ def summarize_porcelain(status_out: str, limit: int = 30) -> List[str]:
     return lines[:limit] + [f"... (+{len(lines) - limit} more)"]
 
 
+def _extract_porcelain_path(line: str) -> str:
+    if len(line) < 4:
+        return ""
+    raw = line[3:].strip()
+    if " -> " in raw:
+        raw = raw.split(" -> ", 1)[-1].strip()
+    if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
+        raw = raw[1:-1]
+    return raw
+
+
+def _flatten_rel_path(rel_path: str) -> str:
+    return re.sub(r"[\\/]+", "_", rel_path.strip("\\/"))
+
+
+def _unique_target_path(target_dir: Path, filename: str) -> Path:
+    base, ext = os.path.splitext(filename)
+    candidate = filename
+    i = 1
+    while (target_dir / candidate).exists():
+        candidate = f"{base}_{i}{ext}"
+        i += 1
+    return target_dir / candidate
+
+
+def _is_tracked_path(repo_path: Path, rel_path: str) -> bool:
+    ok, _, _ = run_git(["ls-files", "--error-unmatch", "--", rel_path], repo_path)
+    return ok
+
+
+def move_local_jsons(repo_path: Path) -> tuple[List[str], List[str]]:
+    ok, out, err = run_git(["status", "--porcelain"], repo_path)
+    if not ok:
+        return [], [f"git status failed: {(err or out).strip()}"]
+
+    json_paths: List[str] = []
+    seen: set[str] = set()
+    for line in out.splitlines():
+        rel = _extract_porcelain_path(line)
+        if not rel or not rel.lower().endswith(".json"):
+            continue
+        if rel in seen:
+            continue
+        seen.add(rel)
+        json_paths.append(rel)
+
+    if not json_paths:
+        return [], []
+
+    target_dir = repo_path.parent.parent / "github_edits"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    moved: List[str] = []
+    errors: List[str] = []
+    for rel in json_paths:
+        src = repo_path / rel
+        if not src.is_file():
+            errors.append(f"Missing file: {rel}")
+            continue
+        target_name = _flatten_rel_path(rel)
+        target_path = _unique_target_path(target_dir, target_name)
+        tracked = _is_tracked_path(repo_path, rel)
+        try:
+            if tracked:
+                shutil.copy2(src, target_path)
+            else:
+                shutil.move(src, target_path)
+        except Exception as e:
+            errors.append(f"Failed to move {rel}: {e}")
+            continue
+
+        if tracked:
+            ok, out, err = run_git(["restore", "--staged", "--worktree", "--", rel], repo_path)
+            if not ok:
+                ok2, out2, err2 = run_git(["checkout", "--", rel], repo_path)
+                if not ok2:
+                    msg = (err or out or err2 or out2).strip()
+                    errors.append(f"Failed to restore tracked file {rel}: {msg}")
+        moved.append(f"{rel} -> {target_path}")
+
+    return moved, errors
+
+
 def prompt_local_changes_action(name: str, path: Path, branch: str, status_out: str) -> str:
     print(f" {C.YELLOW}⚠️  Local changes detected.{C.RESET}")
     print(f" Path: {path}")
@@ -180,6 +265,7 @@ def prompt_local_changes_action(name: str, path: Path, branch: str, status_out: 
     print("  3 - skip this repository and continue")
     print("  4 - re-clone repository (overwrite folder completely)")
     print("  5 - fetch only (download updates, keep working tree as-is)")
+    print("  6 - move edited JSONs to github_edits, discard local JSON changes")
 
     if not sys.stdin.isatty():
         print(f" {C.GRAY}stdin is not interactive; defaulting to option 3 (skip).{C.RESET}")
@@ -187,12 +273,12 @@ def prompt_local_changes_action(name: str, path: Path, branch: str, status_out: 
 
     while True:
         try:
-            choice = input(" Your choice [1/2/3/4/5] (default 3): ").strip() or "3"
+            choice = input(" Your choice [1/2/3/4/5/6] (default 3): ").strip() or "3"
         except (EOFError, KeyboardInterrupt):
             return "3"
-        if choice in {"1", "2", "3", "4", "5"}:
+        if choice in {"1", "2", "3", "4", "5", "6"}:
             return choice
-        print(" Please enter 1, 2, 3, 4, or 5.")
+        print(" Please enter 1, 2, 3, 4, 5, or 6.")
 
 
 def prompt_windows_incompatible_action(path: Path, branch: str, bad_paths: List[str]) -> str:
@@ -422,16 +508,17 @@ def collect_numstat(path: Path, old: str, new: str) -> List[Tuple[int, int, str]
 
 def update_repo(path: Path) -> RepoReport:
     if not path.is_dir():
-        return RepoReport(path.name, path, "", "", False, [], [], skipped="Not a directory")
+        return RepoReport(path.name, path, "", "", False, [], [], [], skipped="Not a directory")
 
     git_dir = path / ".git"
     if not git_dir.exists():
-        return RepoReport(path.name, path, "", "", False, [], [], skipped="No .git directory")
+        return RepoReport(path.name, path, "", "", False, [], [], [], skipped="No .git directory")
 
     before = get_head(path)
     branch = get_branch(path) or "DETACHED"
     remote_url = get_remote_url(path) or ""
     web_url = to_web_url(remote_url)
+    notes: List[str] = []
 
     # Some repos contain filenames that Windows cannot check out/reset.
     # In this case, allow "fetch only" so we still download what we can.
@@ -441,7 +528,7 @@ def update_repo(path: Path) -> RepoReport:
         if choice == "5":
             ok, info = fetch_only(path)
             if not ok:
-                return RepoReport(path.name, path, web_url, branch, False, [], [], error=info)
+                return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error=info)
 
             ok2, info2 = sparse_checkout_windows_safe(path, branch)
             if ok2:
@@ -456,6 +543,7 @@ def update_repo(path: Path) -> RepoReport:
                         info2,
                     ],
                     [],
+                    notes,
                 )
             return RepoReport(
                 path.name,
@@ -468,9 +556,10 @@ def update_repo(path: Path) -> RepoReport:
                     f"Sparse-checkout failed: {info2}",
                 ],
                 [],
+                notes,
             )
         msg = "Windows-incompatible paths in repository (cannot checkout/reset on Windows): " + "; ".join(bad_paths)
-        return RepoReport(path.name, path, web_url, branch, False, [], [], skipped=msg)
+        return RepoReport(path.name, path, web_url, branch, False, [], [], notes, skipped=msg)
 
     dirty, status_out = repo_dirty(path)
     stashed = False
@@ -483,17 +572,17 @@ def update_repo(path: Path) -> RepoReport:
             status_note = "Local changes detected."
         action = prompt_local_changes_action(path.name, path, branch, status_out)
         if action == "3":
-            return RepoReport(path.name, path, web_url, branch, False, [], [], skipped=status_note)
+            return RepoReport(path.name, path, web_url, branch, False, [], [], notes, skipped=status_note)
         if action == "4":
             ok, info = reclone_repo(path, remote_url, branch)
             if not ok:
-                return RepoReport(path.name, path, web_url, branch, False, [], [], error=info)
+                return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error=info)
             # Fresh clone is already up-to-date.
-            return RepoReport(path.name, path, web_url, branch, True, [info], [])
+            return RepoReport(path.name, path, web_url, branch, True, [info], [], notes)
         if action == "5":
             ok, info = fetch_only(path)
             if not ok:
-                return RepoReport(path.name, path, web_url, branch, False, [], [], error=info)
+                return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error=info)
             return RepoReport(
                 path.name,
                 path,
@@ -502,37 +591,53 @@ def update_repo(path: Path) -> RepoReport:
                 True,
                 ["Fetched remote updates only (working tree left unchanged by user choice)."],
                 [],
+                notes,
             )
+        if action == "6":
+            moved, errors = move_local_jsons(path)
+            if errors:
+                return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error="; ".join(errors))
+            if moved:
+                notes.append("Moved JSON files to github_edits:")
+                notes.extend(moved)
+            dirty_after, status_after = repo_dirty(path)
+            if dirty_after:
+                remaining = summarize_porcelain(status_after, limit=30)
+                if remaining:
+                    status_note = "Local changes remain after moving JSONs: " + "; ".join(remaining)
+                else:
+                    status_note = "Local changes remain after moving JSONs."
+                return RepoReport(path.name, path, web_url, branch, False, [], [], notes, skipped=status_note)
         if action == "1":
             ok, out, err = run_git(["reset", "--hard"], path)
             if not ok:
-                return RepoReport(path.name, path, web_url, branch, False, [], [], error=err or out or "git reset --hard failed")
+                return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error=err or out or "git reset --hard failed")
             ok, out, err = run_git(["clean", "-fd"], path)
             if not ok:
-                return RepoReport(path.name, path, web_url, branch, False, [], [], error=err or out or "git clean -fd failed")
+                return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error=err or out or "git clean -fd failed")
         if action == "2":
             ok, out, err = run_git(["stash", "push", "-u", "-m", "workflow-updater"], path)
             if not ok:
-                return RepoReport(path.name, path, web_url, branch, False, [], [], error=err or out or "git stash failed")
+                return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error=err or out or "git stash failed")
             if "no local changes" not in (out + err).lower():
                 stashed = True
 
     ok, _, err = run_git(["pull", "--ff-only"], path)
     if not ok:
-        return RepoReport(path.name, path, web_url, branch, False, [], [], error=err or "git pull failed")
+        return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error=err or "git pull failed")
 
     if stashed:
         ok, out, err2 = run_git(["stash", "pop"], path)
         if not ok:
             # Keep this as an error here because workflow updater output is simpler and needs attention.
-            return RepoReport(path.name, path, web_url, branch, False, [], [], error=(err2 or out) or "stash pop reported conflicts")
+            return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error=(err2 or out) or "stash pop reported conflicts")
 
     after = get_head(path)
     changed = before != after
     commits = collect_commits(path, before, after) if changed else []
     numstat = collect_numstat(path, before, after) if changed else []
 
-    return RepoReport(path.name, path, web_url, branch, changed, commits, numstat)
+    return RepoReport(path.name, path, web_url, branch, changed, commits, numstat, notes)
 
 
 def print_report(report: RepoReport) -> None:
@@ -544,13 +649,19 @@ def print_report(report: RepoReport) -> None:
         print(f" branch: {C.YELLOW}{report.branch}{C.RESET}")
 
     if report.skipped:
+        for note in report.notes:
+            print(f" {C.GRAY}{note}{C.RESET}")
         print(f" {C.GRAY}Skipped: {report.skipped}{C.RESET}\n")
         return
     if report.error:
+        for note in report.notes:
+            print(f" {C.GRAY}{note}{C.RESET}")
         print(f" {C.RED}ERROR:{C.RESET} {report.error}\n")
         return
 
     if report.changed:
+        for note in report.notes:
+            print(f" {C.GRAY}{note}{C.RESET}")
         if report.commit_messages:
             print(" Commits:")
             for msg in report.commit_messages:
@@ -561,6 +672,8 @@ def print_report(report: RepoReport) -> None:
                 print(f"   +{added} -{deleted} {file_path}")
         print(f" {C.GREEN}Updated{C.RESET}\n")
     else:
+        for note in report.notes:
+            print(f" {C.GRAY}{note}{C.RESET}")
         print(f" {C.GREEN}No changes{C.RESET}\n")
 
 
