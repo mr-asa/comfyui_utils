@@ -166,9 +166,10 @@ def summarize_porcelain(status_out: str, limit: int = 30) -> List[str]:
 
 
 def _extract_porcelain_path(line: str) -> str:
-    if len(line) < 4:
+    parts = line.split(None, 1)
+    if len(parts) < 2:
         return ""
-    raw = line[3:].strip()
+    raw = parts[1].strip()
     if " -> " in raw:
         raw = raw.split(" -> ", 1)[-1].strip()
     if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
@@ -319,14 +320,17 @@ def fetch_only(path: Path) -> tuple[bool, str]:
     return False, (err or out or "git fetch failed").strip()
 
 
-def compute_windows_safe_sparse_patterns(path: Path, ref: str = "HEAD", limit: int = 200) -> List[str]:
+def compute_windows_safe_sparse_patterns(
+    path: Path,
+    ref: str = "HEAD",
+    limit: int = 0,
+) -> tuple[List[str], int, int]:
     """
-    Build a sparse-checkout pattern set that includes all top-level entries whose
-    names are Windows-safe, and excludes top-level entries with invalid chars.
-    This allows checking out most of the repository even if some paths are invalid.
+    Build a sparse-checkout pattern set that includes only Windows-safe file paths.
+    This avoids checkout failures when any path component is invalid on Windows.
     """
     if not _is_windows():
-        return []
+        return [], 0, 0
     try:
         proc = subprocess.run(
             ["git", "-c", "core.quotePath=false", "ls-tree", "-r", "-z", "--name-only", ref],
@@ -336,16 +340,19 @@ def compute_windows_safe_sparse_patterns(path: Path, ref: str = "HEAD", limit: i
             check=False,
         )
     except Exception:
-        return []
+        return [], 0, 0
     if proc.returncode != 0:
-        return []
+        return [], 0, 0
 
     raw = proc.stdout or b""
-    top_dirs: set[str] = set()
-    top_files: set[str] = set()
+    patterns: List[str] = []
+    seen: set[str] = set()
+    skipped = 0
+    total = 0
     for chunk in raw.split(b"\0"):
         if not chunk:
             continue
+        total += 1
         try:
             rel = chunk.decode("utf-8", errors="surrogateescape")
         except Exception:
@@ -353,26 +360,21 @@ def compute_windows_safe_sparse_patterns(path: Path, ref: str = "HEAD", limit: i
         rel = rel.strip().lstrip("/")
         if not rel:
             continue
-        first, *rest = rel.split("/", 1)
-        if _windows_path_is_invalid(first):
+        if _windows_path_is_invalid(rel):
+            skipped += 1
             continue
-        if rest:
-            top_dirs.add(first)
-        else:
-            top_files.add(first)
-        if len(top_dirs) + len(top_files) >= limit:
+        if rel in seen:
+            continue
+        seen.add(rel)
+        patterns.append(rel)
+        if limit > 0 and len(patterns) >= limit:
             break
 
-    patterns: List[str] = []
-    for d in sorted(top_dirs):
-        patterns.append(d + "/**")
-    for f in sorted(top_files):
-        patterns.append(f)
-    return patterns
+    return patterns, skipped, total
 
 
 def sparse_checkout_windows_safe(path: Path, branch: str) -> tuple[bool, str]:
-    patterns = compute_windows_safe_sparse_patterns(path, ref="HEAD")
+    patterns, skipped, total = compute_windows_safe_sparse_patterns(path, ref="HEAD")
     if not patterns:
         return False, "No Windows-safe paths found to checkout."
 
@@ -382,30 +384,99 @@ def sparse_checkout_windows_safe(path: Path, branch: str) -> tuple[bool, str]:
         return False, (err or out or "git sparse-checkout init failed").strip()
 
     # Prefer stdin to avoid command line length issues
-    try:
-        proc = subprocess.run(
-            ["git", "sparse-checkout", "set", "--no-cone", "--stdin"],
-            cwd=path,
-            input="\n".join(patterns) + "\n",
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr or proc.stdout)
-    except Exception:
+    error: str | None = None
+    proc = subprocess.run(
+        ["git", "sparse-checkout", "set", "--no-cone", "--stdin"],
+        cwd=path,
+        input="\n".join(patterns) + "\n",
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
         ok, out, err = run_git(["sparse-checkout", "set", "--no-cone", *patterns], path)
         if not ok:
-            return False, (err or out or "git sparse-checkout set failed").strip()
+            error = (err or out or proc.stderr or proc.stdout or "git sparse-checkout set failed").strip()
 
     # Reapply checkout on the current branch/HEAD; sparse-checkout will materialize only included files.
     target = branch if branch and branch != "DETACHED" else "HEAD"
-    ok, out, err = run_git(["checkout", "-f", target], path)
-    if not ok:
-        return False, (err or out or "git checkout failed").strip()
+    if error is None:
+        ok, out, err = run_git(["checkout", "-f", target], path)
+        if not ok:
+            error = (err or out or "git checkout failed").strip()
 
-    return True, "Checked out Windows-safe paths via sparse-checkout."
+    if error is None:
+        safe = len(patterns)
+        return True, (
+            "Checked out Windows-safe paths via sparse-checkout. "
+            f"Downloaded: {safe}, skipped: {skipped}, total: {total}."
+        )
+
+    extracted, extract_skipped, extract_errors = extract_windows_safe_files(path, target, patterns)
+    extract_total = extracted + extract_skipped
+    if extracted > 0:
+        msg = (
+            f"Sparse-checkout failed ({error}); extracted Windows-safe files manually. "
+            f"Downloaded: {extracted}, skipped: {extract_skipped}, total: {extract_total}."
+        )
+        return True, msg
+    detail = "; ".join(extract_errors[:3])
+    if len(extract_errors) > 3:
+        detail += f"; ... (+{len(extract_errors) - 3} more)"
+    return False, (
+        f"Sparse-checkout failed: {error}. "
+        f"Manual extraction failed (downloaded: {extracted}, skipped: {extract_skipped}, total: {extract_total}). "
+        f"{detail}".strip()
+    )
+
+
+def _is_rel_path_safe(rel: str) -> bool:
+    if not rel:
+        return False
+    if rel.startswith(("/", "\\")):
+        return False
+    if "\\" in rel:
+        return False
+    parts = rel.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return False
+    return not _windows_path_is_invalid(rel)
+
+
+def extract_windows_safe_files(path: Path, ref: str, files: List[str]) -> tuple[int, int, List[str]]:
+    extracted = 0
+    skipped = 0
+    errors: List[str] = []
+    for rel in files:
+        if not _is_rel_path_safe(rel):
+            skipped += 1
+            continue
+        target = path / rel
+        try:
+            proc = subprocess.run(
+                ["git", "show", f"{ref}:{rel}"],
+                cwd=path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if proc.returncode != 0:
+                skipped += 1
+                msg = (proc.stderr or proc.stdout or b"").decode(errors="replace").strip()
+                errors.append(f"{rel}: {msg}" if msg else rel)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "wb") as f:
+                f.write(proc.stdout or b"")
+            extracted += 1
+        except Exception as e:
+            skipped += 1
+            errors.append(f"{rel}: {e}")
+
+    return extracted, skipped, errors
 
 
 def reclone_repo(path: Path, remote_url: str, branch: str) -> tuple[bool, str]:

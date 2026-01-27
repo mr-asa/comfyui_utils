@@ -193,7 +193,138 @@ def _print_panels(repo_nodes: List[str], links: List[LinkedNode]) -> None:
         else:
             print(left)
     print()
-    print("Commands: a [n|n-m|n,n]=add, r [n|n-m|n,n]=remove, i [n|n-m|n,n]=invert, s=sync, q=quit, ?=help, enter=refresh")
+    print("Commands: a [n|n-m|n,n]=add, r [n|n-m|n,n]=remove, i [n|n-m|n,n]=invert, s=sync, p=presets, w=save preset, q=quit, ?=help, enter=refresh")
+
+
+def _ensure_presets_config(path: str) -> None:
+    if os.path.isfile(path):
+        return
+    default_cfg = {
+        "current": {},
+        "all": {"mode": "blacklist", "nodes": []},
+        "minimal": {"mode": "whitelist", "nodes": ["ComfyUI-Manager"]},
+    }
+    _save_json(path, default_cfg)
+
+
+def _load_presets(path: str) -> Dict[str, object]:
+    data = _load_json(path)
+    if not data:
+        print(f"Presets file not loaded or invalid JSON: {path}")
+    return data if isinstance(data, dict) else {}
+
+
+def _list_preset_names(presets: Dict[str, object]) -> List[str]:
+    return [k for k in presets.keys() if isinstance(k, str) and k.strip()]
+
+
+def _prompt_preset_choice(preset_names: List[str]) -> Optional[str]:
+    if not preset_names:
+        print("No presets available.")
+        return None
+    print("Presets:")
+    for i, name in enumerate(preset_names, 1):
+        print(f"  [{i}] {name}")
+    while True:
+        raw = input("Select preset number (Enter to cancel): ").strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(preset_names):
+                return preset_names[idx - 1]
+        print("Invalid choice.")
+
+
+def _resolve_preset_nodes(preset: Dict[str, object], repo_nodes: List[str]) -> Tuple[str, List[str]]:
+    mode = "whitelist"
+    if isinstance(preset.get("mode"), str) and preset.get("mode").strip():
+        mode = preset.get("mode").strip().lower()
+    raw_nodes = preset.get("nodes")
+    nodes = [n for n in raw_nodes if isinstance(n, str) and n.strip()] if isinstance(raw_nodes, list) else []
+    if mode == "blacklist":
+        selected = [n for n in repo_nodes if n not in nodes]
+    else:
+        selected = [n for n in repo_nodes if n in nodes]
+        mode = "whitelist"
+    return mode, selected
+
+
+def _apply_preset(
+    repo_dir: str,
+    custom_nodes_dir: str,
+    repo_nodes: List[str],
+    links: List[LinkedNode],
+    preset_name: str,
+    preset: Dict[str, object],
+) -> List[str]:
+    if preset_name.lower() == "current":
+        return ["Preset 'current' is a no-op."]
+    mode, selected = _resolve_preset_nodes(preset, repo_nodes)
+    selected_set = set(selected)
+    link_map = {ln.name: ln for ln in links if ln.target_in_repo}
+    to_add = [n for n in selected if n not in link_map]
+    to_remove = [ln for ln in link_map.values() if ln.name not in selected_set]
+
+    print(f"Preset '{preset_name}' ({mode}): adding {len(to_add)}, removing {len(to_remove)}")
+
+    msgs: List[str] = []
+    for ln in to_remove:
+        msgs.append(_remove_link(custom_nodes_dir, ln))
+    for name in to_add:
+        msgs.append(_add_link(repo_dir, custom_nodes_dir, name))
+    return msgs
+
+
+def _save_preset_from_links(
+    presets_path: str,
+    presets: Dict[str, object],
+    repo_nodes: List[str],
+    links: List[LinkedNode],
+) -> Optional[str]:
+    name = input("Preset name to save (Enter to cancel, 0=list presets): ").strip()
+    if not name:
+        return None
+    if name == "0":
+        preset_names = [n for n in _list_preset_names(presets) if n.lower() != "current"]
+        if not preset_names:
+            print("No presets available to overwrite.")
+            return None
+        print("Presets:")
+        for i, pname in enumerate(preset_names, 1):
+            print(f"  [{i}] {pname}")
+        while True:
+            choice = input("Select preset number to overwrite (Enter to cancel): ").strip()
+            if not choice:
+                return None
+            if choice.isdigit():
+                idx = int(choice)
+                if 1 <= idx <= len(preset_names):
+                    name = preset_names[idx - 1]
+                    break
+            print("Invalid choice.")
+
+    if name.lower() == "current":
+        print("Preset name 'current' is reserved.")
+        return None
+    if name in presets and name != "0":
+        ans = input(f"Preset '{name}' exists. Overwrite? [y/N]: ").strip().lower()
+        if ans not in ("y", "yes"):
+            return None
+
+    linked_names = {ln.name for ln in links if ln.target_in_repo}
+    enabled = [n for n in repo_nodes if n in linked_names]
+    disabled = [n for n in repo_nodes if n not in linked_names]
+    if len(disabled) <= len(enabled):
+        mode = "blacklist"
+        nodes = disabled
+    else:
+        mode = "whitelist"
+        nodes = enabled
+
+    presets[name] = {"mode": mode, "nodes": nodes}
+    _save_json(presets_path, presets)
+    return name
 
 
 def _mklink_junction(src: str, dst: str) -> bool:
@@ -309,6 +440,7 @@ def main() -> int:
 
     here = Path(__file__).resolve().parent
     cfg_path = str(here / "config.json")
+    presets_path = str(here / "run_comfyui_presets_config.json")
     repo_dir, custom_nodes_dir, _cfg = _resolve_paths(cfg_path, args)
 
     while True:
@@ -326,6 +458,8 @@ def main() -> int:
             print("r [n]: remove linked nodes (all or by index)")
             print("i [n]: invert (add unlinked, remove linked) for repo nodes")
             print("s: sync (mirror repo -> custom_nodes via junctions)")
+            print("p: choose preset and apply")
+            print("w: save preset from current links")
             print("    - adds links for repo nodes missing in custom_nodes")
             print("    - removes junctions that are not present in repo")
             print("q: quit")
@@ -333,6 +467,29 @@ def main() -> int:
         if cmd.lower() == "s":
             for msg in _sync(repo_dir, custom_nodes_dir, repo_nodes, links):
                 print(msg)
+            continue
+        if cmd.lower() == "p":
+            _ensure_presets_config(presets_path)
+            presets = _load_presets(presets_path)
+            preset_names = _list_preset_names(presets)
+            chosen = _prompt_preset_choice(preset_names)
+            if chosen is None:
+                continue
+            preset = presets.get(chosen)
+            if not isinstance(preset, dict):
+                print(f"Invalid preset format: {chosen}")
+                continue
+            for msg in _apply_preset(repo_dir, custom_nodes_dir, repo_nodes, links, chosen, preset):
+                print(msg)
+            continue
+        if cmd.lower() == "w":
+            _ensure_presets_config(presets_path)
+            presets = _load_presets(presets_path)
+            if not presets:
+                continue
+            saved = _save_preset_from_links(presets_path, presets, repo_nodes, links)
+            if saved:
+                print(f"Saved preset: {saved}")
             continue
         parts = cmd.split()
         if parts[0].lower() in ("a", "r", "i") and len(parts) == 1:

@@ -118,12 +118,13 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 
 - Shows a compact two-column list of repo nodes; linked items are marked with `=>`.
 - Numbering runs top-to-bottom per column (first column, then second).
-- Commands: `a` add (all), `r` remove (all), `i` invert (all), `s` sync, `q` quit.
+- Commands: `a` add (all), `r` remove (all), `i` invert (all), `s` sync, `p` choose preset, `w` save preset, `q` quit.
 - Use `a <n>`, `r <n>`, `i <n>` to target specific indices.
 - Index selection supports single numbers, ranges, and lists (`3`, `2-6`, `1,4,9`, `1 3-5`).
 - Sync adds missing links and removes extra junctions.
 - `custom_nodes_repo_path` comes from `config.json` or is requested.
 - `custom_nodes_path`/`custom_nodes_paths` defines the target `custom_nodes`.
+- Presets are read/saved in `run_comfyui_presets_config.json`. When saving, mode (`blacklist`/`whitelist`) is chosen by the smaller disabled/enabled count.
 
 ## Partial repo sync (partial_repo_sync.py)
 
