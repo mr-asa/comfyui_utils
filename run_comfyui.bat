@@ -136,15 +136,45 @@ for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass
   echo %%L
 )
 
-echo.
-set /p "PCHOICE=Select preset number [%PDEFAULT_INDEX%]: "
-if not defined PCHOICE set "PCHOICE=%PDEFAULT_INDEX%"
+set "PRESET_COUNT="
+for /f "usebackq delims=" %%C in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$p='%PRESETS_FILE%'; $j=Get-Content $p -Raw | ConvertFrom-Json; $names=@($j.PSObject.Properties.Name); Write-Output $names.Count"`) do (
+  set "PRESET_COUNT=%%C"
+)
+if not defined PRESET_COUNT set "PRESET_COUNT=0"
 
+echo.
+:preset_prompt
+set "PCHOICE="
+set /p "PCHOICE=Select preset number [%PDEFAULT_INDEX%] (?=current status, ??=edit links): "
+if not defined PCHOICE set "PCHOICE=%PDEFAULT_INDEX%"
+if /I "%PCHOICE%"=="?" (
+  call :show_current_links
+  goto preset_prompt
+)
+if "%PCHOICE%"=="??" (
+  call :run_link_manager
+  goto preset_prompt
+)
+set "PNUM="
+set /a PNUM=%PCHOICE% 2>nul
+if not defined PNUM (
+  echo Invalid input. Enter a number.
+  goto preset_prompt
+)
+if %PNUM% LSS 1 (
+  echo Invalid preset number.
+  goto preset_prompt
+)
+if %PNUM% GTR %PRESET_COUNT% (
+  echo Invalid preset number.
+  goto preset_prompt
+)
 
 set "PRESET_NAME="
 for /f "usebackq delims=" %%N in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$p='%PRESETS_FILE%'; $j=Get-Content $p -Raw | ConvertFrom-Json; $names=@($j.PSObject.Properties.Name); " ^
-  "$idx=[int]%PCHOICE%; if($idx -lt 1 -or $idx -gt $names.Count){ exit 2 } ; $names[$idx-1]"`) do (
+  "$idx=[int]%PNUM%; if($idx -lt 1 -or $idx -gt $names.Count){ exit 2 } ; $names[$idx-1]"`) do (
   set "PRESET_NAME=%%N"
 )
 
@@ -290,6 +320,86 @@ if not exist "%CONFIG_PATH%" exit /b 0
 set "PY_FMT=python"
 if defined PYTHON_EXE if exist "%PYTHON_EXE%" set "PY_FMT=%PYTHON_EXE%"
 %PY_FMT% -c "import json,io; p=r'%CONFIG_PATH%'; j=json.load(io.open(p,'r',encoding='utf-8')); json.dump(j, io.open(p,'w',encoding='utf-8'), indent=4, ensure_ascii=False)"
+exit /b 0
+
+:run_link_manager
+set "CUSTOM_DST=%ROOT%custom_nodes"
+set "CUSTOM_SRC=%START%custom_nodes_repo"
+if exist "%START%config.json" (
+  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$p='%START%config.json'; $j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; " ^
+    "$r=$null; if($j.PSObject.Properties.Name -contains 'custom_nodes_repo_path'){ $r=$j.custom_nodes_repo_path } " ^
+    "if($r){ $r=[string]$r; $r=$r.Trim(); if($r){ Write-Output $r } }"`) do (
+    set "CUSTOM_SRC=%%R"
+  )
+)
+if not exist "%CUSTOM_DST%" mkdir "%CUSTOM_DST%" >nul 2>&1
+if not exist "%CUSTOM_SRC%" call :resolve_custom_src
+if not exist "%CUSTOM_SRC%" (
+  echo.
+  echo Custom nodes repo not found:
+  echo %CUSTOM_SRC%
+  echo.
+  exit /b 0
+)
+if not exist "%START%custom_nodes_link_manager.py" (
+  echo.
+  echo custom_nodes_link_manager.py not found:
+  echo %START%custom_nodes_link_manager.py
+  echo.
+  exit /b 0
+)
+echo.
+echo Launching custom_nodes_link_manager...
+echo.
+"%PYTHON_EXE%" "%START%custom_nodes_link_manager.py" --repo "%CUSTOM_SRC%" --custom "%CUSTOM_DST%"
+echo.
+exit /b 0
+
+:show_current_links
+set "CUSTOM_DST=%ROOT%custom_nodes"
+set "CUSTOM_SRC=%START%custom_nodes_repo"
+if exist "%START%config.json" (
+  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$p='%START%config.json'; $j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; " ^
+    "$r=$null; if($j.PSObject.Properties.Name -contains 'custom_nodes_repo_path'){ $r=$j.custom_nodes_repo_path } " ^
+    "if($r){ $r=[string]$r; $r=$r.Trim(); if($r){ Write-Output $r } }"`) do (
+    set "CUSTOM_SRC=%%R"
+  )
+)
+if not exist "%CUSTOM_SRC%" (
+  echo.
+  echo Custom nodes repo not found:
+  echo %CUSTOM_SRC%
+  echo.
+  exit /b 0
+)
+if not exist "%CUSTOM_DST%" (
+  echo.
+  echo custom_nodes not found:
+  echo %CUSTOM_DST%
+  echo.
+  exit /b 0
+)
+for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$repo='%CUSTOM_SRC%'; $dst='%CUSTOM_DST%';" ^
+  "$repoNodes=Get-ChildItem -LiteralPath $repo -Directory | Where-Object { $_.Name -ne '.disabled' -and $_.Name -notmatch '\\.disable(d)?$' } | Select-Object -ExpandProperty Name | Sort-Object;" ^
+  "$linkSet=@{}; if(Test-Path -LiteralPath $dst){" ^
+  "  Get-ChildItem -LiteralPath $dst -Directory -Force | ForEach-Object {" ^
+  "    $isLink = (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or ($_.PSObject.Properties.Name -contains 'Target' -and $_.Target);" ^
+  "    if($isLink){ $linkSet[$_.Name]=$true }" ^
+  "  }" ^
+  "}" ^
+  "$entries=@(); $i=1; $indexWidth=([string]$repoNodes.Count).Length; foreach($n in $repoNodes){ $mark= if($linkSet.ContainsKey($n)){'=> '} else {'   '}; $entries += ('{0}[{1}] {2}' -f $mark,$i.ToString().PadLeft($indexWidth),$n); $i++ }" ^
+  "$rows=[int][Math]::Ceiling($entries.Count/2.0);" ^
+  "$left=@(); $right=@();" ^
+  "if($entries.Count -gt 0){ $left=$entries[0..($rows-1)]; if($entries.Count -gt $rows){ $right=$entries[$rows..($entries.Count-1)] } }" ^
+  "$leftW=0; foreach($l in $left){ if($l.Length -gt $leftW){ $leftW=$l.Length } }" ^
+  "Write-Host ''; Write-Host 'Current links (=> is linked)';" ^
+  "for($r=0;$r -lt $rows;$r++){ $l=$left[$r]; $rg= if($r -lt $right.Count){ $right[$r] } else { '' }; if($rg){ Write-Host ($l.PadRight($leftW+4) + $rg) } else { Write-Host $l } }" ^
+  "Write-Host ''"`) do (
+  echo %%L
+)
 exit /b 0
 
 :after_links

@@ -20,6 +20,7 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
   selection (venv/conda), custom paths, and per-package status reporting.
 - <img src="ico/clone_workflow_repos_run.ico" width="16" height="16" alt=""> `clone-workflow_repos.py` clones workflow repos from `clone-workflow_repos.txt` into the
   workflows `github` folder (prompts for target path).
+- `rename_to_english.py` renames files and folders with non-ASCII names into English equivalents (translate/transliterate) — handy for making sense of a batch of workflows with CJK names.
 - `make_tmp_custom_nodes.py` generates `tmp_custom_nodes.json` with loaded/disabled nodes and
   their repo URLs, useful for collecting all plugins into a single list/repository.
 - <img src="ico/png_to_json_run.ico" width="16" height="16" alt=""> `png_to_json.py` scans a folder of `.png/.jpeg` images, reads ComfyUI `workflow` metadata,
