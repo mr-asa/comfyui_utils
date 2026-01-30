@@ -120,6 +120,13 @@ LOCAL_CHANGES_IGNORE_PATTERNS: List[str] = [
     r"\.pyc$",
 ]
 
+# Local-change auto-merge patterns. If ALL local changes in a repo match these patterns,
+# the script will auto-select "merge with local changes" (stash + pull + pop).
+# Loaded from update_comfy_repos_config.json.
+LOCAL_CHANGES_AUTO_MERGE: Dict[str, List[str]] = {}
+UPDATE_CONFIG_PATH = ""
+UPDATE_CONFIG: Dict[str, object] = {}
+
 # If a repository is missing origin.url, set it here.
 # Key -- repository folder name or absolute path; value -- URL.
 REMOTE_OVERRIDES: Dict[str, str] = {
@@ -207,10 +214,57 @@ def load_or_init_config(path: str) -> Dict[str, object]:
     return cfg
 
 
+def load_update_config(path: str) -> Dict[str, object]:
+    if not os.path.exists(path):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('{\n  "local_changes_auto_merge": {}\n}\n')
+        except Exception:
+            return {}
+    try:
+        import json
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def apply_update_config(cfg: Dict[str, object]) -> None:
+    global LOCAL_CHANGES_AUTO_MERGE
+    raw = cfg.get("local_changes_auto_merge")
+    merged: Dict[str, List[str]] = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if not isinstance(k, str) or not k.strip():
+                continue
+            if isinstance(v, list):
+                patterns = [p for p in v if isinstance(p, str) and p.strip()]
+                if patterns:
+                    merged[k] = patterns
+    LOCAL_CHANGES_AUTO_MERGE = merged
+    _compile_auto_merge_patterns()
+
+
+def write_update_config(path: str, cfg: Dict[str, object]) -> None:
+    try:
+        import json
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=4, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 def main() -> int:
     here = os.path.abspath(os.path.dirname(__file__))
     config_path = os.path.join(here, "config.json")
+    update_config_path = os.path.join(here, "update_comfy_repos_config.json")
     cfg = load_or_init_config(config_path)
+    update_cfg = load_update_config(update_config_path)
+    apply_update_config(update_cfg)
+    global UPDATE_CONFIG_PATH, UPDATE_CONFIG
+    UPDATE_CONFIG_PATH = update_config_path
+    UPDATE_CONFIG = update_cfg
     parser = argparse.ArgumentParser(description="Update ComfyUI and its plugins.")
     parser.add_argument("--root", default=None, help="Path to the ComfyUI repository root")
     parser.add_argument("--plugins-dir", default=None, help="Plugins directory relative to root")
@@ -308,11 +362,17 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
     dirty, status_out, ignored_paths = repo_dirty(path)
     stashed = False
     if dirty and not dry_run:
+        if name not in _PRINTED_HEADERS:
+            print_repo_header(name, path, web_url, branch)
         local_lines = summarize_porcelain(status_out, limit=30)
         if local_lines:
             notes.append("Local changes (git status --porcelain):")
             notes.extend(["  " + ln for ln in local_lines])
-        action = prompt_local_changes_action(name, path, web_url, branch, status_out)
+        if _should_auto_merge(path, name, status_out):
+            action = "2"
+            notes.append("Auto-merge local changes (matched configured patterns).")
+        else:
+            action = prompt_local_changes_action(name, path, web_url, branch, status_out)
         if action == "3":
             return UpdateResult(
                 name,
@@ -466,12 +526,20 @@ def summarize_porcelain(status_out: str, limit: int = 30) -> List[str]:
 
 
 _IGNORED_STATUS_REGEX = [re.compile(p) for p in LOCAL_CHANGES_IGNORE_PATTERNS]
+_AUTO_MERGE_REPOS: List[Tuple[re.Pattern, List[re.Pattern]]] = []
 
 
 def _extract_porcelain_path(line: str) -> str:
-    if len(line) < 4:
+    if len(line) < 3:
         return ""
-    raw = line[3:].strip()
+    # Porcelain format: XY<space>path (status is 2 chars). Some outputs may omit leading space.
+    if len(line) >= 4 and line[2] == " ":
+        raw = line[3:].strip()
+    else:
+        parts = line.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            return ""
+        raw = parts[1].strip()
     if " -> " in raw:
         raw = raw.split(" -> ", 1)[-1].strip()
     if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
@@ -484,6 +552,118 @@ def _is_ignored_status_path(path: str) -> bool:
         return False
     norm = path.replace("\\", "/")
     return any(rx.search(norm) for rx in _IGNORED_STATUS_REGEX)
+
+
+def _compile_auto_merge_patterns() -> None:
+    global _AUTO_MERGE_REPOS
+    compiled: List[Tuple[re.Pattern, List[re.Pattern]]] = []
+    for k, v in LOCAL_CHANGES_AUTO_MERGE.items():
+        try:
+            repo_rx = re.compile(k)
+        except re.error:
+            continue
+        path_rxs: List[re.Pattern] = []
+        for p in v:
+            try:
+                path_rxs.append(re.compile(p))
+            except re.error:
+                continue
+        if path_rxs:
+            compiled.append((repo_rx, path_rxs))
+    _AUTO_MERGE_REPOS = compiled
+
+
+def _get_auto_merge_patterns(repo_path: str, repo_name: str) -> List[re.Pattern]:
+    patterns: List[re.Pattern] = []
+    for rx, pats in _AUTO_MERGE_REPOS:
+        if rx.search(repo_name) or rx.search(repo_path):
+            patterns.extend(pats)
+    return patterns
+
+
+def _should_auto_merge(repo_path: str, repo_name: str, status_out: str) -> bool:
+    patterns = _get_auto_merge_patterns(repo_path, repo_name)
+    if not patterns:
+        return False
+    paths: List[str] = []
+    for line in status_out.splitlines():
+        if not line.strip():
+            continue
+        p = _extract_porcelain_path(line)
+        if p:
+            paths.append(p.replace("\\", "/"))
+    if not paths:
+        return False
+    for p in paths:
+        if not any(rx.search(p) for rx in patterns):
+            return False
+    return True
+
+
+def _extract_status_paths(status_out: str) -> List[str]:
+    paths: List[str] = []
+    for line in status_out.splitlines():
+        if not line.strip():
+            continue
+        p = _extract_porcelain_path(line)
+        if p:
+            paths.append(p.replace("\\", "/"))
+    seen: set[str] = set()
+    uniq: List[str] = []
+    for p in paths:
+        if p not in seen:
+            uniq.append(p)
+            seen.add(p)
+    return uniq
+
+
+def _maybe_prompt_add_auto_merge(repo_name: str, repo_path: str, status_out: str) -> None:
+    if not sys.stdin.isatty():
+        return
+    if not UPDATE_CONFIG_PATH:
+        return
+    paths = _extract_status_paths(status_out)
+    if not paths:
+        return
+    repo_rx = re.escape(repo_name)
+
+    path_patterns: List[str] = []
+    for p in paths:
+        default_path = p
+        print(f"\tPath: {p}")
+        try:
+            prx = input("\tPath regex (Enter=use exact, '-'=skip): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if prx == "-":
+            continue
+        if prx == "":
+            prx = default_path
+        if prx.strip() == "":
+            continue
+        path_patterns.append(prx)
+
+    if not path_patterns:
+        return
+
+    cfg = UPDATE_CONFIG if isinstance(UPDATE_CONFIG, dict) else {}
+    raw = cfg.get("local_changes_auto_merge")
+    if not isinstance(raw, dict):
+        raw = {}
+    existing = raw.get(repo_rx)
+    if isinstance(existing, list):
+        merged = [p for p in existing if isinstance(p, str)]
+    else:
+        merged = []
+    for p in path_patterns:
+        if p not in merged:
+            merged.append(p)
+    raw[repo_rx] = merged
+    cfg["local_changes_auto_merge"] = raw
+    UPDATE_CONFIG.update(cfg)
+    write_update_config(UPDATE_CONFIG_PATH, UPDATE_CONFIG)
+    apply_update_config(UPDATE_CONFIG)
+    print("\tSaved auto-merge rule.")
 
 
 def filter_porcelain(status_out: str) -> Tuple[List[str], List[str], List[str]]:
@@ -584,7 +764,8 @@ def print_repo_header(name: str, path: str, web_url: str, branch: str) -> None:
 
 
 def prompt_local_changes_action(name: str, path: str, web_url: str, branch: str, status_out: str) -> str:
-    print_repo_header(name, path, web_url, branch)
+    if name not in _PRINTED_HEADERS:
+        print_repo_header(name, path, web_url, branch)
     print(f"\t{C.YELLOW}Local changes detected.{C.RESET}")
     print(f"\t   Path: {path}")
     preview = summarize_porcelain(status_out, limit=12)
@@ -598,6 +779,7 @@ def prompt_local_changes_action(name: str, path: str, web_url: str, branch: str,
     print("\t  2 - merge with local changes (update, then re-apply my changes)")
     print("\t  3 - skip this repository and continue")
     print("\t  4 - re-clone repository (overwrite folder completely)")
+    print("\t  7 - add auto-merge rules for these files")
 
     if not sys.stdin.isatty():
         print(f"\t{C.GRAY}stdin is not interactive; defaulting to option 3 (skip).{C.RESET}")
@@ -605,12 +787,17 @@ def prompt_local_changes_action(name: str, path: str, web_url: str, branch: str,
 
     while True:
         try:
-            choice = input("\tYour choice [1/2/3/4] (default 3): ").strip() or "3"
+            choice = input("\tYour choice (default 3): ").strip() or "3"
         except (EOFError, KeyboardInterrupt):
             return "3"
+        if choice == "7":
+            _maybe_prompt_add_auto_merge(name, path, status_out)
+            if _should_auto_merge(path, name, status_out):
+                return "2"
+            continue
         if choice in {"1", "2", "3", "4"}:
             return choice
-        print("\tPlease enter 1, 2, 3, or 4.")
+        print("\tPlease enter 1, 2, 3, 4, or 7.")
 
 def reclone_repo(path: str, remote_url: str, branch: str) -> Tuple[bool, str]:
     """

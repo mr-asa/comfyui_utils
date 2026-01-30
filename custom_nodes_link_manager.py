@@ -161,9 +161,9 @@ def _scan_links(custom_nodes_dir: str, repo_dir: str) -> List[LinkedNode]:
     out: List[LinkedNode] = []
     for name in sorted(os.listdir(custom_nodes_dir)):
         path = os.path.join(custom_nodes_dir, name)
-        if not os.path.isdir(path):
-            continue
         if not _is_reparse_point(path):
+            continue
+        if os.path.exists(path) and not os.path.isdir(path):
             continue
         target = _real(path)
         target_exists = os.path.exists(target)
@@ -172,12 +172,24 @@ def _scan_links(custom_nodes_dir: str, repo_dir: str) -> List[LinkedNode]:
     return out
 
 
-def _print_panels(repo_nodes: List[str], links: List[LinkedNode]) -> None:
+def _print_panels(node_names: List[str], links: List[LinkedNode]) -> None:
     link_set = {ln.name for ln in links}
-    entries = [
-        f"{'=> ' if name in link_set else '   '}[{i}] {name}"
-        for i, name in enumerate(repo_nodes, 1)
-    ]
+    link_map = {ln.name: ln for ln in links}
+    idx_width = 3
+
+    def _red(text: str) -> str:
+        return f"\x1b[31m{text}\x1b[0m"
+
+    entries = []
+    for i, name in enumerate(node_names, 1):
+        is_junk = name in link_map and not link_map[name].target_exists
+        if is_junk:
+            marker = _red("!!")
+        elif name in link_set:
+            marker = "=>"
+        else:
+            marker = "  "
+        entries.append(f"{marker} [{i:>{idx_width}}] {name}")
     rows = (len(entries) + 1) // 2
     left_entries = entries[:rows]
     right_entries = entries[rows:]
@@ -193,7 +205,7 @@ def _print_panels(repo_nodes: List[str], links: List[LinkedNode]) -> None:
         else:
             print(left)
     print()
-    print("Commands: a [n|n-m|n,n]=add, r [n|n-m|n,n]=remove, i [n|n-m|n,n]=invert, s=sync, p=presets, w=save preset, q=quit, ?=help, enter=refresh")
+    print("Commands: a [n|n-m|n,n]=add, r [n|n-m|n,n]=remove, i [n|n-m|n,n]=invert, s=sync, j=remove all broken junks, p=presets, w=save preset, q=quit, ?=help, enter=refresh")
 
 
 def _ensure_presets_config(path: str) -> None:
@@ -384,6 +396,13 @@ def _sync(repo_dir: str, custom_nodes_dir: str, repo_nodes: List[str], links: Li
     return msgs
 
 
+def _remove_junk_links(custom_nodes_dir: str, links: List[LinkedNode]) -> List[str]:
+    junk_links = [ln for ln in links if not ln.target_exists]
+    if not junk_links:
+        return ["No junk links."]
+    return [_remove_link(custom_nodes_dir, ln) for ln in junk_links]
+
+
 def _invert(
     repo_dir: str,
     custom_nodes_dir: str,
@@ -446,7 +465,10 @@ def main() -> int:
     while True:
         repo_nodes = _scan_repo(repo_dir)
         links = _scan_links(custom_nodes_dir, repo_dir)
-        _print_panels(repo_nodes, links)
+        repo_set = set(repo_nodes)
+        extra_nodes = [ln.name for ln in links if ln.name not in repo_set]
+        display_nodes = sorted(repo_nodes + extra_nodes)
+        _print_panels(display_nodes, links)
 
         cmd = input("> ").strip()
         if not cmd:
@@ -458,6 +480,7 @@ def main() -> int:
             print("r [n]: remove linked nodes (all or by index)")
             print("i [n]: invert (add unlinked, remove linked) for repo nodes")
             print("s: sync (mirror repo -> custom_nodes via junctions)")
+            print("j: remove junk links (missing targets)")
             print("p: choose preset and apply")
             print("w: save preset from current links")
             print("    - adds links for repo nodes missing in custom_nodes")
@@ -466,6 +489,10 @@ def main() -> int:
             continue
         if cmd.lower() == "s":
             for msg in _sync(repo_dir, custom_nodes_dir, repo_nodes, links):
+                print(msg)
+            continue
+        if cmd.lower() == "j":
+            for msg in _remove_junk_links(custom_nodes_dir, links):
                 print(msg)
             continue
         if cmd.lower() == "p":
@@ -508,24 +535,24 @@ def main() -> int:
             continue
         action = parts[0].lower()
         selection = " ".join(parts[1:])
-        idxs = _parse_indices(selection, len(repo_nodes))
+        idxs = _parse_indices(selection, len(display_nodes))
         if not idxs:
             print("No valid indices.")
             continue
         link_map = {ln.name: ln for ln in links}
         if action == "a":
             for idx in idxs:
-                print(_add_link(repo_dir, custom_nodes_dir, repo_nodes[idx - 1]))
+                print(_add_link(repo_dir, custom_nodes_dir, display_nodes[idx - 1]))
         elif action == "r":
             for idx in idxs:
-                name = repo_nodes[idx - 1]
+                name = display_nodes[idx - 1]
                 ln = link_map.get(name)
                 if not ln:
                     print(f"Not linked: {name}")
                     continue
                 print(_remove_link(custom_nodes_dir, ln))
         elif action == "i":
-            names = [repo_nodes[idx - 1] for idx in idxs]
+            names = [display_nodes[idx - 1] for idx in idxs]
             for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links, names):
                 print(msg)
         else:
