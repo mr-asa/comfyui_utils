@@ -319,7 +319,7 @@ set "CONFIG_PATH=%START%config.json"
 if not exist "%CONFIG_PATH%" exit /b 0
 set "PY_FMT=python"
 if defined PYTHON_EXE if exist "%PYTHON_EXE%" set "PY_FMT=%PYTHON_EXE%"
-%PY_FMT% -c "import json,io; p=r'%CONFIG_PATH%'; j=json.load(io.open(p,'r',encoding='utf-8')); json.dump(j, io.open(p,'w',encoding='utf-8'), indent=4, ensure_ascii=False)"
+%PY_FMT% -c "import json,io; p=r'%CONFIG_PATH%'; j=json.load(io.open(p,'r',encoding='utf-8-sig')); json.dump(j, io.open(p,'w',encoding='utf-8'), indent=4, ensure_ascii=False)"
 exit /b 0
 
 :run_link_manager

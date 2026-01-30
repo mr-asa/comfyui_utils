@@ -282,6 +282,7 @@ if _early_hold_pin():
 
 import requests
 from packaging.requirements import Requirement
+from packaging.markers import Marker
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 from packaging.utils import canonicalize_name
@@ -368,6 +369,19 @@ def find_reqs(folder: str) -> List[str]:
     return [os.path.join(folder, f) for f in os.listdir(folder) if REQ_FILE_RE.match(f)]
 
 
+def _marker_allows_raw(raw: str) -> bool:
+    if ";" not in raw:
+        return True
+    marker_text = raw.split(";", 1)[1].strip()
+    if not marker_text:
+        return True
+    try:
+        return Marker(marker_text).evaluate()
+    except Exception:
+        # If marker parsing fails, keep the entry to avoid accidental drops
+        return True
+
+
 def parse_req_file(path: str) -> Tuple[List[Requirement], List[str]]:
     try:
         txt = open(path, encoding="utf-8").read()
@@ -385,10 +399,14 @@ def parse_req_file(path: str) -> Tuple[List[Requirement], List[str]]:
             if not s:
                 continue
         try:
-            reqs.append(Requirement(s))
+            req = Requirement(s)
+            if req.marker and not req.marker.evaluate():
+                continue
+            reqs.append(req)
         except Exception:
             # Keep unparsed entries (e.g. VCS/URL requirements) so we can surface them later
-            extras.append(s)
+            if _marker_allows_raw(s):
+                extras.append(s)
     return reqs, extras
 
 

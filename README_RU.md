@@ -23,8 +23,8 @@
 - `rename_to_english.py` переименовывает файлы и папки с не-ASCII символами в английские эквиваленты (перевод/транслит) — удобно, чтобы разобраться с пачкой воркфлоу с иероглифами в названии.
 - `make_tmp_custom_nodes.py` создает `tmp_custom_nodes.json` со списком загруженных/отключенных
   нод и их URL репозиториев, полезно для сбора плагинов в единый список/репозиторий.
-- <img src="ico/png_to_json_run.ico" width="16" height="16" alt=""> `png_to_json.py` сканирует папку с `.png/.jpeg`, читает метаданные ComfyUI `workflow`
-  и пишет `.json` рядом с каждым изображением, где есть workflow.
+- <img src="ico/png_to_json_run.ico" width="16" height="16" alt=""> `png_to_json.py` сканирует папку с изображениями и видео (`.png/.jpeg/.webp/.bmp/.tif/.mp4/.mkv/.webm/.mov/.gif`), читает метаданные ComfyUI `workflow`
+  и пишет `.json` рядом с каждым файлом, где есть workflow.
 - `comfyui_root.py` определяет корневую папку ComfyUI через config, валидацию и поиск вверх.
 
 ## Пути и расположение

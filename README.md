@@ -23,8 +23,8 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
 - `rename_to_english.py` renames files and folders with non-ASCII names into English equivalents (translate/transliterate) — handy for making sense of a batch of workflows with CJK names.
 - `make_tmp_custom_nodes.py` generates `tmp_custom_nodes.json` with loaded/disabled nodes and
   their repo URLs, useful for collecting all plugins into a single list/repository.
-- <img src="ico/png_to_json_run.ico" width="16" height="16" alt=""> `png_to_json.py` scans a folder of `.png/.jpeg` images, reads ComfyUI `workflow` metadata,
-  and writes a matching `.json` file next to each image that contains a workflow.
+- <img src="ico/png_to_json_run.ico" width="16" height="16" alt=""> `png_to_json.py` scans a folder of images and video (`.png/.jpeg/.webp/.bmp/.tif/.mp4/.mkv/.webm/.mov/.gif`), reads ComfyUI `workflow` metadata,
+  and writes a matching `.json` file next to each file that contains a workflow.
 - `comfyui_root.py` resolves the ComfyUI root using config, validation, and upward search.
 
 ## Path handling
