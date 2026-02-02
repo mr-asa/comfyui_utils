@@ -18,6 +18,16 @@ if defined VENV_PATH if exist "%VENV_PATH%\\Scripts\\python.exe" (
   set "PY=%VENV_PATH%\\Scripts\\python.exe"
 )
 
-"%PY%" "%START%partial_repo_sync.py"
+echo.
+echo [1] Update now (default)
+echo [2] Edit settings
+set /p CHOICE="Select [1-2]: "
+if not defined CHOICE set "CHOICE=1"
+
+if /i "%CHOICE%"=="2" (
+  "%PY%" "%START%partial_repo_sync.py" --interactive
+) else (
+  "%PY%" "%START%partial_repo_sync.py"
+)
 pause
 exit /b 0

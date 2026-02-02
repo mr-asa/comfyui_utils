@@ -1,4 +1,5 @@
 .vscode/*
+.partial_repo_cache/*
 /tests.py
 *config*.json
 example.py
