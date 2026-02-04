@@ -19,6 +19,79 @@ function Format-JsonWithPython {
     }
 }
 
+function Save-Config {
+    param(
+        [Parameter(Mandatory = $true)][object]$Config,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    $Config | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Path -Encoding UTF8
+    Format-JsonWithPython -Path $Path
+}
+
+function Get-PresetsFromConfig {
+    param([object]$Config)
+    $rawPresets = @()
+    if ($Config.PSObject.Properties.Name -contains "presets" -and $Config.presets) {
+        $rawPresets = @($Config.presets)
+    }
+    $presets = @()
+    foreach ($entry in $rawPresets) {
+        if ($entry -is [string]) {
+            $text = [string]$entry
+            $parts = $text -split "\|", 2
+            $name = $parts[0].Trim()
+            $keys = ""
+            if ($parts.Count -gt 1) {
+                $keys = $parts[1].Trim()
+            }
+            if ($name) {
+                $presets += [pscustomobject]@{
+                    Name = $name
+                    Keys = $keys
+                    Comment = ""
+                }
+            }
+        } else {
+            $name = ""
+            $keys = ""
+            $comment = ""
+            if ($entry.PSObject.Properties.Name -contains "name" -and $entry.name) {
+                $name = [string]$entry.name
+            }
+            if ($entry.PSObject.Properties.Name -contains "keys" -and $entry.keys) {
+                $keys = [string]$entry.keys
+            }
+            if ($entry.PSObject.Properties.Name -contains "comment" -and $entry.comment) {
+                $comment = [string]$entry.comment
+            }
+            if ($name) {
+                $presets += [pscustomobject]@{
+                    Name = $name
+                    Keys = $keys
+                    Comment = $comment
+                }
+            }
+        }
+    }
+    return ,$presets
+}
+
+function Set-PresetsInConfig {
+    param(
+        [Parameter(Mandatory = $true)][object]$Config,
+        [Parameter(Mandatory = $true)][object[]]$Presets
+    )
+    $list = @()
+    foreach ($p in $Presets) {
+        $list += [ordered]@{
+            name = [string]$p.Name
+            keys = [string]$p.Keys
+            comment = [string]$p.Comment
+        }
+    }
+    $Config.presets = $list
+}
+
 if (-not $ConfigPath) {
     $ConfigPath = Join-Path $PSScriptRoot "run_comfyui_flags_config.json"
 }
@@ -54,71 +127,11 @@ if (-not (Test-Path -LiteralPath $ConfigPath)) {
         )
     }
 
-    $defaultConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
-    Format-JsonWithPython -Path $ConfigPath
+    Save-Config -Config $defaultConfig -Path $ConfigPath
 }
 
 $cfg = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
-$rawPresets = @()
-if ($cfg.PSObject.Properties.Name -contains "presets" -and $cfg.presets) {
-    $rawPresets = @($cfg.presets)
-}
-
-if (-not $rawPresets -or $rawPresets.Count -eq 0) {
-    Write-Host "No presets defined in config."
-    Write-Output ""
-    Write-Output "1"
-    Write-Output ""
-    exit 0
-}
-
-$presets = @()
-foreach ($entry in $rawPresets) {
-    if ($entry -is [string]) {
-        $text = [string]$entry
-        $parts = $text -split "\|", 2
-        $name = $parts[0].Trim()
-        $keys = ""
-        if ($parts.Count -gt 1) {
-            $keys = $parts[1].Trim()
-        }
-        if ($name) {
-            $presets += [pscustomobject]@{
-                Name = $name
-                Keys = $keys
-                Comment = ""
-            }
-        }
-    } else {
-        $name = ""
-        $keys = ""
-        $comment = ""
-        if ($entry.PSObject.Properties.Name -contains "name" -and $entry.name) {
-            $name = [string]$entry.name
-        }
-        if ($entry.PSObject.Properties.Name -contains "keys" -and $entry.keys) {
-            $keys = [string]$entry.keys
-        }
-        if ($entry.PSObject.Properties.Name -contains "comment" -and $entry.comment) {
-            $comment = [string]$entry.comment
-        }
-        if ($name) {
-            $presets += [pscustomobject]@{
-                Name = $name
-                Keys = $keys
-                Comment = $comment
-            }
-        }
-    }
-}
-
-if ($presets.Count -eq 0) {
-    Write-Host "No valid presets defined in config."
-    Write-Output ""
-    Write-Output "1"
-    Write-Output ""
-    exit 0
-}
+$presets = Get-PresetsFromConfig -Config $cfg
 
 $presetNames = @($presets | ForEach-Object { $_.Name })
 $currentNames = @()
@@ -157,11 +170,27 @@ Write-Host ""
 
 while ($true) {
     Write-Host ""
-    $input = Read-Host "Press Enter to launch, or type any key to choose flags"
+    $input = Read-Host "Press Enter to launch, or type any key to choose/edit flags"
 
     if ([string]::IsNullOrWhiteSpace($input)) {
-        $selectedNames = $currentNames
-        break
+        if ($presets.Count -eq 0) {
+            Write-Host "No presets defined. Use A to add a preset."
+            continue
+        } else {
+            $selectedNames = $currentNames
+            break
+        }
+    }
+
+    if ($presets.Count -eq 0) {
+        $input = Read-Host "Presets list is empty (A=add, Q=cancel)"
+        if ($input -match "^[Qq]$") {
+            $selectedNames = $currentNames
+            break
+        }
+        if ($input -notmatch "^[Aa]$") {
+            continue
+        }
     }
 
     $indexWidth = ([string]$presets.Count).Length + 2
@@ -179,8 +208,130 @@ while ($true) {
         $i++
     }
     Write-Host ""
-    $input = Read-Host "Enter numbers separated by spaces"
+    $input = Read-Host "Enter numbers separated by spaces (A=add, E=edit, D=delete, Q=cancel)"
     if ([string]::IsNullOrWhiteSpace($input)) {
+        $selectedNames = $currentNames
+        break
+    }
+    if ($input -match "^[Aa]$") {
+        $newName = Read-Host "New preset name"
+        if ([string]::IsNullOrWhiteSpace($newName)) {
+            Write-Host "Name is required."
+            continue
+        }
+        $newKeys = Read-Host "Flags (keys)"
+        $newComment = Read-Host "Comment (optional)"
+        $existing = $presets | Where-Object { $_.Name -eq $newName }
+        if ($existing) {
+            $confirm = Read-Host "Preset exists. Overwrite? (y/N)"
+            if ($confirm -notmatch "^[Yy]$") {
+                continue
+            }
+            $presets = @($presets | Where-Object { $_.Name -ne $newName })
+        }
+        $presets += [pscustomobject]@{
+            Name = $newName
+            Keys = $newKeys
+            Comment = $newComment
+        }
+        Set-PresetsInConfig -Config $cfg -Presets $presets
+        Save-Config -Config $cfg -Path $ConfigPath
+        $presets = Get-PresetsFromConfig -Config $cfg
+        $presetNames = @($presets | ForEach-Object { $_.Name })
+        $currentNames = @($cfg.current) | Where-Object { $presetNames -contains $_ }
+        continue
+    }
+    if ($input -match "^[Ee]$") {
+        if ($presets.Count -eq 0) {
+            Write-Host "No presets to edit."
+            continue
+        }
+        $editInput = Read-Host "Enter preset number to edit"
+        if ($editInput -notmatch "^\d+$") {
+            Write-Host "Invalid selection. Use a number from the list."
+            continue
+        }
+        $editIdx = [int]$editInput
+        if ($editIdx -lt 1 -or $editIdx -gt $presets.Count) {
+            Write-Host "Invalid selection. Use a number from the list."
+            continue
+        }
+        $target = $presets[$editIdx - 1]
+        Write-Host ("Editing preset: {0}" -f $target.Name)
+        $newName = Read-Host ("New name (Enter to keep: {0})" -f $target.Name)
+        if ([string]::IsNullOrWhiteSpace($newName)) {
+            $newName = $target.Name
+        }
+        $newKeys = Read-Host ("New flags (Enter to keep: {0})" -f $target.Keys)
+        if ([string]::IsNullOrWhiteSpace($newKeys)) {
+            $newKeys = $target.Keys
+        }
+        $newComment = Read-Host ("New comment (Enter to keep: {0})" -f $target.Comment)
+        if ([string]::IsNullOrWhiteSpace($newComment)) {
+            $newComment = $target.Comment
+        }
+        if ($newName -ne $target.Name) {
+            $collision = $presets | Where-Object { $_.Name -eq $newName }
+            if ($collision) {
+                Write-Host "Preset with this name already exists."
+                continue
+            }
+        }
+        $target.Name = $newName
+        $target.Keys = $newKeys
+        $target.Comment = $newComment
+        $presets[$editIdx - 1] = $target
+        Set-PresetsInConfig -Config $cfg -Presets $presets
+        Save-Config -Config $cfg -Path $ConfigPath
+        if ($currentNames -contains $presets[$editIdx - 1].Name) {
+            $currentNames = @($currentNames | ForEach-Object { if ($_ -eq $target.Name) { $newName } else { $_ } })
+            $cfg.current = $currentNames
+            Save-Config -Config $cfg -Path $ConfigPath
+        }
+        $presets = Get-PresetsFromConfig -Config $cfg
+        $presetNames = @($presets | ForEach-Object { $_.Name })
+        $currentNames = @($cfg.current) | Where-Object { $presetNames -contains $_ }
+        continue
+    }
+    if ($input -match "^[Dd]$") {
+        $delInput = Read-Host "Enter numbers to delete separated by spaces"
+        if ([string]::IsNullOrWhiteSpace($delInput)) {
+            continue
+        }
+        $delParts = $delInput -split "\s+" | Where-Object { $_ }
+        $delIdx = @()
+        $bad = $false
+        foreach ($p in $delParts) {
+            if ($p -match "^\d+$") {
+                $idx = [int]$p
+                if ($idx -ge 1 -and $idx -le $presets.Count) {
+                    $delIdx += $idx
+                } else {
+                    $bad = $true
+                }
+            } else {
+                $bad = $true
+            }
+        }
+        if ($bad) {
+            Write-Host "Invalid selection. Use numbers from the list."
+            continue
+        }
+        $delIdx = $delIdx | Sort-Object -Unique
+        $delNames = @($delIdx | ForEach-Object { $presets[$_ - 1].Name })
+        if ($delNames.Count -gt 0) {
+            $presets = @($presets | Where-Object { $delNames -notcontains $_.Name })
+            $currentNames = @($currentNames | Where-Object { $delNames -notcontains $_ })
+            $cfg.current = $currentNames
+            Set-PresetsInConfig -Config $cfg -Presets $presets
+            Save-Config -Config $cfg -Path $ConfigPath
+        }
+        $presets = Get-PresetsFromConfig -Config $cfg
+        $presetNames = @($presets | ForEach-Object { $_.Name })
+        $currentNames = @($cfg.current) | Where-Object { $presetNames -contains $_ }
+        continue
+    }
+    if ($input -match "^[Qq]$") {
         $selectedNames = $currentNames
         break
     }
@@ -210,8 +361,7 @@ while ($true) {
     $selectedNames = @($indices | ForEach-Object { $presets[$_ - 1].Name })
 
     $cfg.current = $selectedNames
-    $cfg | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
-    Format-JsonWithPython -Path $ConfigPath
+    Save-Config -Config $cfg -Path $ConfigPath
     break
 }
 
