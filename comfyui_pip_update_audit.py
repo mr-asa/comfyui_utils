@@ -158,6 +158,24 @@ def _confirm_default_env_simple(env_key: str) -> None:
         raise SystemExit("Cancelled by user.")
 
 
+# For early --pin without version, resolve via selected env if possible
+def _get_version_simple(cfg: dict, pkg: str) -> str:
+    env_type = (cfg.get("env_type") or "").lower()
+    if env_type == "venv":
+        venv = cfg.get("venv_path") or ""
+        if isinstance(venv, str) and venv.strip():
+            py = os.path.join(venv, "Scripts", "python.exe")
+            if os.path.exists(py):
+                try:
+                    p = subprocess.run([py, "-c", f"import importlib.metadata as m; print(m.version('''{pkg}'''))"],
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=20)
+                    if p.returncode == 0 and p.stdout:
+                        return p.stdout.strip()
+                except Exception:
+                    pass
+    return importlib_metadata.version(pkg)
+
+
 def _split_items(raw_items: list[str]) -> list[str]:
     items: list[str] = []
     for raw in raw_items:
@@ -241,7 +259,7 @@ def _early_hold_pin() -> bool:
             else:
                 pkg = raw
                 try:
-                    ver = importlib_metadata.version(pkg)
+                    ver = _get_version_simple(cfg, pkg)
                 except Exception:
                     raise SystemExit(f"Package not installed, cannot pin without version: {pkg}")
             pins[_canonicalize_simple(pkg)] = ver
@@ -684,9 +702,69 @@ class VcsReport:
     ref_error: Optional[str] = None
 
 
-def inst_ver(name: str) -> Optional[Version]:
+def _python_cmd(cfg: dict) -> List[str]:
+    env_type = (cfg.get("env_type") or "").lower()
+    if env_type == "venv":
+        venv = cfg.get("venv_path") or ""
+        if venv:
+            c = os.path.join(venv, "Scripts", "python.exe")
+            if os.path.exists(c):
+                return [c]
+            c = os.path.join(venv, "bin", "python")
+            if os.path.exists(c):
+                return [c]
+    env = cfg.get("conda_env_folder") or ""
+    if env:
+        c = os.path.join(env, "python.exe")
+        if os.path.exists(c):
+            return [c]
+        c = os.path.join(env, "bin", "python")
+        if os.path.exists(c):
+            return [c]
+    return [sys.executable]
+
+
+def _load_installed_from_python(py: List[str]) -> Optional[Dict[str, dict]]:
+    code = (
+        "import json, re, importlib.metadata as m;"
+        "\ncanon=lambda s: re.sub(r'[-_.]+','-', s.strip().lower());"
+        "\nout={};"
+        "\nfor d in m.distributions():"
+        "\n name=(d.metadata.get('Name') or d.name);"
+        "\n key=canon(name);"
+        "\n out[key]={\"name\": name, \"version\": d.version, \"requires\": d.requires or []};"
+        "\nprint(json.dumps(out))"
+    )
     try:
-        return Version(importlib_metadata.version(name))
+        p = subprocess.run(py + ["-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=35)
+        if p.returncode != 0 or not p.stdout:
+            return None
+        return json.loads(p.stdout)
+    except Exception:
+        return None
+
+
+def load_installed_dists(cfg: dict) -> Dict[str, dict]:
+    py = _python_cmd(cfg)
+    data = _load_installed_from_python(py)
+    if isinstance(data, dict) and data:
+        return data
+    # Fallback to current interpreter
+    out: Dict[str, dict] = {}
+    for dist in importlib_metadata.distributions():
+        name = dist.metadata.get("Name") or dist.name
+        key = canonicalize_name(name)
+        out[key] = {"name": name, "version": dist.version, "requires": dist.requires or []}
+    return out
+
+
+def inst_ver_from_map(installed: Dict[str, dict], name: str) -> Optional[Version]:
+    try:
+        info = installed.get(canonicalize_name(name))
+        if not info:
+            return None
+        ver = info.get("version") or ""
+        return Version(ver) if ver else None
     except Exception:
         return None
 
@@ -739,12 +817,15 @@ def fetch_pypi(name: str) -> Tuple[List[Version], List[str], List[str]]:
         return [], [], []
 
 
-def build_reverse_constraints(target_names: List[str]) -> Dict[str, List[Tuple[str, SpecifierSet]]]:
+def build_reverse_constraints(
+    target_names: List[str],
+    installed: Dict[str, dict],
+) -> Dict[str, List[Tuple[str, SpecifierSet]]]:
     target_set = {canonicalize_name(n) for n in target_names}
     out: Dict[str, List[Tuple[str, SpecifierSet]]] = {}
-    for dist in importlib_metadata.distributions():
-        dist_name = dist.metadata.get("Name") or dist.metadata.get("Summary") or dist.name
-        reqs = dist.requires or []
+    for info in installed.values():
+        dist_name = info.get("name") or info.get("Name") or ""
+        reqs = info.get("requires") or []
         for raw in reqs:
             try:
                 req = Requirement(raw)
@@ -994,6 +1075,7 @@ def main() -> None:
         cfg = select_venv(cfg, cfg_path)
     comfy_root, custom_nodes_paths = guess_paths(cfg, comfy_root=str(comfy_root))
     pip = pip_cmd(cfg)
+    installed_map = load_installed_dists(cfg)
 
     if args.hold_pkg or args.pin_pkg:
         env_key = _get_env_key(cfg)
@@ -1018,7 +1100,7 @@ def main() -> None:
                         ver = ver.strip()
                     else:
                         pkg = raw
-                        inst = inst_ver(pkg)
+                        inst = inst_ver_from_map(installed_map, pkg)
                         if not inst:
                             raise SystemExit(f"Package not installed, cannot pin without version: {pkg}")
                         ver = str(inst)
@@ -1128,10 +1210,10 @@ def main() -> None:
 
     # Installed
     for i, n in enumerate(names, 1):
-        reports[n] = PackageReport(n, inst_ver(n), allc[n])
+        reports[n] = PackageReport(n, inst_ver_from_map(installed_map, n), allc[n])
         progress("Installed", i, len(names))
     for i, v in enumerate(extra_reqs, 1):
-        v.installed = inst_ver(v.name) if v.name else None
+        v.installed = inst_ver_from_map(installed_map, v.name) if v.name else None
         progress("Installed (VCS)", i, len(extra_reqs))
 
     # PyPI info
@@ -1189,7 +1271,7 @@ def main() -> None:
         elif r.installed > r.max_allowed:
             downgrades.append((n, r.max_allowed))
 
-    reverse_map = build_reverse_constraints([n for n, _ in cand])
+    reverse_map = build_reverse_constraints([n for n, _ in cand], installed_map)
 
     # Classify candidates individually via pip --dry-run
     safe: List[Tuple[str, Version]] = []
