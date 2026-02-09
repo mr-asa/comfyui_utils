@@ -684,6 +684,8 @@ class PackageReport:
     py_incompatible: List[str] = field(default_factory=list)
     prerelease_filtered: List[str] = field(default_factory=list)
     max_allowed: Optional[Version] = None
+    installable_max: Optional[Version] = None
+    availability_issue: Optional[str] = None
     update_ok: Optional[bool] = None
     update_error: Optional[str] = None
     reverse_conflicts: List[str] = field(default_factory=list)
@@ -931,6 +933,33 @@ def classify_dry_run(ok: bool, out: str) -> Tuple[str, str]:
     if any(m in lowered for m in net_markers):
         return "unknown", out
     return "unknown", out
+
+
+def _is_no_matching_distribution(out: str) -> bool:
+    lowered = (out or "").lower()
+    return (
+        "no matching distribution found for" in lowered
+        or "could not find a version that satisfies the requirement" in lowered
+    )
+
+
+def _extract_versions_from_no_matching(out: str) -> List[Version]:
+    """Parse pip 'from versions: ...' list for no-matching-distribution errors."""
+    lowered = out or ""
+    marker = "from versions:"
+    if marker not in lowered.lower():
+        return []
+    idx = lowered.lower().rfind(marker)
+    tail = lowered[idx + len(marker):]
+    tail = tail.split("\n", 1)[0]
+    raw = [p.strip() for p in tail.split(",") if p.strip()]
+    versions: List[Version] = []
+    for v in raw:
+        try:
+            versions.append(Version(v))
+        except Exception:
+            continue
+    return sorted(set(versions))
 
 
 def parse_vcs_line(raw: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -1225,6 +1254,7 @@ def main() -> None:
         rpt.prerelease_filtered = filtered
         specs = [c.spec for c in rpt.constraints if str(c.spec)]
         rpt.max_allowed = choose_max(vs, specs)
+        rpt.installable_max = rpt.max_allowed
         if specs and not rpt.max_allowed:
             uniq_specs = ", ".join(sorted(set(str(s) for s in specs)))
             if not vs:
@@ -1252,7 +1282,8 @@ def main() -> None:
     pinned_ok: List[Tuple[str, str]] = []
     pinned_mismatch: List[Tuple[str, str]] = []
     for n, r in reports.items():
-        if not r.max_allowed:
+        tgt = r.installable_max or r.max_allowed
+        if not tgt:
             continue
         if n in pin_map:
             pinned_ver = pin_map[n]
@@ -1265,11 +1296,11 @@ def main() -> None:
             held.append(n)
             continue
         if not r.installed:
-            missing.append((n, r.max_allowed))
-        elif r.installed < r.max_allowed:
-            cand.append((n, r.max_allowed))
-        elif r.installed > r.max_allowed:
-            downgrades.append((n, r.max_allowed))
+            missing.append((n, tgt))
+        elif r.installed < tgt:
+            cand.append((n, tgt))
+        elif r.installed > tgt:
+            downgrades.append((n, tgt))
 
     reverse_map = build_reverse_constraints([n for n, _ in cand], installed_map)
 
@@ -1287,6 +1318,38 @@ def main() -> None:
         else:
             ok, out = dry_run(pip, [(n, v)])
             cls, err = classify_dry_run(ok, out)
+            rpt = reports.get(n)
+            if (not ok) and _is_no_matching_distribution(out) and rpt is not None:
+                specs = [c.spec for c in rpt.constraints if str(c.spec)]
+                available = _extract_versions_from_no_matching(out)
+                fallback = choose_max(available, specs) if available else None
+                if fallback:
+                    rpt.installable_max = fallback
+                    rpt.availability_issue = (
+                        f"{n}=={v} not available for this Python/platform; "
+                        f"highest installable is {fallback}"
+                    )
+                    if rpt.installed and rpt.installed >= fallback:
+                        rpt.update_ok = True
+                        rpt.update_error = None
+                        progress("Classify", idx, total, n)
+                        continue
+                    v = fallback
+                    conflicts2 = find_reverse_conflicts(reverse_map, n, v)
+                    if conflicts2:
+                        cls = "risky"
+                        err = "Reverse dependency conflict: " + "; ".join(conflicts2)
+                        conflicts = conflicts2
+                    else:
+                        ok, out = dry_run(pip, [(n, v)])
+                        cls, err = classify_dry_run(ok, out)
+                else:
+                    rpt.installable_max = rpt.installed
+                    rpt.availability_issue = f"{n}=={v} not available for this Python/platform"
+                    rpt.update_ok = False
+                    rpt.update_error = out or "No matching distribution found"
+                    progress("Classify", idx, total, n)
+                    continue
         rpt = reports.get(n)
         if rpt is not None:
             rpt.update_ok = cls == "safe"
@@ -1305,7 +1368,7 @@ def main() -> None:
     # Print per package
     for n in names:
         r = reports[n]
-        tgt = r.max_allowed
+        tgt = r.installable_max or r.max_allowed
         action: Optional[str] = None
         if not r.installed and tgt:
             action = "install"
@@ -1331,10 +1394,14 @@ def main() -> None:
             s = str(c.spec) if str(c.spec) else "(no specifier)"
             print(f"    - {c.repo} [requirements.txt] requires {Fore.YELLOW}{s}{Style.RESET_ALL}")
         print(" - Max allowed:", Fore.CYAN if tgt else Fore.RED, (tgt or "-"), Style.RESET_ALL)
+        if r.max_allowed and r.installable_max and r.installable_max != r.max_allowed:
+            print(" - PyPI max allowed:", Fore.CYAN + str(r.max_allowed) + Style.RESET_ALL)
         if r.py_incompatible:
             print(" - Skipped incompatible releases:", Fore.YELLOW + ", ".join(r.py_incompatible) + Style.RESET_ALL)
         if r.prerelease_filtered:
             print(" - Filtered pre-release versions:", Fore.YELLOW + ", ".join(r.prerelease_filtered) + Style.RESET_ALL)
+        if r.availability_issue:
+            print(" - Availability issue:", Fore.YELLOW + r.availability_issue + Style.RESET_ALL)
         if r.update_error:
             print(" - Constraint issue:", Fore.RED + (r.update_error or "") + Style.RESET_ALL)
 
@@ -1406,9 +1473,11 @@ def main() -> None:
         for n, v in risky:
             rpt = reports.get(n)
             if rpt and rpt.update_error:
-                print(f"  - {n}=={v}: {rpt.update_error}")
+                inst = str(rpt.installed) if rpt.installed else "-"
+                print(f"  - {n} {inst} -> {v}: {rpt.update_error}")
             else:
-                print(f"  - {n}=={v}: unknown reason")
+                inst = str(rpt.installed) if rpt and rpt.installed else "-"
+                print(f"  - {n} {inst} -> {v}: unknown reason")
     if unknown:
         print("Unknown updates:\n  " + Fore.BLUE + unknown_cmd + Style.RESET_ALL)
     if missing_cmd_parts:

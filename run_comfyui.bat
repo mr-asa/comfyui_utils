@@ -100,6 +100,44 @@ set "VENV_DIR=!VENV_%CHOICE%!"
 set "PYTHON_EXE=%ROOT%!VENV_DIR!\Scripts\python.exe"
 call :save_selected_venv
 
+rem Ensure CUDA and torch DLLs are on PATH for custom extensions
+set "CUDA_HOME="
+set "CUDA_PATH="
+set "CUDA_BIN="
+if exist "%START%config.json" (
+  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$p='%START%config.json'; $j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; " ^
+    "$venv='%VENV_DIR%'; $r=$null; " ^
+    "if($j.PSObject.Properties.Name -contains 'cuda_path_by_venv'){ " ^
+    "  $m=$j.cuda_path_by_venv; if($m -and $m.PSObject.Properties.Name -contains $venv){ $r=$m.$venv } } " ^
+    "if(-not $r -and ($j.PSObject.Properties.Name -contains 'cuda_path')){ $r=$j.cuda_path } " ^
+    "if($r){ $r=[string]$r; $r=$r.Trim(); if($r){ Write-Output $r } }"`) do (
+    set "CUDA_HOME=%%R"
+  )
+)
+if not defined CUDA_HOME (
+  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$base='C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'; " ^
+    "$d=Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | " ^
+    "Where-Object { $_.Name -match '^v\\d' } | " ^
+    "Sort-Object { [version]($_.Name.TrimStart('v')) } -Descending | Select-Object -First 1; " ^
+    "if($d){ Write-Output $d.FullName }"`) do (
+    set "CUDA_HOME=%%R"
+  )
+)
+if defined CUDA_HOME (
+  set "CUDA_PATH=%CUDA_HOME%"
+  set "CUDA_BIN=%CUDA_HOME%\\bin"
+)
+set "TORCH_LIB=%ROOT%!VENV_DIR!\Lib\site-packages\torch\lib"
+if exist "%CUDA_BIN%" set "PATH=%CUDA_BIN%;%PATH%"
+if exist "%TORCH_LIB%" set "PATH=%TORCH_LIB%;%PATH%"
+if defined CUDA_HOME (
+  echo CUDA: %CUDA_HOME%
+) else (
+  echo CUDA: not found
+)
+
 echo.
 echo Using venv: !VENV_DIR!
 echo Python: !PYTHON_EXE!
