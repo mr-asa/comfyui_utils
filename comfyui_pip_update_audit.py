@@ -486,6 +486,35 @@ def _load_custom_nodes_paths(cfg: dict, comfy_root: str = "") -> List[str]:
     return _dedupe_dirs(paths)
 
 
+def _get_custom_nodes_repo_path(cfg: dict) -> str:
+    raw = cfg.get("custom_nodes_repo_path")
+    if not isinstance(raw, str):
+        return ""
+    path = raw.strip()
+    if not path:
+        return ""
+    norm = os.path.normpath(path)
+    if not os.path.isdir(norm):
+        return ""
+    return norm
+
+
+def _ask_include_custom_nodes_repo_path(path: str) -> bool:
+    if not path:
+        return False
+    if not sys.stdin.isatty():
+        return False
+    print(Fore.MAGENTA + Style.BRIGHT + "--> Optional requirements source <--" + Style.RESET_ALL)
+    print(f"custom_nodes_repo_path found: {path}")
+    while True:
+        choice = input("Include this path in requirements scan? [+/-] [-]: ").strip()
+        if not choice or choice == "-":
+            return False
+        if choice == "+":
+            return True
+        print("Please enter '+' to include or '-' to skip.")
+
+
 def _load_venv_paths(cfg: dict) -> List[str]:
     paths: List[str] = []
     venv_paths = cfg.get("venv_paths")
@@ -700,6 +729,9 @@ class VcsReport:
     url: Optional[str] = None
     ref: Optional[str] = None
     installed: Optional[Version] = None
+    installed_name: Optional[str] = None
+    installed_url: Optional[str] = None
+    installed_commit: Optional[str] = None
     ref_ok: Optional[bool] = None
     ref_error: Optional[str] = None
 
@@ -734,7 +766,21 @@ def _load_installed_from_python(py: List[str]) -> Optional[Dict[str, dict]]:
         "\nfor d in m.distributions():"
         "\n name=(d.metadata.get('Name') or d.name);"
         "\n key=canon(name);"
-        "\n out[key]={\"name\": name, \"version\": d.version, \"requires\": d.requires or []};"
+        "\n direct=d.read_text('direct_url.json');"
+        "\n direct_url=None; direct_commit=None;"
+        "\n if direct:"
+        "\n  try:"
+        "\n   data=json.loads(direct);"
+        "\n   if isinstance(data, dict):"
+        "\n    u=data.get('url');"
+        "\n    if isinstance(u,str) and u.strip(): direct_url=u.strip();"
+        "\n    vi=data.get('vcs_info');"
+        "\n    if isinstance(vi, dict):"
+        "\n     c=vi.get('commit_id');"
+        "\n     if isinstance(c,str) and c.strip(): direct_commit=c.strip();"
+        "\n  except Exception:"
+        "\n   pass;"
+        "\n out[key]={\"name\": name, \"version\": d.version, \"requires\": d.requires or [], \"direct_url\": direct_url, \"direct_commit\": direct_commit};"
         "\nprint(json.dumps(out))"
     )
     try:
@@ -756,7 +802,30 @@ def load_installed_dists(cfg: dict) -> Dict[str, dict]:
     for dist in importlib_metadata.distributions():
         name = dist.metadata.get("Name") or dist.name
         key = canonicalize_name(name)
-        out[key] = {"name": name, "version": dist.version, "requires": dist.requires or []}
+        direct_url = None
+        direct_commit = None
+        try:
+            raw = dist.read_text("direct_url.json")
+            if raw:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    u = data.get("url")
+                    if isinstance(u, str) and u.strip():
+                        direct_url = u.strip()
+                    vi = data.get("vcs_info")
+                    if isinstance(vi, dict):
+                        c = vi.get("commit_id")
+                        if isinstance(c, str) and c.strip():
+                            direct_commit = c.strip()
+        except Exception:
+            pass
+        out[key] = {
+            "name": name,
+            "version": dist.version,
+            "requires": dist.requires or [],
+            "direct_url": direct_url,
+            "direct_commit": direct_commit,
+        }
     return out
 
 
@@ -769,6 +838,47 @@ def inst_ver_from_map(installed: Dict[str, dict], name: str) -> Optional[Version
         return Version(ver) if ver else None
     except Exception:
         return None
+
+
+def _normalize_vcs_url(url: str) -> str:
+    s = (url or "").strip()
+    if not s:
+        return ""
+    if s.startswith("git+"):
+        s = s[4:]
+    s = s.split(";", 1)[0].split("#", 1)[0].strip().rstrip("/")
+    if s.endswith(".git"):
+        s = s[:-4]
+    return s.lower()
+
+
+def _resolve_vcs_installed(installed: Dict[str, dict], v: VcsReport) -> Tuple[Optional[Version], Optional[str], Optional[str], Optional[str]]:
+    # 1) Try explicit/inferred package name match first.
+    if v.name:
+        key = canonicalize_name(v.name)
+        info = installed.get(key)
+        if info:
+            ver = inst_ver_from_map(installed, v.name)
+            return ver, info.get("name"), info.get("direct_url"), info.get("direct_commit")
+
+    # 2) Fallback to VCS URL match from direct_url.json for name-mismatch cases (e.g. sam2 vs SAM-2).
+    want = _normalize_vcs_url(v.url or "")
+    if not want:
+        return None, None, None, None
+    for info in installed.values():
+        durl = info.get("direct_url")
+        if not isinstance(durl, str) or not durl.strip():
+            continue
+        if _normalize_vcs_url(durl) != want:
+            continue
+        ver_raw = info.get("version") or ""
+        ver = None
+        try:
+            ver = Version(ver_raw) if ver_raw else None
+        except Exception:
+            ver = None
+        return ver, info.get("name"), durl, info.get("direct_commit")
+    return None, None, None, None
 
 
 def fetch_pypi(name: str) -> Tuple[List[Version], List[str], List[str]]:
@@ -962,12 +1072,54 @@ def _extract_versions_from_no_matching(out: str) -> List[Version]:
     return sorted(set(versions))
 
 
+def _strip_vcs_ref_from_url(url: str) -> Tuple[str, Optional[str]]:
+    """
+    Split VCS URL into (repo_url_without_ref, ref_if_present).
+    Handles common forms:
+    - git+https://host/org/repo.git@ref
+    - git+ssh://git@host/org/repo.git@ref
+    - git+git@host:org/repo.git@ref
+    """
+    src = (url or "").strip().split(";", 1)[0].strip()
+    if not src:
+        return "", None
+
+    head, frag = (src.split("#", 1) + [""])[:2]
+    has_frag = "#" in src
+    has_git_prefix = head.startswith("git+")
+    probe = head[4:] if has_git_prefix else head
+
+    ref: Optional[str] = None
+    split_at: Optional[int] = None
+
+    if "://" in probe:
+        # For URL form, an inline ref is the last "@" after the last "/".
+        last_at = probe.rfind("@")
+        last_slash = probe.rfind("/")
+        if last_at > last_slash:
+            split_at = last_at
+    elif ".git@" in probe:
+        # For SCP-like form (git@host:org/repo.git), only treat "@"
+        # after ".git" as an inline ref.
+        split_at = probe.rfind("@")
+
+    if split_at is not None and split_at >= 0:
+        ref_candidate = probe[split_at + 1:].strip()
+        if ref_candidate:
+            ref = ref_candidate
+            probe = probe[:split_at]
+
+    base = ("git+" if has_git_prefix else "") + probe
+    if has_frag:
+        base = base + "#" + frag
+    return base, ref
+
+
 def parse_vcs_line(raw: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Best-effort extraction of name, url, ref from a VCS/URL requirement line."""
     line = raw.strip()
     name: Optional[str] = None
     url_part = line
-    ref: Optional[str] = None
 
     # PEP 508 style: name @ URL
     if " @" in line:
@@ -986,24 +1138,22 @@ def parse_vcs_line(raw: str) -> Tuple[Optional[str], Optional[str], Optional[str
         if name_candidate:
             name = name_candidate
 
-    # Extract ref after the repo URL (last @ before fragment)
-    main_part = url_part.split("#", 1)[0]
-    if "git+" in main_part:
-        main_no_scheme = main_part.split("git+", 1)[1]
-    else:
-        main_no_scheme = main_part
-    if "@" in main_no_scheme:
-        ref = main_no_scheme.rsplit("@", 1)[1]
-    url = url_part
+    cleaned_url, ref = _strip_vcs_ref_from_url(url_part)
+    url = cleaned_url or url_part
     return name, url, ref
 
 
 def infer_name_from_url(url: str) -> Optional[str]:
     """Infer package name from repo URL path (last segment without .git)."""
     try:
-        path = url.split("://", 1)[-1]
-        path = path.split("@", 1)[-1]  # drop creds/refs if any
-        segment = path.split("/")[-1]
+        cleaned, _ = _strip_vcs_ref_from_url(url)
+        path = (cleaned or url).split(";", 1)[0].split("#", 1)[0].strip()
+        if path.startswith("git+"):
+            path = path[4:]
+        path = path.rstrip("/")
+        segment = path.rsplit("/", 1)[-1]
+        if "/" not in path and ":" in path:
+            segment = path.rsplit(":", 1)[-1]
         if segment.endswith(".git"):
             segment = segment[:-4]
         segment = segment.strip()
@@ -1015,14 +1165,28 @@ def infer_name_from_url(url: str) -> Optional[str]:
 def check_vcs_ref(url: str, ref: Optional[str]) -> Tuple[bool, str]:
     """Use git ls-remote to verify the ref exists (or that the repo is reachable)."""
     target = ref or "HEAD"
-    cleaned = url
+    cleaned, inline_ref = _strip_vcs_ref_from_url(url)
     if cleaned.startswith("git+"):
         cleaned = cleaned[4:]
-    cmd = ["git", "ls-remote", cleaned, target]
+    cleaned = cleaned.split(";", 1)[0].split("#", 1)[0].strip()
+    if not ref and inline_ref:
+        target = inline_ref
+    is_hex_ref = bool(re.fullmatch(r"[0-9a-fA-F]{7,40}", target))
+    cmd = ["git", "ls-remote", cleaned] if is_hex_ref else ["git", "ls-remote", cleaned, target]
     try:
         p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=25)
         out = p.stdout or ""
-        if p.returncode != 0 or not out.strip():
+        if p.returncode != 0:
+            return False, out.strip()
+        if is_hex_ref:
+            wanted = target.lower()
+            lines = [ln for ln in out.splitlines() if ln.strip()]
+            hashes = [ln.split()[0].lower() for ln in lines if ln.split()]
+            for h in hashes:
+                if h.startswith(wanted):
+                    return True, h
+            return False, f"commit {target} not found in remote refs"
+        if not out.strip():
             return False, out.strip()
         return True, out.strip().splitlines()[0]
     except subprocess.TimeoutExpired:
@@ -1216,6 +1380,11 @@ def main() -> None:
             if not nm_c and url:
                 nm_c = infer_name_from_url(url)
             extra_reqs.append(VcsReport("ComfyUI", reqf, raw, nm_c, url, ref))
+    repo_custom_nodes_path = _get_custom_nodes_repo_path(cfg)
+    if _ask_include_custom_nodes_repo_path(repo_custom_nodes_path):
+        custom_nodes_paths = _dedupe_dirs(custom_nodes_paths + [repo_custom_nodes_path])
+        print("Included custom_nodes_repo_path in requirements scan for this run.")
+
     plugin_paths: List[str] = []
     for cn in custom_nodes_paths:
         plugin_paths.extend(plugin_dirs(cn))
@@ -1242,7 +1411,11 @@ def main() -> None:
         reports[n] = PackageReport(n, inst_ver_from_map(installed_map, n), allc[n])
         progress("Installed", i, len(names))
     for i, v in enumerate(extra_reqs, 1):
-        v.installed = inst_ver_from_map(installed_map, v.name) if v.name else None
+        inst_ver, inst_name, inst_url, inst_commit = _resolve_vcs_installed(installed_map, v)
+        v.installed = inst_ver
+        v.installed_name = inst_name
+        v.installed_url = inst_url
+        v.installed_commit = inst_commit
         progress("Installed (VCS)", i, len(extra_reqs))
 
     # PyPI info
@@ -1267,7 +1440,12 @@ def main() -> None:
 
     # VCS refs check
     for i, v in enumerate(extra_reqs, 1):
-        if v.url:
+        local_commit = (v.installed_commit or "").strip().lower()
+        target_ref = (v.ref or "").strip().lower()
+        if target_ref and local_commit and local_commit.startswith(target_ref):
+            v.ref_ok = True
+            v.ref_error = f"matched installed commit {v.installed_commit}"
+        elif v.url:
             ok, info = check_vcs_ref(v.url, v.ref)
             v.ref_ok = ok
             v.ref_error = None if ok else (info or "unknown error")
