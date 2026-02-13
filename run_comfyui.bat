@@ -439,8 +439,28 @@ if "%UPDATE_FRONTEND%"=="1" (
   "!PYTHON_EXE!" -m pip install -U pip
   if errorlevel 1 goto pip_upgrade_fail
 
-  "!PYTHON_EXE!" -m pip install -U comfyui-frontend-package comfyui-workflow-templates comfyui-embedded-docs
-  if errorlevel 1 goto pkgs_fail
+  set "FRONTEND_LATEST=0"
+  set "FRONTEND_REQ_VER="
+  echo %COMFY_ARGS%| findstr /I /C:"--front-end-version Comfy-Org/ComfyUI_frontend@latest" >nul && set "FRONTEND_LATEST=1"
+
+  if "%FRONTEND_LATEST%"=="1" (
+    echo Frontend mode: latest ^(--front-end-version ...@latest detected^)
+    "!PYTHON_EXE!" -m pip install -U comfyui-frontend-package comfyui-workflow-templates comfyui-embedded-docs
+    if errorlevel 1 goto pkgs_fail
+  ) else (
+    if exist "%ROOT%requirements.txt" (
+      for /f "tokens=2 delims==" %%V in ('findstr /R /C:"^comfyui-frontend-package==" "%ROOT%requirements.txt"') do set "FRONTEND_REQ_VER=%%V"
+    )
+    if defined FRONTEND_REQ_VER if not "!FRONTEND_REQ_VER!"=="" (
+      echo Frontend mode: stable ^(pin from requirements.txt = !FRONTEND_REQ_VER!^)
+      "!PYTHON_EXE!" -m pip install -U "comfyui-frontend-package==!FRONTEND_REQ_VER!" comfyui-workflow-templates comfyui-embedded-docs
+      if errorlevel 1 goto pkgs_fail
+    ) else (
+      echo Frontend mode: stable requested, but pin not found in requirements.txt. Falling back to latest.
+      "!PYTHON_EXE!" -m pip install -U comfyui-frontend-package comfyui-workflow-templates comfyui-embedded-docs
+      if errorlevel 1 goto pkgs_fail
+    )
+  )
 
   echo.
   echo Packages updated.
