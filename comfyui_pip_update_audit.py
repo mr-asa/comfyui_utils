@@ -718,6 +718,8 @@ class PackageReport:
     update_ok: Optional[bool] = None
     update_error: Optional[str] = None
     reverse_conflicts: List[str] = field(default_factory=list)
+    safe_update: Optional[Version] = None
+    risky_update: Optional[Version] = None
 
 
 @dataclass
@@ -972,6 +974,59 @@ def choose_max(versions: List[Version], specs: List[SpecifierSet]) -> Optional[V
         return versions[-1]
     feas = [v for v in versions if all(v in s for s in specs if str(s))]
     return feas[-1] if feas else None
+
+
+def _dedupe_pkg_versions(items: List[Tuple[str, Version]]) -> List[Tuple[str, Version]]:
+    by_name: Dict[str, Version] = {}
+    for n, v in items:
+        prev = by_name.get(n)
+        if prev is None or v > prev:
+            by_name[n] = v
+    return sorted(by_name.items(), key=lambda x: x[0])
+
+
+def _find_safe_upgrade_fallback(
+    pkg_name: str,
+    rpt: PackageReport,
+    reverse_map: Dict[str, List[Tuple[str, SpecifierSet]]],
+    pip: List[str],
+    upper_exclusive: Optional[Version] = None,
+    max_dry_run_checks: int = 12,
+) -> Optional[Version]:
+    """
+    Find highest safe upgrade for an installed package:
+    - above installed
+    - below upper_exclusive (if set)
+    - satisfies direct requirement constraints
+    - satisfies reverse dependency constraints
+    - passes pip --dry-run as safe
+    """
+    if not rpt.installed:
+        return None
+    versions = sorted(set(rpt.available_versions), reverse=True)
+    if not versions:
+        return None
+    direct_specs = [c.spec for c in rpt.constraints if str(c.spec)]
+    checks = 0
+    for cand in versions:
+        if cand <= rpt.installed:
+            continue
+        if upper_exclusive and cand >= upper_exclusive:
+            continue
+        if rpt.max_allowed and cand > rpt.max_allowed:
+            continue
+        if direct_specs and not all(cand in s for s in direct_specs):
+            continue
+        if find_reverse_conflicts(reverse_map, pkg_name, cand):
+            continue
+        ok, out = dry_run(pip, [(pkg_name, cand)])
+        cls, _err = classify_dry_run(ok, out)
+        checks += 1
+        if cls == "safe":
+            return cand
+        if checks >= max_dry_run_checks:
+            break
+    return None
 
 
 def pip_cmd(cfg: dict) -> List[str]:
@@ -1533,12 +1588,30 @@ def main() -> None:
             rpt.update_ok = cls == "safe"
             rpt.update_error = None if cls == "safe" else (err or "")
             rpt.reverse_conflicts = conflicts
+            if cls == "safe":
+                rpt.safe_update = v
+            elif cls == "risky":
+                rpt.risky_update = v
         if cls == "safe":
             safe.append((n, v))
         elif cls == "risky":
             risky.append((n, v))
         else:
             unknown.append((n, v))
+
+        # If latest allowed is risky/unknown, try to find best lower safe upgrade too.
+        if rpt is not None and cls != "safe":
+            fallback = _find_safe_upgrade_fallback(
+                n,
+                rpt,
+                reverse_map,
+                pip,
+                upper_exclusive=v,
+            )
+            if fallback:
+                safe.append((n, fallback))
+                rpt.safe_update = fallback
+                rpt.update_ok = True
         progress("Classify", idx, total, n)
     if total:
         progress("Classify", total, total)
@@ -1594,7 +1667,15 @@ def main() -> None:
         elif action == "install":
             print(" - Update: " + Fore.RED + f"Not installed; will be added at {tgt}" + Style.RESET_ALL)
         elif action == "upgrade":
-            print(" - Update: " + Fore.GREEN + f"Upgrade to {tgt} suggested" + Style.RESET_ALL)
+            if r.safe_update and r.risky_update and r.safe_update != r.risky_update:
+                print(" - Update (safe): " + Fore.GREEN + f"Upgrade to {r.safe_update} suggested" + Style.RESET_ALL)
+                print(" - Update (risky): " + Fore.YELLOW + f"Newer risky upgrade exists: {r.risky_update}" + Style.RESET_ALL)
+            elif r.safe_update:
+                print(" - Update: " + Fore.GREEN + f"Upgrade to {r.safe_update} suggested" + Style.RESET_ALL)
+            elif r.risky_update:
+                print(" - Update: " + Fore.YELLOW + f"Risky upgrade to {r.risky_update} (see Constraint issue)" + Style.RESET_ALL)
+            else:
+                print(" - Update: " + Fore.GREEN + f"Upgrade to {tgt} suggested" + Style.RESET_ALL)
         elif action == "downgrade":
             print(" - Update: " + Fore.YELLOW + f"Installed {r.installed} ABOVE allowed {tgt}; consider downgrade" + Style.RESET_ALL)
         print()
@@ -1630,6 +1711,9 @@ def main() -> None:
         return " ".join(f"{n}=={v}" for n, v in lst)
 
     print(Style.BRIGHT + "=== Final commands ===" + Style.RESET_ALL)
+    safe = _dedupe_pkg_versions(safe)
+    risky = _dedupe_pkg_versions(risky)
+    unknown = _dedupe_pkg_versions(unknown)
     extra_unique = sorted(set(v.raw for v in extra_reqs))
     safe_cmd = " ".join(pip) + " install --upgrade " + cmdline(safe)
     risky_cmd = " ".join(pip) + " install --upgrade " + cmdline(risky)
