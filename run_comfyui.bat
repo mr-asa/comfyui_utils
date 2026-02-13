@@ -133,9 +133,9 @@ set "TORCH_LIB=%ROOT%!VENV_DIR!\Lib\site-packages\torch\lib"
 if exist "%CUDA_BIN%" set "PATH=%CUDA_BIN%;%PATH%"
 if exist "%TORCH_LIB%" set "PATH=%TORCH_LIB%;%PATH%"
 if defined CUDA_HOME (
-  echo CUDA: %CUDA_HOME%
+  echo CUDA Toolkit path ^(CUDA_HOME^): %CUDA_HOME%
 ) else (
-  echo CUDA: not found
+  echo CUDA Toolkit path ^(CUDA_HOME^): not found ^(optional for runtime; needed for building some CUDA extensions^)
 )
 
 echo.
