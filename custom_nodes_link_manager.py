@@ -205,7 +205,16 @@ def _print_panels(node_names: List[str], links: List[LinkedNode]) -> None:
         else:
             print(left)
     print()
-    print("Commands: a [n|n-m|n,n]=add, r [n|n-m|n,n]=remove, i [n|n-m|n,n]=invert, s=sync, j=remove all broken junks, p=presets, w=save preset, q=quit, ?=help, enter=refresh")
+    print("Commands: a [n|n-m|n,n]=add, r [n|n-m|n,n]=remove, i [n|n-m|n,n]=invert, s=sync, j=remove all broken junks, p=presets, w=save preset, ?+=filter linked, ?-=filter unlinked, ?*=filter all, q=quit, ?=help, enter=refresh")
+
+
+def _filter_display_nodes(display_nodes: List[str], links: List[LinkedNode], mode: str) -> List[str]:
+    link_set = {ln.name for ln in links}
+    if mode == "linked":
+        return [n for n in display_nodes if n in link_set]
+    if mode == "unlinked":
+        return [n for n in display_nodes if n not in link_set]
+    return display_nodes
 
 
 def _ensure_presets_config(path: str) -> None:
@@ -462,16 +471,30 @@ def main() -> int:
     presets_path = str(here / "run_comfyui_presets_config.json")
     repo_dir, custom_nodes_dir, _cfg = _resolve_paths(cfg_path, args)
 
+    filter_mode = "all"
+
     while True:
         repo_nodes = _scan_repo(repo_dir)
         links = _scan_links(custom_nodes_dir, repo_dir)
         repo_set = set(repo_nodes)
         extra_nodes = [ln.name for ln in links if ln.name not in repo_set]
-        display_nodes = sorted(repo_nodes + extra_nodes)
+        display_nodes_all = sorted(repo_nodes + extra_nodes)
+        display_nodes = _filter_display_nodes(display_nodes_all, links, filter_mode)
+        print(f"\nFilter: {filter_mode} (shown {len(display_nodes)}/{len(display_nodes_all)})")
         _print_panels(display_nodes, links)
 
         cmd = input("> ").strip()
         if not cmd:
+            continue
+        low = cmd.lower()
+        if low in ("?+", "f+", "f +", "f linked", "filter linked"):
+            filter_mode = "linked"
+            continue
+        if low in ("?-", "f-", "f -", "f unlinked", "filter unlinked"):
+            filter_mode = "unlinked"
+            continue
+        if low in ("?*", "f*", "f *", "f all", "filter all"):
+            filter_mode = "all"
             continue
         if cmd.lower() in ("q", "quit", "exit"):
             return 0
@@ -483,6 +506,9 @@ def main() -> int:
             print("j: remove junk links (missing targets)")
             print("p: choose preset and apply")
             print("w: save preset from current links")
+            print("?+: show only linked nodes")
+            print("?-: show only unlinked nodes")
+            print("?*: show all nodes")
             print("    - adds links for repo nodes missing in custom_nodes")
             print("    - removes junctions that are not present in repo")
             print("q: quit")

@@ -543,8 +543,52 @@ def _extract_porcelain_path(line: str) -> str:
     if " -> " in raw:
         raw = raw.split(" -> ", 1)[-1].strip()
     if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
-        raw = raw[1:-1]
+        raw = _decode_git_quoted_path(raw[1:-1])
     return raw
+
+
+def _decode_git_quoted_path(value: str) -> str:
+    """
+    Decode git's C-style quoted path (used by `git status --porcelain`).
+    Handles octal escapes like \\343\\200\\220 and common escaped chars.
+    """
+    chunks: List[int] = []
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if ch != "\\":
+            chunks.extend(ch.encode("utf-8", errors="surrogatepass"))
+            i += 1
+            continue
+        if i + 1 >= len(value):
+            chunks.append(ord("\\"))
+            i += 1
+            continue
+
+        nxt = value[i + 1]
+        # Git uses 3-digit octal escapes for non-ASCII bytes in quoted paths.
+        if i + 3 < len(value) and value[i + 1:i + 4].isdigit() and all(c in "01234567" for c in value[i + 1:i + 4]):
+            chunks.append(int(value[i + 1:i + 4], 8))
+            i += 4
+            continue
+        if nxt == "n":
+            chunks.append(ord("\n"))
+            i += 2
+            continue
+        if nxt == "t":
+            chunks.append(ord("\t"))
+            i += 2
+            continue
+        if nxt in {'\\', '"'}:
+            chunks.append(ord(nxt))
+            i += 2
+            continue
+
+        # Unknown escape: keep literal char after backslash.
+        chunks.extend(nxt.encode("utf-8", errors="surrogatepass"))
+        i += 2
+
+    return bytes(chunks).decode("utf-8", errors="replace")
 
 
 def _is_ignored_status_path(path: str) -> bool:

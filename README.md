@@ -121,6 +121,8 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 - Numbering runs top-to-bottom per column (first column, then second).
 - Commands: `a` add (all), `r` remove (all), `i` invert (all), `s` sync, `p` choose preset, `w` save preset, `q` quit.
 - Use `a <n>`, `r <n>`, `i <n>` to target specific indices.
+- List filters: `?+` linked only, `?-` unlinked only, `?*` all.
+- With a filter active, `a <n>`, `r <n>`, `i <n>` use indices from the current filtered list.
 - Index selection supports single numbers, ranges, and lists (`3`, `2-6`, `1,4,9`, `1 3-5`).
 - Sync adds missing links and removes extra junctions.
 - `custom_nodes_repo_path` comes from `config.json` or is requested.
