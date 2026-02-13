@@ -41,7 +41,7 @@ if not defined PYTHON_EXE (
   )
 )
 
-"%PYTHON_EXE%" >nul 2>&1
+"%PYTHON_EXE%" -V >nul 2>&1
 if errorlevel 1 if exist "%VENV_PY%" set "PYTHON_EXE=%VENV_PY%"
 
 @REM echo SCRIPT_DIR = %SCRIPT_DIR%
