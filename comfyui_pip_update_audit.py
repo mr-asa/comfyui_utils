@@ -301,7 +301,7 @@ if _early_hold_pin():
 import requests
 from packaging.requirements import Requirement
 from packaging.markers import Marker
-from packaging.specifiers import SpecifierSet
+from packaging.specifiers import Specifier, SpecifierSet
 from packaging.version import Version
 from packaging.utils import canonicalize_name
 from colorama import init as colorama_init, Fore, Style
@@ -831,6 +831,30 @@ def load_installed_dists(cfg: dict) -> Dict[str, dict]:
     return out
 
 
+def _target_python_version(cfg: dict) -> str:
+    """
+    Return target environment Python version (major.minor.micro) used for compatibility checks.
+    Falls back to current interpreter version on any failure.
+    """
+    fallback = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    py = _python_cmd(cfg)
+    try:
+        p = subprocess.run(
+            py + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=15,
+        )
+        if p.returncode == 0 and p.stdout:
+            val = p.stdout.strip()
+            if re.match(r"^\d+\.\d+\.\d+$", val):
+                return val
+    except Exception:
+        pass
+    return fallback
+
+
 def inst_ver_from_map(installed: Dict[str, dict], name: str) -> Optional[Version]:
     try:
         info = installed.get(canonicalize_name(name))
@@ -883,14 +907,15 @@ def _resolve_vcs_installed(installed: Dict[str, dict], v: VcsReport) -> Tuple[Op
     return None, None, None, None
 
 
-def fetch_pypi(name: str) -> Tuple[List[Version], List[str], List[str]]:
+def fetch_pypi(name: str, py_ver: Optional[str] = None) -> Tuple[List[Version], List[str], List[str]]:
     """Return (stable versions compatible with current Python, skipped_incompatible_descriptions, filtered_prereleases)."""
     try:
         r = requests.get(f"https://pypi.org/pypi/{name}/json", timeout=12)
         if r.status_code != 200:
             return [], [], []
         data = r.json()
-        py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        if not py_ver:
+            py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         vs: List[Version] = []
         skipped: List[str] = []
         filtered: List[str] = []
@@ -974,6 +999,61 @@ def choose_max(versions: List[Version], specs: List[SpecifierSet]) -> Optional[V
         return versions[-1]
     feas = [v for v in versions if all(v in s for s in specs if str(s))]
     return feas[-1] if feas else None
+
+
+def _simplify_constraint_specs(specs: List[SpecifierSet]) -> str:
+    """
+    Build a compact human-readable constraints string:
+    - de-duplicate clauses
+    - collapse multiple lower bounds (>=, >) to the strictest one
+    - collapse multiple upper bounds (<=, <) to the strictest one
+    """
+    raw_parts: List[str] = []
+    seen_raw: set[str] = set()
+    for spec_set in specs:
+        text = str(spec_set).strip()
+        if not text:
+            continue
+        for part in [p.strip() for p in text.split(",") if p.strip()]:
+            if part in seen_raw:
+                continue
+            seen_raw.add(part)
+            raw_parts.append(part)
+
+    lower_specs: List[Tuple[Specifier, Version]] = []
+    upper_specs: List[Tuple[Specifier, Version]] = []
+    passthrough: List[str] = []
+
+    for part in raw_parts:
+        try:
+            sp = Specifier(part)
+            v = Version(sp.version)
+        except Exception:
+            passthrough.append(part)
+            continue
+        if sp.operator in {">", ">="}:
+            lower_specs.append((sp, v))
+        elif sp.operator in {"<", "<="}:
+            upper_specs.append((sp, v))
+        else:
+            passthrough.append(part)
+
+    out: List[str] = []
+    out.extend(passthrough)
+
+    if lower_specs:
+        # Strictest lower bound = highest version; for equal version, '>' is stricter than '>='.
+        best_lower, _ = max(lower_specs, key=lambda x: (x[1], 1 if x[0].operator == ">" else 0))
+        out.append(str(best_lower))
+
+    if upper_specs:
+        # Strictest upper bound = lowest version; for equal version, '<' is stricter than '<='.
+        best_upper, _ = min(upper_specs, key=lambda x: (x[1], 0 if x[0].operator == "<" else 1))
+        out.append(str(best_upper))
+
+    if not out:
+        return ""
+    return ", ".join(out)
 
 
 def _dedupe_pkg_versions(items: List[Tuple[str, Version]]) -> List[Tuple[str, Version]]:
@@ -1474,8 +1554,9 @@ def main() -> None:
         progress("Installed (VCS)", i, len(extra_reqs))
 
     # PyPI info
+    target_py_ver = _target_python_version(cfg)
     for i, n in enumerate(names, 1):
-        vs, skipped, filtered = fetch_pypi(n)
+        vs, skipped, filtered = fetch_pypi(n, py_ver=target_py_ver)
         rpt = reports[n]
         rpt.available_versions = vs
         rpt.py_incompatible = skipped
@@ -1484,7 +1565,7 @@ def main() -> None:
         rpt.max_allowed = choose_max(vs, specs)
         rpt.installable_max = rpt.max_allowed
         if specs and not rpt.max_allowed:
-            uniq_specs = ", ".join(sorted(set(str(s) for s in specs)))
+            uniq_specs = _simplify_constraint_specs(specs)
             if not vs:
                 rpt.update_error = f"No releases found on PyPI; constraint(s): {uniq_specs}"
             else:
@@ -1756,6 +1837,24 @@ def main() -> None:
     if downgrades:
         down_cmd = " ".join(pip) + " install " + cmdline(downgrades)
         print("Downgrades:\n  " + Fore.BLUE + down_cmd + Style.RESET_ALL)
+
+    unsatisfiable_constraints: List[Tuple[str, str, str]] = []
+    for n in names:
+        r = reports[n]
+        if r.max_allowed is not None:
+            continue
+        if not r.update_error:
+            continue
+        msg = (r.update_error or "").strip()
+        if not msg.lower().startswith("no release satisfies"):
+            continue
+        inst = str(r.installed) if r.installed else "-"
+        unsatisfiable_constraints.append((n, inst, msg))
+
+    if unsatisfiable_constraints:
+        print("Unsatisfiable constraints:")
+        for n, inst, msg in unsatisfiable_constraints:
+            print(f"  - {n} (installed {inst}): {msg}")
 
 
 if __name__ == "__main__":

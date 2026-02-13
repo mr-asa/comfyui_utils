@@ -8,10 +8,26 @@ set "PYTHON_EXE="
 set "ROOT_DIR=%SCRIPT_DIR%..\.."
 set "VENV_PY=%ROOT_DIR%\.venv\Scripts\python.exe"
 
-REM Read conda_env_folder from config.json (via PowerShell) and build full path to python.exe
+REM Read env_type from config.json and resolve python path for selected environment.
 if exist "%CONFIG_PATH%" (
   for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "(Get-Content '%CONFIG_PATH%' -Raw | ConvertFrom-Json).conda_env_folder + '\\python.exe'"`) do (
+    "$cfg=Get-Content -LiteralPath '%CONFIG_PATH%' -Raw | ConvertFrom-Json; " ^
+    "$envType=''; if($cfg.PSObject.Properties.Name -contains 'env_type' -and $cfg.env_type){ $envType=([string]$cfg.env_type).ToLower().Trim() }; " ^
+    "$py=''; " ^
+    "if($envType -eq 'venv'){ " ^
+    "  $v=''; if($cfg.PSObject.Properties.Name -contains 'venv_path'){ $v=[string]$cfg.venv_path }; " ^
+    "  if($v){ $cand=Join-Path $v 'Scripts\\python.exe'; if(Test-Path -LiteralPath $cand){ $py=$cand } } " ^
+    "} elseif($envType -eq 'conda'){ " ^
+    "  $c=''; if($cfg.PSObject.Properties.Name -contains 'conda_env_folder'){ $c=[string]$cfg.conda_env_folder }; " ^
+    "  if($c){ $cand=Join-Path $c 'python.exe'; if(Test-Path -LiteralPath $cand){ $py=$cand } } " ^
+    "} " ^
+    "if(-not $py -and $cfg.PSObject.Properties.Name -contains 'venv_path' -and $cfg.venv_path){ " ^
+    "  $v=[string]$cfg.venv_path; $cand=Join-Path $v 'Scripts\\python.exe'; if(Test-Path -LiteralPath $cand){ $py=$cand } " ^
+    "} " ^
+    "if(-not $py -and $cfg.PSObject.Properties.Name -contains 'conda_env_folder' -and $cfg.conda_env_folder){ " ^
+    "  $c=[string]$cfg.conda_env_folder; $cand=Join-Path $c 'python.exe'; if(Test-Path -LiteralPath $cand){ $py=$cand } " ^
+    "} " ^
+    "if($py){ Write-Output $py }"`) do (
       set "PYTHON_EXE=%%I"
   )
 )
@@ -20,7 +36,7 @@ if not defined PYTHON_EXE (
   if exist "%VENV_PY%" (
     set "PYTHON_EXE=%VENV_PY%"
   ) else (
-    echo config.json not found or missing conda_env_folder. Using python from PATH to bootstrap config...
+    echo config.json not found or selected env python missing. Using python from PATH...
     set "PYTHON_EXE=python"
   )
 )
