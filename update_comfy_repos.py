@@ -32,6 +32,7 @@ Requires only Git installed in PATH.
 
 from __future__ import annotations
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import re
 import shlex
@@ -272,6 +273,12 @@ def main() -> int:
     parser.add_argument("--only", nargs="*", default=None, help="Update only repositories matching these substrings/regex")
     parser.add_argument("--skip", nargs="*", default=None, help="Skip repositories matching these substrings/regex")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without making git changes")
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="Parallel workers for plugin repositories (default: auto or update_comfy_repos_config.json: parallel_jobs)",
+    )
     args = parser.parse_args()
 
     comfy_root = resolve_comfyui_root(config_path, cli_root=args.root, start_path=Path(here))
@@ -307,11 +314,85 @@ def main() -> int:
     repos = apply_filters(repos, only=args.only, skip=args.skip)
 
     any_errors = False
-    for repo_path in repos:
+    if args.jobs is not None:
+        jobs = max(1, args.jobs)
+    else:
+        cfg_jobs = update_cfg.get("parallel_jobs")
+        if isinstance(cfg_jobs, int) and cfg_jobs > 0:
+            jobs = cfg_jobs
+        else:
+            jobs = max(2, min(8, os.cpu_count() or 4))
+
+    # Keep root repo first and sequential. Plugins may run in parallel if they won't prompt.
+    root_repo = str(comfy_root)
+    ordered_repos: List[str] = []
+    if root_repo in repos:
+        ordered_repos.append(root_repo)
+    ordered_repos.extend([p for p in repos if p != root_repo])
+
+    serial_repos: List[str] = []
+    parallel_repos: List[str] = []
+
+    for idx, repo_path in enumerate(ordered_repos):
+        if idx == 0 and repo_path == root_repo:
+            serial_repos.append(repo_path)
+            continue
+        if args.dry_run:
+            parallel_repos.append(repo_path)
+            continue
+        if not os.path.isdir(os.path.join(repo_path, ".git")):
+            parallel_repos.append(repo_path)
+            continue
+        dirty, status_out, _ignored_paths = repo_dirty(repo_path)
+        if dirty:
+            serial_repos.append(repo_path)
+        else:
+            parallel_repos.append(repo_path)
+
+    results: Dict[str, UpdateResult] = {}
+
+    for repo_path in serial_repos:
         res = update_repo(repo_path, dry_run=args.dry_run)
         print_report(res)
         if res.error:
             any_errors = True
+        results[repo_path] = res
+
+    if parallel_repos:
+        workers = min(jobs, len(parallel_repos))
+        if workers <= 1:
+            for repo_path in parallel_repos:
+                res = update_repo(repo_path, dry_run=args.dry_run)
+                print_report(res)
+                if res.error:
+                    any_errors = True
+                results[repo_path] = res
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                fut_to_repo = {ex.submit(update_repo, repo_path, args.dry_run): repo_path for repo_path in parallel_repos}
+                for fut in as_completed(fut_to_repo):
+                    repo_path = fut_to_repo[fut]
+                    try:
+                        results[repo_path] = fut.result()
+                    except Exception as e:
+                        name = os.path.basename(repo_path.rstrip(os.sep))
+                        branch = get_current_branch(repo_path) or "DETACHED"
+                        web_url = to_web_url(get_remote_url(repo_path) or "")
+                        results[repo_path] = UpdateResult(
+                            name=name,
+                            path=repo_path,
+                            web_url=web_url,
+                            branch=branch,
+                            changed=False,
+                            commit_messages=[],
+                            numstat=[],
+                            notes=["Unexpected exception while updating repository."],
+                            error=str(e),
+                        )
+                    res = results[repo_path]
+                    print_report(res)
+                    if res.error:
+                        any_errors = True
 
     return 1 if any_errors else 0
 

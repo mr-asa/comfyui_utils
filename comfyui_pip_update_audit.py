@@ -18,6 +18,7 @@ ComfyUI environment updater and audit (pip) — streamlined
 
 from __future__ import annotations
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
@@ -1387,6 +1388,13 @@ def main() -> None:
         default=None,
         help="Pin package(s), use name or name==ver",
     )
+    parser.add_argument(
+        "--classify-workers",
+        dest="classify_workers",
+        type=int,
+        default=None,
+        help="Max parallel workers for pip --dry-run candidate checks (default: auto)",
+    )
     args, _ = parser.parse_known_args()
 
     cfg = load_or_init_config(cfg_path)
@@ -1623,47 +1631,88 @@ def main() -> None:
     risky: List[Tuple[str, Version]] = []
     unknown: List[Tuple[str, Version]] = []
     total = len(cand)
-    for idx, (n, v) in enumerate(cand, 1):
-        conflicts = find_reverse_conflicts(reverse_map, n, v)
-        if conflicts:
-            cls = "risky"
-            err = "Reverse dependency conflict: " + "; ".join(conflicts)
-            ok = False
-        else:
-            ok, out = dry_run(pip, [(n, v)])
-            cls, err = classify_dry_run(ok, out)
-            rpt = reports.get(n)
-            if (not ok) and _is_no_matching_distribution(out) and rpt is not None:
-                specs = [c.spec for c in rpt.constraints if str(c.spec)]
-                available = _extract_versions_from_no_matching(out)
-                fallback = choose_max(available, specs) if available else None
-                if fallback:
-                    rpt.installable_max = fallback
-                    rpt.availability_issue = (
-                        f"{n}=={v} not available for this Python/platform; "
-                        f"highest installable is {fallback}"
-                    )
-                    if rpt.installed and rpt.installed >= fallback:
-                        rpt.update_ok = True
-                        rpt.update_error = None
-                        progress("Classify", idx, total, n)
-                        continue
-                    v = fallback
-                    conflicts2 = find_reverse_conflicts(reverse_map, n, v)
-                    if conflicts2:
-                        cls = "risky"
-                        err = "Reverse dependency conflict: " + "; ".join(conflicts2)
-                        conflicts = conflicts2
-                    else:
-                        ok, out = dry_run(pip, [(n, v)])
-                        cls, err = classify_dry_run(ok, out)
-                else:
-                    rpt.installable_max = rpt.installed
-                    rpt.availability_issue = f"{n}=={v} not available for this Python/platform"
-                    rpt.update_ok = False
-                    rpt.update_error = out or "No matching distribution found"
-                    progress("Classify", idx, total, n)
+    cfg_workers = cfg.get("pip_audit_classify_workers")
+    requested_workers = args.classify_workers
+    if requested_workers is None and isinstance(cfg_workers, int):
+        requested_workers = cfg_workers
+    auto_workers = max(4, min(16, (os.cpu_count() or 4) * 2))
+    classify_workers = requested_workers if isinstance(requested_workers, int) else auto_workers
+    if classify_workers < 1:
+        classify_workers = 1
+
+    initial_results: Dict[str, Tuple[Version, List[str], bool, str, str, str]] = {}
+
+    def _initial_classify(name: str, ver: Version) -> Tuple[Version, List[str], bool, str, str, str]:
+        conflicts_local = find_reverse_conflicts(reverse_map, name, ver)
+        if conflicts_local:
+            return (
+                ver,
+                conflicts_local,
+                False,
+                "",
+                "risky",
+                "Reverse dependency conflict: " + "; ".join(conflicts_local),
+            )
+        ok_local, out_local = dry_run(pip, [(name, ver)])
+        cls_local, err_local = classify_dry_run(ok_local, out_local)
+        return ver, [], ok_local, out_local, cls_local, err_local or ""
+
+    if total <= 1 or classify_workers == 1:
+        for idx, (n, v) in enumerate(cand, 1):
+            initial_results[n] = _initial_classify(n, v)
+            progress("Classify", idx, total, n)
+    else:
+        done = 0
+        max_workers = min(classify_workers, total)
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            fut_to_name = {ex.submit(_initial_classify, n, v): n for n, v in cand}
+            for fut in as_completed(fut_to_name):
+                n = fut_to_name[fut]
+                try:
+                    initial_results[n] = fut.result()
+                except Exception as e:
+                    cur_ver = next((vv for nn, vv in cand if nn == n), Version("0"))
+                    initial_results[n] = (cur_ver, [], False, str(e), "unknown", str(e))
+                done += 1
+                progress("Classify", done, total, n)
+    if total:
+        progress("Classify", total, total)
+
+    for n, v in cand:
+        ver_checked, conflicts, ok, out, cls, err = initial_results.get(
+            n, (v, [], False, "", "unknown", "internal classification error")
+        )
+        v = ver_checked
+        rpt = reports.get(n)
+        if (not ok) and _is_no_matching_distribution(out) and rpt is not None:
+            specs = [c.spec for c in rpt.constraints if str(c.spec)]
+            available = _extract_versions_from_no_matching(out)
+            fallback = choose_max(available, specs) if available else None
+            if fallback:
+                rpt.installable_max = fallback
+                rpt.availability_issue = (
+                    f"{n}=={v} not available for this Python/platform; "
+                    f"highest installable is {fallback}"
+                )
+                if rpt.installed and rpt.installed >= fallback:
+                    rpt.update_ok = True
+                    rpt.update_error = None
                     continue
+                v = fallback
+                conflicts2 = find_reverse_conflicts(reverse_map, n, v)
+                if conflicts2:
+                    cls = "risky"
+                    err = "Reverse dependency conflict: " + "; ".join(conflicts2)
+                    conflicts = conflicts2
+                else:
+                    ok, out = dry_run(pip, [(n, v)])
+                    cls, err = classify_dry_run(ok, out)
+            else:
+                rpt.installable_max = rpt.installed
+                rpt.availability_issue = f"{n}=={v} not available for this Python/platform"
+                rpt.update_ok = False
+                rpt.update_error = out or "No matching distribution found"
+                continue
         rpt = reports.get(n)
         if rpt is not None:
             rpt.update_ok = cls == "safe"
@@ -1693,9 +1742,6 @@ def main() -> None:
                 safe.append((n, fallback))
                 rpt.safe_update = fallback
                 rpt.update_ok = True
-        progress("Classify", idx, total, n)
-    if total:
-        progress("Classify", total, total)
 
     # Print per package
     for n in names:
