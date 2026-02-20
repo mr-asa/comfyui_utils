@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -176,36 +178,73 @@ def _print_panels(node_names: List[str], links: List[LinkedNode]) -> None:
     link_set = {ln.name for ln in links}
     link_map = {ln.name: ln for ln in links}
     idx_width = 3
+    prefix_width = idx_width + 6
 
     def _red(text: str) -> str:
         return f"\x1b[31m{text}\x1b[0m"
 
-    entries = []
+    def _clip_name(name: str, max_len: int) -> str:
+        if max_len <= 0:
+            return ""
+        if len(name) <= max_len:
+            return name
+        if max_len <= 3:
+            return "." * max_len
+        return name[: max_len - 3] + "..."
+
+    def _entry_text(i: int, name: str, marker: str, is_junk: bool, name_max: Optional[int] = None) -> Tuple[str, str]:
+        shown_name = _clip_name(name, name_max) if name_max is not None else name
+        plain = f"{marker} [{i:>{idx_width}}] {shown_name}"
+        colored = f"{_red('!!')} [{i:>{idx_width}}] {shown_name}" if is_junk else plain
+        return plain, colored
+
+    entries: List[Tuple[int, str, str, bool]] = []
     for i, name in enumerate(node_names, 1):
         is_junk = name in link_map and not link_map[name].target_exists
         if is_junk:
-            marker = _red("!!")
+            marker = "!!"
         elif name in link_set:
             marker = "=>"
         else:
             marker = "  "
-        entries.append(f"{marker} [{i:>{idx_width}}] {name}")
+        entries.append((i, name, marker, is_junk))
     rows = (len(entries) + 1) // 2
     left_entries = entries[:rows]
     right_entries = entries[rows:]
-    left_w = max([len(s) for s in left_entries], default=0)
+    left_plain_w = max([prefix_width + len(name) for _, name, _, _ in left_entries], default=0)
+    right_plain_w = max([prefix_width + len(name) for _, name, _, _ in right_entries], default=0)
+
+    term_w = shutil.get_terminal_size((120, 20)).columns
+    gap = 3
+    min_col_w = prefix_width + 8
+    two_cols = bool(right_entries) and term_w >= (min_col_w * 2 + gap)
+
+    left_w = left_plain_w
+    right_w = right_plain_w
+    if two_cols:
+        left_w = min(left_plain_w, max(min_col_w, term_w // 2 - gap))
+        right_w = max(min_col_w, term_w - left_w - gap)
+    else:
+        right_entries = []
 
     print()
     print("Nodes ('=>' is linked)")
     for i in range(rows):
-        left = left_entries[i]
-        right = right_entries[i] if i < len(right_entries) else ""
+        li, lname, lmarker, ljunk = left_entries[i]
+        left_plain, left_colored = _entry_text(li, lname, lmarker, ljunk, max(1, left_w - prefix_width))
+        right = ""
+        right_colored = ""
+        if i < len(right_entries):
+            ri, rname, rmarker, rjunk = right_entries[i]
+            right, right_colored = _entry_text(ri, rname, rmarker, rjunk, max(1, right_w - prefix_width))
         if right:
-            print(left.ljust(left_w + 4) + right)
+            pad = max(1, left_w - len(left_plain) + gap)
+            print(left_colored + (" " * pad) + right_colored)
         else:
-            print(left)
+            print(left_colored)
     print()
-    print("Commands: a [n|n-m|n,n]=add, r [n|n-m|n,n]=remove, i [n|n-m|n,n]=invert, s=sync, j=remove all broken junks, p=presets, w=save preset, ?+=filter linked, ?-=filter unlinked, ?*=filter all, q=quit, ?=help, enter=refresh")
+    print("Commands: a|r|i [n|n-m|n,n|text|re:regex], f [text|re:regex], f=clear, ?+=linked, ?-=unlinked, ?*=all")
+    print("          s=sync, j=remove junk, p=presets, w=save preset, q=quit, ?=help, enter=refresh")
 
 
 def _filter_display_nodes(display_nodes: List[str], links: List[LinkedNode], mode: str) -> List[str]:
@@ -460,6 +499,27 @@ def _parse_indices(text: str, max_index: int) -> List[int]:
     return out
 
 
+def _parse_name_filter(selection: str, names: List[str]) -> Tuple[List[str], Optional[str]]:
+    raw = selection.strip()
+    if not raw:
+        return [], "Empty filter."
+
+    low = raw.lower()
+    if low.startswith("re:") or low.startswith("regex:"):
+        _, _, pattern = raw.partition(":")
+        pattern = pattern.strip()
+        if not pattern:
+            return [], "Regex is empty."
+        try:
+            rx = re.compile(pattern, re.IGNORECASE)
+        except re.error as e:
+            return [], f"Invalid regex: {e}"
+        return [n for n in names if rx.search(n)], None
+
+    token = raw.lower()
+    return [n for n in names if token in n.lower()], None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage custom_nodes junction links.")
     parser.add_argument("--repo", help="Path to custom_nodes_repo")
@@ -472,6 +532,7 @@ def main() -> int:
     repo_dir, custom_nodes_dir, _cfg = _resolve_paths(cfg_path, args)
 
     filter_mode = "all"
+    name_filter = ""
 
     while True:
         repo_nodes = _scan_repo(repo_dir)
@@ -480,7 +541,10 @@ def main() -> int:
         extra_nodes = [ln.name for ln in links if ln.name not in repo_set]
         display_nodes_all = sorted(repo_nodes + extra_nodes)
         display_nodes = _filter_display_nodes(display_nodes_all, links, filter_mode)
-        print(f"\nFilter: {filter_mode} (shown {len(display_nodes)}/{len(display_nodes_all)})")
+        if name_filter:
+            display_nodes, _ = _parse_name_filter(name_filter, display_nodes)
+        name_filter_label = name_filter if name_filter else "*"
+        print(f"\nFilter: {filter_mode} | name: {name_filter_label} | shown {len(display_nodes)}/{len(display_nodes_all)}")
         _print_panels(display_nodes, links)
 
         cmd = input("> ").strip()
@@ -496,12 +560,27 @@ def main() -> int:
         if low in ("?*", "f*", "f *", "f all", "filter all"):
             filter_mode = "all"
             continue
+        if low in ("f", "filter", "fc", "f clear", "filter clear", "filter reset"):
+            name_filter = ""
+            continue
+        if low.startswith("f ") or low.startswith("filter "):
+            _, _, expr = cmd.partition(" ")
+            expr = expr.strip()
+            matches, err = _parse_name_filter(expr, display_nodes_all)
+            if err:
+                print(err)
+                continue
+            name_filter = expr
+            print(f"Name filter set: {name_filter} (matches {len(matches)})")
+            continue
         if cmd.lower() in ("q", "quit", "exit"):
             return 0
         if cmd in ("?", "h", "help"):
-            print("a [n]: add repo nodes (all or by index)")
-            print("r [n]: remove linked nodes (all or by index)")
+            print("a [n|text|re:regex]: add repo nodes")
+            print("r [n|text|re:regex]: remove linked nodes")
             print("i [n]: invert (add unlinked, remove linked) for repo nodes")
+            print("f [text|re:regex]: set name filter for shown list")
+            print("f: clear name filter")
             print("s: sync (mirror repo -> custom_nodes via junctions)")
             print("j: remove junk links (missing targets)")
             print("p: choose preset and apply")
@@ -509,6 +588,7 @@ def main() -> int:
             print("?+: show only linked nodes")
             print("?-: show only unlinked nodes")
             print("?*: show all nodes")
+            print("examples: f __3d, f re:(^|[-_])3d($|[-_]), a __3d, r 1,3,5")
             print("    - adds links for repo nodes missing in custom_nodes")
             print("    - removes junctions that are not present in repo")
             print("q: quit")
@@ -562,24 +642,31 @@ def main() -> int:
         action = parts[0].lower()
         selection = " ".join(parts[1:])
         idxs = _parse_indices(selection, len(display_nodes))
-        if not idxs:
-            print("No valid indices.")
-            continue
+        selected_names: List[str] = []
+        if idxs:
+            selected_names = [display_nodes[idx - 1] for idx in idxs]
+        else:
+            selected_names, err = _parse_name_filter(selection, display_nodes)
+            if err:
+                print(err)
+                continue
+            if not selected_names:
+                print("No matches.")
+                continue
+
         link_map = {ln.name: ln for ln in links}
         if action == "a":
-            for idx in idxs:
-                print(_add_link(repo_dir, custom_nodes_dir, display_nodes[idx - 1]))
+            for name in selected_names:
+                print(_add_link(repo_dir, custom_nodes_dir, name))
         elif action == "r":
-            for idx in idxs:
-                name = display_nodes[idx - 1]
+            for name in selected_names:
                 ln = link_map.get(name)
                 if not ln:
                     print(f"Not linked: {name}")
                     continue
                 print(_remove_link(custom_nodes_dir, ln))
         elif action == "i":
-            names = [display_nodes[idx - 1] for idx in idxs]
-            for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links, names):
+            for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links, selected_names):
                 print(msg)
         else:
             print("Unknown command.")

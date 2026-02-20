@@ -1,6 +1,8 @@
-# compare_venv_versions: новый формат настроек
+# compare_venv_versions: формат настроек
 
-## Главное
+[English](compare_venv_versions_README.md)
+
+### Главное
 Теперь есть 2 уровня настройки:
 
 1. Простой: `modules`  
@@ -13,7 +15,7 @@
 - `include_python`
 - `include_cuda_from_torch`
 
-## Как это работает
+### Как это работает
 
 1. `include_python=true` добавляет строку `Python`.
 2. `include_cuda_from_torch=true` добавляет строку `CUDA`.
@@ -23,7 +25,7 @@
    - `kind` - тип проверки,
    - `candidates` - варианты имени пакета/модуля.
 
-## Что такое `kind`
+### Что такое `kind`
 
 Поддерживаются:
 - `python` - версия Python из venv,
@@ -35,7 +37,7 @@
 2. если не найдено: `import candidate` и `__version__`,
 3. иначе `-`.
 
-## Как добавить `transformers`
+### Как добавить `transformers`
 
 Самый простой вариант:
 
@@ -43,7 +45,7 @@
 "modules": ["torch", "xformers", "triton", "transformers"]
 ```
 
-## Как понять, нужен ли `custom_checks`
+### Как понять, нужен ли `custom_checks`
 
 Используйте `custom_checks`, если:
 - имя в pip и в import разные,

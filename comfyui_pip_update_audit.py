@@ -401,16 +401,40 @@ def _marker_allows_raw(raw: str) -> bool:
         return True
 
 
-def parse_req_file(path: str) -> Tuple[List[Requirement], List[str]]:
+def parse_req_file(path: str) -> Tuple[List[Requirement], List[str], List[str]]:
     try:
         txt = open(path, encoding="utf-8").read()
     except Exception:
-        return [], []
+        return [], [], []
     reqs: List[Requirement] = []
     extras: List[str] = []
+    commented_pkgs: List[str] = []
     for line in txt.splitlines():
         s = line.strip()
-        if not s or s.startswith("#") or s.startswith("-"):
+        if not s:
+            continue
+        if s.startswith("#"):
+            c = s[1:].strip()
+            if not c:
+                continue
+            # Keep only commented package-like entries (not plain comments).
+            if "#" in c:
+                c = c.split("#", 1)[0].strip()
+                if not c:
+                    continue
+            try:
+                req = Requirement(c)
+                commented_pkgs.append(req.name)
+            except Exception:
+                if not c.startswith("-") and _marker_allows_raw(c):
+                    nm, url, _ref = parse_vcs_line(c)
+                    name_guess = (nm or "").strip()
+                    if not name_guess and url:
+                        name_guess = infer_name_from_url(url)
+                    if name_guess:
+                        commented_pkgs.append(name_guess)
+            continue
+        if s.startswith("-"):
             continue
         # Strip inline comments.
         if "#" in s:
@@ -426,7 +450,7 @@ def parse_req_file(path: str) -> Tuple[List[Requirement], List[str]]:
             # Keep unparsed entries (e.g. VCS/URL requirements) so we can surface them later
             if _marker_allows_raw(s):
                 extras.append(s)
-    return reqs, extras
+    return reqs, extras, commented_pkgs
 
 
 def _norm_path(path: str) -> str:
@@ -500,20 +524,24 @@ def _get_custom_nodes_repo_path(cfg: dict) -> str:
     return norm
 
 
-def _ask_include_custom_nodes_repo_path(path: str) -> bool:
+def _ask_include_custom_nodes_repo_path(path: str, show_commented: bool = False) -> Tuple[bool, bool]:
     if not path:
-        return False
+        return False, show_commented
     if not sys.stdin.isatty():
-        return False
+        return False, show_commented
     print(Fore.MAGENTA + Style.BRIGHT + "--> Optional requirements source <--" + Style.RESET_ALL)
     print(f"custom_nodes_repo_path found: {path}")
+    print("Commented packages log: " + (Fore.GREEN + "ON" if show_commented else Fore.YELLOW + "OFF") + Style.RESET_ALL)
     while True:
-        choice = input("Include this path in requirements scan? [+/-] [-]: ").strip()
-        if not choice or choice == "-":
-            return False
-        if choice == "+":
-            return True
-        print("Please enter '+' to include or '-' to skip.")
+        choice = input("Input: '+' add custom path, 'c' add comments from requirements, Enter skip: ").strip().lower()
+        if not choice:
+            return False, show_commented
+        compact = "".join(choice.split())
+        add_path = "+" in compact
+        enable_comments = ("c" in compact) or show_commented
+        if add_path or ("c" in compact):
+            return add_path, enable_comments
+        print("Use '+', 'c', '+c' or press Enter.")
 
 
 def _load_venv_paths(cfg: dict) -> List[str]:
@@ -1395,6 +1423,13 @@ def main() -> None:
         default=None,
         help="Max parallel workers for pip --dry-run candidate checks (default: auto)",
     )
+    parser.add_argument(
+        "-c",
+        "--show-commented",
+        dest="show_commented",
+        action="store_true",
+        help="Show commented package entries from requirements in the final log",
+    )
     args, _ = parser.parse_known_args()
 
     cfg = load_or_init_config(cfg_path)
@@ -1512,8 +1547,9 @@ def main() -> None:
     # Collect constraints from requirements
     allc: Dict[str, List[SourceConstraint]] = {}
     extra_reqs: List[VcsReport] = []
+    commented_reqs: List[Tuple[str, str, str]] = []
     for reqf in find_reqs(comfy_root):
-        reqs, extras = parse_req_file(reqf)
+        reqs, extras, commented = parse_req_file(reqf)
         for r in reqs:
             n = canonicalize_name(r.name)
             allc.setdefault(n, []).append(SourceConstraint("ComfyUI", reqf, r.specifier))
@@ -1523,8 +1559,14 @@ def main() -> None:
             if not nm_c and url:
                 nm_c = infer_name_from_url(url)
             extra_reqs.append(VcsReport("ComfyUI", reqf, raw, nm_c, url, ref))
+        for raw in commented:
+            commented_reqs.append(("ComfyUI", reqf, raw))
     repo_custom_nodes_path = _get_custom_nodes_repo_path(cfg)
-    if _ask_include_custom_nodes_repo_path(repo_custom_nodes_path):
+    include_repo_path, prompt_show_commented = _ask_include_custom_nodes_repo_path(
+        repo_custom_nodes_path, show_commented=args.show_commented
+    )
+    args.show_commented = bool(args.show_commented or prompt_show_commented)
+    if include_repo_path:
         custom_nodes_paths = _dedupe_dirs(custom_nodes_paths + [repo_custom_nodes_path])
         print("Included custom_nodes_repo_path in requirements scan for this run.")
 
@@ -1534,7 +1576,7 @@ def main() -> None:
     plugin_paths = _dedupe_dirs(plugin_paths)
     for pl in plugin_paths:
         for reqf in find_reqs(pl):
-            reqs, extras = parse_req_file(reqf)
+            reqs, extras, commented = parse_req_file(reqf)
             for r in reqs:
                 n = canonicalize_name(r.name)
                 allc.setdefault(n, []).append(SourceConstraint(os.path.basename(pl), reqf, r.specifier))
@@ -1544,6 +1586,8 @@ def main() -> None:
                 if not nm_c and url:
                     nm_c = infer_name_from_url(url)
                 extra_reqs.append(VcsReport(os.path.basename(pl), reqf, raw, nm_c, url, ref))
+            for raw in commented:
+                commented_reqs.append((os.path.basename(pl), reqf, raw))
 
     names = sorted(allc)
     reports: Dict[str, PackageReport] = {}
@@ -1883,6 +1927,16 @@ def main() -> None:
     if downgrades:
         down_cmd = " ".join(pip) + " install " + cmdline(downgrades)
         print("Downgrades:\n  " + Fore.BLUE + down_cmd + Style.RESET_ALL)
+
+    if args.show_commented and commented_reqs:
+        print("Commented package entries from requirements:")
+        seen_comment: set[str] = set()
+        for _repo_name, _reqf, pkg_name in commented_reqs:
+            key = canonicalize_name(pkg_name)
+            if key in seen_comment:
+                continue
+            seen_comment.add(key)
+            print(f"  - {pkg_name}")
 
     unsatisfiable_constraints: List[Tuple[str, str, str]] = []
     for n in names:
