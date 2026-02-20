@@ -6,5 +6,6 @@ example.py
 __pycache__*
 *.log
 tmp_*
+*_tmp.*
 *.txt
 run_*/

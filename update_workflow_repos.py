@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from comfyui_root import default_workflows_dir, resolve_comfyui_root
 
@@ -56,6 +56,8 @@ class RepoReport:
     notes: List[str]
     skipped: str | None = None
     error: str | None = None
+    last_update_at: Optional[str] = None
+    delta_from_local: Optional[str] = None
 
 
 class C:
@@ -591,6 +593,58 @@ def get_head(path: Path) -> str:
     return out.strip() if ok else ""
 
 
+def get_commit_datetime(path: Path, rev: str = "HEAD") -> Optional[datetime]:
+    if not rev:
+        return None
+    ok, out, _ = run_git(["show", "-s", "--format=%cI", rev], path)
+    if not ok:
+        return None
+    ts = out.strip()
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _fmt_dt(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    try:
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _human_delta_seconds(seconds: float) -> str:
+    total = int(round(abs(seconds)))
+    if total == 0:
+        return "0 days"
+    days = total // 86400
+    if days >= 365:
+        years = max(1, days // 365)
+        return f"{years} year" if years == 1 else f"{years} years"
+    if days >= 30:
+        months = max(1, days // 30)
+        return f"{months} month" if months == 1 else f"{months} months"
+    if days >= 1:
+        return f"{days} day" if days == 1 else f"{days} days"
+    hours = total // 3600
+    if hours >= 1:
+        return f"{hours} hour" if hours == 1 else f"{hours} hours"
+    mins = total // 60
+    if mins >= 1:
+        return f"{mins} min"
+    return f"{total} sec"
+
+
+def _human_gap(local_dt: Optional[datetime], latest_dt: Optional[datetime]) -> Optional[str]:
+    if local_dt is None or latest_dt is None:
+        return None
+    return _human_delta_seconds((latest_dt - local_dt).total_seconds())
+
+
 def collect_commits(path: Path, old: str, new: str) -> List[str]:
     if not old or not new:
         return []
@@ -630,6 +684,7 @@ def update_repo(path: Path) -> RepoReport:
         return RepoReport(path.name, path, "", "", False, [], [], [], skipped="No .git directory")
 
     before = get_head(path)
+    before_dt = get_commit_datetime(path, before) if before else None
     branch = get_branch(path) or "DETACHED"
     remote_url = get_remote_url(path) or ""
     web_url = to_web_url(remote_url)
@@ -659,6 +714,8 @@ def update_repo(path: Path) -> RepoReport:
                     ],
                     [],
                     notes,
+                    last_update_at=_fmt_dt(get_commit_datetime(path, get_head(path))),
+                    delta_from_local=_human_gap(before_dt, get_commit_datetime(path, get_head(path))),
                 )
             return RepoReport(
                 path.name,
@@ -672,6 +729,8 @@ def update_repo(path: Path) -> RepoReport:
                 ],
                 [],
                 notes,
+                last_update_at=_fmt_dt(get_commit_datetime(path, get_head(path))),
+                delta_from_local=_human_gap(before_dt, get_commit_datetime(path, get_head(path))),
             )
         msg = "Windows-incompatible paths in repository (cannot checkout/reset on Windows): " + "; ".join(bad_paths)
         return RepoReport(path.name, path, web_url, branch, False, [], [], notes, skipped=msg)
@@ -693,7 +752,20 @@ def update_repo(path: Path) -> RepoReport:
             if not ok:
                 return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error=info)
             # Fresh clone is already up-to-date.
-            return RepoReport(path.name, path, web_url, branch, True, [info], [], notes)
+            after_head = get_head(path)
+            after_dt = get_commit_datetime(path, after_head) if after_head else before_dt
+            return RepoReport(
+                path.name,
+                path,
+                web_url,
+                branch,
+                True,
+                [info],
+                [],
+                notes,
+                last_update_at=_fmt_dt(after_dt),
+                delta_from_local=_human_gap(before_dt, after_dt),
+            )
         if action == "5":
             ok, info = fetch_only(path)
             if not ok:
@@ -707,6 +779,8 @@ def update_repo(path: Path) -> RepoReport:
                 ["Fetched remote updates only (working tree left unchanged by user choice)."],
                 [],
                 notes,
+                last_update_at=_fmt_dt(before_dt),
+                delta_from_local="0 days" if before_dt else None,
             )
         if action == "6":
             moved, errors = move_local_jsons(path)
@@ -748,11 +822,23 @@ def update_repo(path: Path) -> RepoReport:
             return RepoReport(path.name, path, web_url, branch, False, [], [], notes, error=(err2 or out) or "stash pop reported conflicts")
 
     after = get_head(path)
+    after_dt = get_commit_datetime(path, after) if after else before_dt
     changed = before != after
     commits = collect_commits(path, before, after) if changed else []
     numstat = collect_numstat(path, before, after) if changed else []
 
-    return RepoReport(path.name, path, web_url, branch, changed, commits, numstat, notes)
+    return RepoReport(
+        path.name,
+        path,
+        web_url,
+        branch,
+        changed,
+        commits,
+        numstat,
+        notes,
+        last_update_at=_fmt_dt(after_dt),
+        delta_from_local=_human_gap(before_dt, after_dt),
+    )
 
 
 def print_report(report: RepoReport) -> None:
@@ -762,6 +848,9 @@ def print_report(report: RepoReport) -> None:
         print(f" url: {C.MAGENTA}{report.web_url}{C.RESET}")
     if report.branch:
         print(f" branch: {C.YELLOW}{report.branch}{C.RESET}")
+    if report.last_update_at:
+        suffix = f" ({report.delta_from_local})" if report.delta_from_local else ""
+        print(f" last update: {C.CYAN}{report.last_update_at}{C.RESET}{C.GRAY}{suffix}{C.RESET}")
 
     if report.skipped:
         for note in report.notes:

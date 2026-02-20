@@ -90,6 +90,8 @@ class UpdateResult:
     notes: List[str]
     skipped: Optional[str] = None
     error: Optional[str] = None
+    last_update_at: Optional[str] = None
+    delta_from_local: Optional[str] = None
 
 IGNORED_DIRS = {"__pycache__", ".idea", ".vscode", "venv", "env", ".disabled"}
 
@@ -432,6 +434,7 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
 
     # Save original HEAD
     old_head = get_head_commit(path)
+    old_dt = get_commit_datetime(path, old_head) if old_head else None
     notes: List[str] = []
 
     # Fetch
@@ -489,7 +492,20 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
             commit_msgs = get_commit_messages(path, old_head, new_head) if changed else []
             numstat = get_numstat(path, old_head, new_head) if changed else []
             notes.append(info)
-            return UpdateResult(name, path, web_url, branch, changed, commit_msgs, numstat, notes, error=None)
+            new_dt = get_commit_datetime(path, new_head) if new_head else old_dt
+            return UpdateResult(
+                name,
+                path,
+                web_url,
+                branch,
+                changed,
+                commit_msgs,
+                numstat,
+                notes,
+                error=None,
+                last_update_at=_fmt_dt(new_dt),
+                delta_from_local=_human_gap(old_dt, new_dt),
+            )
         if action == "1":
             ok, out, err = run_git(["reset", "--hard"], cwd=path)
             if not ok:
@@ -572,7 +588,21 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
             commit_msgs = []
             numstat = []
 
-    return UpdateResult(name, path, web_url, branch or "", changed, commit_msgs, numstat, notes, error=None)
+    new_head = get_head_commit(path)
+    new_dt = get_commit_datetime(path, new_head) if new_head else old_dt
+    return UpdateResult(
+        name,
+        path,
+        web_url,
+        branch or "",
+        changed,
+        commit_msgs,
+        numstat,
+        notes,
+        error=None,
+        last_update_at=_fmt_dt(new_dt),
+        delta_from_local=_human_gap(old_dt, new_dt),
+    )
 
 
 # ------------------------- Git helpers -------------------------
@@ -1014,6 +1044,58 @@ def get_head_commit(path: str) -> str:
     return out.strip() if ok else ""
 
 
+def get_commit_datetime(path: str, rev: str = "HEAD") -> Optional[datetime]:
+    if not rev:
+        return None
+    ok, out, _ = run_git(["show", "-s", "--format=%cI", rev], cwd=path)
+    if not ok:
+        return None
+    ts = out.strip()
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _fmt_dt(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    try:
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _human_delta_seconds(seconds: float) -> str:
+    total = int(round(abs(seconds)))
+    if total == 0:
+        return "0 days"
+    days = total // 86400
+    if days >= 365:
+        years = max(1, days // 365)
+        return f"{years} year" if years == 1 else f"{years} years"
+    if days >= 30:
+        months = max(1, days // 30)
+        return f"{months} month" if months == 1 else f"{months} months"
+    if days >= 1:
+        return f"{days} day" if days == 1 else f"{days} days"
+    hours = total // 3600
+    if hours >= 1:
+        return f"{hours} hour" if hours == 1 else f"{hours} hours"
+    mins = total // 60
+    if mins >= 1:
+        return f"{mins} min"
+    return f"{total} sec"
+
+
+def _human_gap(local_dt: Optional[datetime], latest_dt: Optional[datetime]) -> Optional[str]:
+    if local_dt is None or latest_dt is None:
+        return None
+    return _human_delta_seconds((latest_dt - local_dt).total_seconds())
+
+
 def get_commit_messages(path: str, old: str, new: str) -> List[str]:
     if not old or not new:
         return []
@@ -1099,6 +1181,9 @@ def print_report(res: UpdateResult) -> None:
 
         if res.branch:
             print(f"\t-> branch: {C.YELLOW}{res.branch}{C.RESET}")
+        if res.last_update_at:
+            suffix = f" ({res.delta_from_local})" if res.delta_from_local else ""
+            print(f"\t-> last update: {C.CYAN}{res.last_update_at}{C.RESET}{C.GRAY}{suffix}{C.RESET}")
 
     if res.skipped:
         print(f"\t{C.GRAY}SKIP: {res.skipped}{C.RESET}")

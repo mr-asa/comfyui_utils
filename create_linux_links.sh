@@ -24,6 +24,7 @@ SHORTCUTS=(
   "PNG to JSON|png_to_json_run.sh"
   "Update Comfy Repos|update_comfy_repos_run.sh"
   "Update Workflow Repos|update_workflow_repos_run.sh"
+  "Compare venv Versions|compare_venv_versions_run.sh"
 )
 
 # =========================================================

@@ -51,6 +51,10 @@ $Shortcuts = @(
   @{
     name   = "Update Workflow Repos"
     target = "update_workflow_repos_run.bat"
+  },
+  @{
+    name   = "Compare venv Versions"
+    target = "compare_venv_versions_run.bat"
   }
 )
 
