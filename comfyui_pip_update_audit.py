@@ -408,7 +408,7 @@ def parse_req_file(path: str) -> Tuple[List[Requirement], List[str], List[str]]:
         return [], [], []
     reqs: List[Requirement] = []
     extras: List[str] = []
-    commented_pkgs: List[str] = []
+    commented_lines: List[str] = []
     for line in txt.splitlines():
         s = line.strip()
         if not s:
@@ -417,22 +417,11 @@ def parse_req_file(path: str) -> Tuple[List[Requirement], List[str], List[str]]:
             c = s[1:].strip()
             if not c:
                 continue
-            # Keep only commented package-like entries (not plain comments).
             if "#" in c:
                 c = c.split("#", 1)[0].strip()
                 if not c:
                     continue
-            try:
-                req = Requirement(c)
-                commented_pkgs.append(req.name)
-            except Exception:
-                if not c.startswith("-") and _marker_allows_raw(c):
-                    nm, url, _ref = parse_vcs_line(c)
-                    name_guess = (nm or "").strip()
-                    if not name_guess and url:
-                        name_guess = infer_name_from_url(url)
-                    if name_guess:
-                        commented_pkgs.append(name_guess)
+            commented_lines.append(c)
             continue
         if s.startswith("-"):
             continue
@@ -450,7 +439,7 @@ def parse_req_file(path: str) -> Tuple[List[Requirement], List[str], List[str]]:
             # Keep unparsed entries (e.g. VCS/URL requirements) so we can surface them later
             if _marker_allows_raw(s):
                 extras.append(s)
-    return reqs, extras, commented_pkgs
+    return reqs, extras, commented_lines
 
 
 def _norm_path(path: str) -> str:
@@ -1930,13 +1919,20 @@ def main() -> None:
 
     if args.show_commented and commented_reqs:
         print("Commented package entries from requirements:")
-        seen_comment: set[str] = set()
-        for _repo_name, _reqf, pkg_name in commented_reqs:
-            key = canonicalize_name(pkg_name)
-            if key in seen_comment:
+        grouped: Dict[str, List[str]] = {}
+        seen_lines_by_repo: Dict[str, set[str]] = {}
+        for repo_name, _reqf, raw in commented_reqs:
+            bucket = grouped.setdefault(repo_name, [])
+            seen = seen_lines_by_repo.setdefault(repo_name, set())
+            key = raw.strip()
+            if not key or key in seen:
                 continue
-            seen_comment.add(key)
-            print(f"  - {pkg_name}")
+            seen.add(key)
+            bucket.append(key)
+        for repo_name in sorted(grouped):
+            print(f"  [{repo_name}]")
+            for ln in grouped[repo_name]:
+                print(f"    {ln}")
 
     unsatisfiable_constraints: List[Tuple[str, str, str]] = []
     for n in names:

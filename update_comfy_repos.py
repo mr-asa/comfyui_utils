@@ -1181,9 +1181,10 @@ def print_report(res: UpdateResult) -> None:
 
         if res.branch:
             print(f"\t-> branch: {C.YELLOW}{res.branch}{C.RESET}")
-        if res.last_update_at:
-            suffix = f" ({res.delta_from_local})" if res.delta_from_local else ""
-            print(f"\t-> last update: {C.CYAN}{res.last_update_at}{C.RESET}{C.GRAY}{suffix}{C.RESET}")
+
+    if res.last_update_at:
+        suffix = f" ({res.delta_from_local})" if res.delta_from_local else ""
+        print(f"\t-> last update: {C.CYAN}{res.last_update_at}{C.RESET}{C.GRAY}{suffix}{C.RESET}")
 
     if res.skipped:
         print(f"\t{C.GRAY}SKIP: {res.skipped}{C.RESET}")
