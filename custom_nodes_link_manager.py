@@ -174,11 +174,12 @@ def _scan_links(custom_nodes_dir: str, repo_dir: str) -> List[LinkedNode]:
     return out
 
 
-def _print_panels(node_names: List[str], links: List[LinkedNode]) -> None:
+def _print_panels(node_names: List[str], links: List[LinkedNode], node_tags: Optional[Dict[str, List[str]]] = None) -> None:
     link_set = {ln.name for ln in links}
     link_map = {ln.name: ln for ln in links}
     idx_width = 3
     prefix_width = idx_width + 6
+    node_tags = node_tags or {}
 
     def _red(text: str) -> str:
         return f"\x1b[31m{text}\x1b[0m"
@@ -192,8 +193,8 @@ def _print_panels(node_names: List[str], links: List[LinkedNode]) -> None:
             return "." * max_len
         return name[: max_len - 3] + "..."
 
-    def _entry_text(i: int, name: str, marker: str, is_junk: bool, name_max: Optional[int] = None) -> Tuple[str, str]:
-        shown_name = _clip_name(name, name_max) if name_max is not None else name
+    def _entry_text(i: int, label: str, marker: str, is_junk: bool, name_max: Optional[int] = None) -> Tuple[str, str]:
+        shown_name = _clip_name(label, name_max) if name_max is not None else label
         plain = f"{marker} [{i:>{idx_width}}] {shown_name}"
         colored = f"{_red('!!')} [{i:>{idx_width}}] {shown_name}" if is_junk else plain
         return plain, colored
@@ -201,18 +202,20 @@ def _print_panels(node_names: List[str], links: List[LinkedNode]) -> None:
     entries: List[Tuple[int, str, str, bool]] = []
     for i, name in enumerate(node_names, 1):
         is_junk = name in link_map and not link_map[name].target_exists
+        tags = node_tags.get(name, [])
+        label = name if not tags else f"{name} [{', '.join(tags)}]"
         if is_junk:
             marker = "!!"
         elif name in link_set:
             marker = "=>"
         else:
             marker = "  "
-        entries.append((i, name, marker, is_junk))
+        entries.append((i, label, marker, is_junk))
     rows = (len(entries) + 1) // 2
     left_entries = entries[:rows]
     right_entries = entries[rows:]
-    left_plain_w = max([prefix_width + len(name) for _, name, _, _ in left_entries], default=0)
-    right_plain_w = max([prefix_width + len(name) for _, name, _, _ in right_entries], default=0)
+    left_plain_w = max([prefix_width + len(label) for _, label, _, _ in left_entries], default=0)
+    right_plain_w = max([prefix_width + len(label) for _, label, _, _ in right_entries], default=0)
 
     term_w = shutil.get_terminal_size((120, 20)).columns
     gap = 3
@@ -230,21 +233,23 @@ def _print_panels(node_names: List[str], links: List[LinkedNode]) -> None:
     print()
     print("Nodes ('=>' is linked)")
     for i in range(rows):
-        li, lname, lmarker, ljunk = left_entries[i]
-        left_plain, left_colored = _entry_text(li, lname, lmarker, ljunk, max(1, left_w - prefix_width))
+        li, llabel, lmarker, ljunk = left_entries[i]
+        left_plain, left_colored = _entry_text(li, llabel, lmarker, ljunk, max(1, left_w - prefix_width))
         right = ""
         right_colored = ""
         if i < len(right_entries):
-            ri, rname, rmarker, rjunk = right_entries[i]
-            right, right_colored = _entry_text(ri, rname, rmarker, rjunk, max(1, right_w - prefix_width))
+            ri, rlabel, rmarker, rjunk = right_entries[i]
+            right, right_colored = _entry_text(ri, rlabel, rmarker, rjunk, max(1, right_w - prefix_width))
         if right:
             pad = max(1, left_w - len(left_plain) + gap)
             print(left_colored + (" " * pad) + right_colored)
         else:
             print(left_colored)
     print()
-    print("Commands: a|r|i [n|n-m|n,n|text|re:regex], f [text|re:regex], f=clear, ?+=linked, ?-=unlinked, ?*=all")
-    print("          s=sync, j=remove junk, p=presets, w=save preset, q=quit, ?=help, enter=refresh")
+    print("create links: a (add) | r (remove) | i (invert) [n|n-m|n,n|text|re:regex]")
+    print("show links: f (filter) [text|re:regex], f=clear, ?+=linked, ?-=unlinked, ?*=all")
+    print("tags: t (list), tn <tag> (new), t+ <tag> [sel], t- <tag> [sel], ta|tr|ti <tag|idx>")
+    print("other: s (sync), j (remove junk), p (presets), w (save preset), ? (help), q (quit), Enter (refresh)")
 
 
 def _filter_display_nodes(display_nodes: List[str], links: List[LinkedNode], mode: str) -> List[str]:
@@ -520,6 +525,104 @@ def _parse_name_filter(selection: str, names: List[str]) -> Tuple[List[str], Opt
     return [n for n in names if token in n.lower()], None
 
 
+def _normalize_tags(raw: object) -> Dict[str, List[str]]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, List[str]] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str):
+            continue
+        tag = k.strip()
+        if not tag:
+            continue
+        items = v if isinstance(v, list) else []
+        seen: set[str] = set()
+        clean: List[str] = []
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            name = item.strip()
+            if not name:
+                continue
+            low = name.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            clean.append(name)
+        out[tag] = clean
+    return out
+
+
+def _sorted_tags(tags: Dict[str, List[str]]) -> List[str]:
+    return sorted(tags.keys(), key=lambda s: s.lower())
+
+
+def _resolve_tag_token(tags: Dict[str, List[str]], token: str) -> Tuple[Optional[str], Optional[str]]:
+    names = _sorted_tags(tags)
+    raw = token.strip()
+    if not raw:
+        return None, "Tag is empty."
+    if raw.isdigit():
+        idx = int(raw)
+        if 1 <= idx <= len(names):
+            return names[idx - 1], None
+        return None, f"Tag index out of range: {idx}"
+    low = raw.lower()
+    for name in names:
+        if name.lower() == low:
+            return name, None
+    return None, f"Unknown tag: {raw}"
+
+
+def _save_tags(cfg_path: str, cfg: Dict[str, object], tags: Dict[str, List[str]]) -> None:
+    cfg["junk_links_tags"] = tags
+    _save_json(cfg_path, cfg)
+
+
+def _parse_selection_names(selection: str, display_nodes: List[str]) -> Tuple[List[str], Optional[str]]:
+    idxs = _parse_indices(selection, len(display_nodes))
+    if idxs:
+        return [display_nodes[idx - 1] for idx in idxs], None
+    names, err = _parse_name_filter(selection, display_nodes)
+    if err:
+        return [], err
+    if not names:
+        return [], "No matches."
+    return names, None
+
+
+def _print_tags(tags: Dict[str, List[str]], repo_nodes: List[str], links: List[LinkedNode]) -> None:
+    names = _sorted_tags(tags)
+    if not names:
+        print("No tags. Use: tn <tag>")
+        return
+    repo_set = set(repo_nodes)
+    linked_set = {ln.name for ln in links}
+    print("Tags:")
+    for i, tag in enumerate(names, 1):
+        items = tags.get(tag, [])
+        in_repo = [n for n in items if n in repo_set]
+        linked = [n for n in in_repo if n in linked_set]
+        print(f"  [{i}] {tag}  total={len(items)} in_repo={len(in_repo)} linked={len(linked)}")
+
+
+def _build_node_tag_map(tags: Dict[str, List[str]], node_names: List[str]) -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {}
+    if not tags or not node_names:
+        return out
+    by_low = {n.lower(): n for n in node_names}
+    for tag in _sorted_tags(tags):
+        items = tags.get(tag, [])
+        for item in items:
+            real = by_low.get(item.lower())
+            if not real:
+                continue
+            arr = out.setdefault(real, [])
+            if tag not in arr:
+                arr.append(tag)
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage custom_nodes junction links.")
     parser.add_argument("--repo", help="Path to custom_nodes_repo")
@@ -529,7 +632,10 @@ def main() -> int:
     here = Path(__file__).resolve().parent
     cfg_path = str(here / "config.json")
     presets_path = str(here / "run_comfyui_presets_config.json")
-    repo_dir, custom_nodes_dir, _cfg = _resolve_paths(cfg_path, args)
+    repo_dir, custom_nodes_dir, cfg = _resolve_paths(cfg_path, args)
+    tags = _normalize_tags(cfg.get("junk_links_tags"))
+    if cfg.get("junk_links_tags") != tags:
+        _save_tags(cfg_path, cfg, tags)
 
     filter_mode = "all"
     name_filter = ""
@@ -545,7 +651,8 @@ def main() -> int:
             display_nodes, _ = _parse_name_filter(name_filter, display_nodes)
         name_filter_label = name_filter if name_filter else "*"
         print(f"\nFilter: {filter_mode} | name: {name_filter_label} | shown {len(display_nodes)}/{len(display_nodes_all)}")
-        _print_panels(display_nodes, links)
+        node_tag_map = _build_node_tag_map(tags, display_nodes)
+        _print_panels(display_nodes, links, node_tag_map)
 
         cmd = input("> ").strip()
         if not cmd:
@@ -573,25 +680,113 @@ def main() -> int:
             name_filter = expr
             print(f"Name filter set: {name_filter} (matches {len(matches)})")
             continue
+        if low in ("t", "tags"):
+            _print_tags(tags, repo_nodes, links)
+            continue
+        if low.startswith("tn "):
+            _, _, raw_tag = cmd.partition(" ")
+            new_tag = raw_tag.strip()
+            if not new_tag:
+                print("Tag name is empty.")
+                continue
+            existing, _ = _resolve_tag_token(tags, new_tag)
+            if existing is not None:
+                print(f"Tag already exists: {existing}")
+                continue
+            tags[new_tag] = []
+            _save_tags(cfg_path, cfg, tags)
+            print(f"Tag created: {new_tag}")
+            continue
+        if low.startswith("t+ ") or low.startswith("t- "):
+            pieces = cmd.split(maxsplit=2)
+            if len(pieces) < 2:
+                print("Usage: t+ <tag|idx> [selection] or t- <tag|idx> [selection]")
+                continue
+            op = pieces[0].lower()
+            tag_token = pieces[1]
+            selection = pieces[2] if len(pieces) >= 3 else ""
+            tag_name, err = _resolve_tag_token(tags, tag_token)
+            if err:
+                print(err)
+                continue
+            if not selection.strip():
+                print("Selection is required. Example: t+ 3d __3d or t+ 3d re:.*")
+                continue
+            selected_names, err = _parse_selection_names(selection, display_nodes)
+            if err:
+                print(err)
+                continue
+            repo_set = set(repo_nodes)
+            selected_repo = [n for n in selected_names if n in repo_set]
+            if not selected_repo:
+                print("No repo packages selected.")
+                continue
+            current = tags.get(tag_name, [])
+            current_lows = {n.lower() for n in current}
+            changed = 0
+            if op == "t+":
+                for name in selected_repo:
+                    if name.lower() not in current_lows:
+                        current.append(name)
+                        current_lows.add(name.lower())
+                        changed += 1
+                tags[tag_name] = current
+                _save_tags(cfg_path, cfg, tags)
+                print(f"Tag '{tag_name}': added {changed} package(s).")
+            else:
+                remove_lows = {n.lower() for n in selected_repo}
+                next_items = [n for n in current if n.lower() not in remove_lows]
+                changed = len(current) - len(next_items)
+                tags[tag_name] = next_items
+                _save_tags(cfg_path, cfg, tags)
+                print(f"Tag '{tag_name}': removed {changed} package(s).")
+            continue
+        if low.startswith("ta ") or low.startswith("tr ") or low.startswith("ti "):
+            pieces = cmd.split(maxsplit=1)
+            if len(pieces) < 2:
+                print("Usage: ta|tr|ti <tag|idx>")
+                continue
+            op = pieces[0].lower()
+            tag_name, err = _resolve_tag_token(tags, pieces[1])
+            if err:
+                print(err)
+                continue
+            tagged = tags.get(tag_name, [])
+            if not tagged:
+                print(f"Tag '{tag_name}' is empty.")
+                continue
+            node_set = set(display_nodes_all)
+            selected_names = [n for n in tagged if n in node_set]
+            if not selected_names:
+                print(f"No nodes from tag '{tag_name}' are present in current list.")
+                continue
+            link_map = {ln.name: ln for ln in links}
+            if op == "ta":
+                for name in selected_names:
+                    print(_add_link(repo_dir, custom_nodes_dir, name))
+            elif op == "tr":
+                for name in selected_names:
+                    ln = link_map.get(name)
+                    if not ln:
+                        print(f"Not linked: {name}")
+                        continue
+                    print(_remove_link(custom_nodes_dir, ln))
+            else:
+                for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links, selected_names):
+                    print(msg)
+            continue
         if cmd.lower() in ("q", "quit", "exit"):
             return 0
         if cmd in ("?", "h", "help"):
-            print("a [n|text|re:regex]: add repo nodes")
-            print("r [n|text|re:regex]: remove linked nodes")
-            print("i [n]: invert (add unlinked, remove linked) for repo nodes")
-            print("f [text|re:regex]: set name filter for shown list")
-            print("f: clear name filter")
-            print("s: sync (mirror repo -> custom_nodes via junctions)")
-            print("j: remove junk links (missing targets)")
-            print("p: choose preset and apply")
-            print("w: save preset from current links")
-            print("?+: show only linked nodes")
-            print("?-: show only unlinked nodes")
-            print("?*: show all nodes")
-            print("examples: f __3d, f re:(^|[-_])3d($|[-_]), a __3d, r 1,3,5")
+            print("create links: a (add) | r (remove) | i (invert) [n|n-m|n,n|text|re:regex]")
+            print("show links: f (filter) [text|re:regex], f=clear, ?+=linked, ?-=unlinked, ?*=all")
+            print("tags: t (list), tn <tag> (new), t+ <tag> <selection>, t- <tag> <selection>, ta|tr|ti <tag|idx>")
+            print("presets: p (choose+apply), w (save current)")
+            print("maint: s (sync repo<->custom_nodes), j (remove broken/junk links)")
+            print("app: q (quit), Enter (refresh)")
+            print("examples: tn 3d, t+ 3d __3d, t+ 3d re:.*, ta 3d, t, tr 1")
             print("    - adds links for repo nodes missing in custom_nodes")
             print("    - removes junctions that are not present in repo")
-            print("q: quit")
             continue
         if cmd.lower() == "s":
             for msg in _sync(repo_dir, custom_nodes_dir, repo_nodes, links):
@@ -641,18 +836,10 @@ def main() -> int:
             continue
         action = parts[0].lower()
         selection = " ".join(parts[1:])
-        idxs = _parse_indices(selection, len(display_nodes))
-        selected_names: List[str] = []
-        if idxs:
-            selected_names = [display_nodes[idx - 1] for idx in idxs]
-        else:
-            selected_names, err = _parse_name_filter(selection, display_nodes)
-            if err:
-                print(err)
-                continue
-            if not selected_names:
-                print("No matches.")
-                continue
+        selected_names, err = _parse_selection_names(selection, display_nodes)
+        if err:
+            print(err)
+            continue
 
         link_map = {ln.name: ln for ln in links}
         if action == "a":
