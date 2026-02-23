@@ -336,60 +336,241 @@ $venvList = @($venvs)
 $shortNames = Get-ShortVenvNames -FullPaths $venvList
 $venvEntries = @()
 $totalVenvs = @($venvs).Count
-$currentIndex = 0
-foreach ($venv in $venvs) {
-    $displayName = $shortNames[$currentIndex]
-    $currentIndex++
-    $percent = 0
-    if ($totalVenvs -gt 0) {
-        $percent = [int](($currentIndex * 100) / $totalVenvs)
+$effectiveJobs = [Math]::Min([Math]::Max([Environment]::ProcessorCount, 2), 8)
+if ($effectiveJobs -lt 1) { $effectiveJobs = 1 }
+if ($totalVenvs -gt 0) {
+    $effectiveJobs = [Math]::Min($effectiveJobs, $totalVenvs)
+}
+
+$workItems = @()
+for ($i = 0; $i -lt $venvList.Count; $i++) {
+    $workItems += [PSCustomObject]@{
+        Index = $i
+        Path = [string]$venvList[$i]
+        Name = [string]$shortNames[$i]
     }
-    Write-Host ("[{0}/{1}] Checking {2}..." -f $currentIndex, $totalVenvs, $displayName)
-    Write-Progress -Activity "Comparing venvs" -Status ("{0}/{1}: {2}" -f $currentIndex, $totalVenvs, $displayName) -PercentComplete $percent
+}
 
-    $pythonExe = Get-PythonExecutable -VenvPath $venv
-    $reportValues = @{}
+$jobScript = {
+    param(
+        [int]$Index,
+        [string]$VenvPath,
+        [string]$DisplayName,
+        [object[]]$Checks
+    )
 
+    function Get-PythonExecutableLocal {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) {
+            return $null
+        }
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            if ([System.IO.Path]::GetFileName($Path).ToLowerInvariant() -eq "python.exe") {
+                return (Resolve-Path -LiteralPath $Path).Path
+            }
+        }
+        $candidate = Join-Path $Path "Scripts\python.exe"
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+        return $null
+    }
+
+    function Get-VenvReportLocal {
+        param(
+            [string]$PythonExe,
+            [object[]]$ChecksParam
+        )
+        $checksJson = $ChecksParam | ConvertTo-Json -Compress -Depth 6
+        $probeScript = @'
+import json
+import sys
+import importlib
+import importlib.metadata
+
+with open(sys.argv[1], "r", encoding="utf-8-sig") as f:
+    checks = json.load(f)
+result = {}
+
+def get_module_version(candidates):
+    for name in candidates:
+        try:
+            return importlib.metadata.version(name)
+        except Exception:
+            pass
+        try:
+            m = importlib.import_module(name)
+            v = getattr(m, "__version__", None)
+            if v:
+                return str(v)
+        except Exception:
+            pass
+    return "-"
+
+for c in checks:
+    name = c["Name"]
+    kind = c["Kind"]
+    if kind == "python":
+        result[name] = sys.version.split()[0]
+    elif kind == "cuda_from_torch":
+        try:
+            import torch
+            result[name] = str(torch.version.cuda or "-")
+        except Exception:
+            result[name] = "-"
+    elif kind == "module":
+        result[name] = get_module_version(c.get("Candidates", []))
+    else:
+        result[name] = "?"
+
+print(json.dumps(result, ensure_ascii=True))
+'@
+        $tmpJson = $null
+        $tmpPy = $null
+        try {
+            $tmpJson = New-TemporaryFile
+            $tmpPy = [System.IO.Path]::ChangeExtension((New-TemporaryFile).FullName, ".py")
+            Set-Content -LiteralPath $tmpJson.FullName -Value $checksJson -Encoding UTF8
+            Set-Content -LiteralPath $tmpPy -Value $probeScript -Encoding UTF8
+            $jsonLine = & $PythonExe $tmpPy $tmpJson.FullName 2>$null
+            if (-not $jsonLine) {
+                return $null
+            }
+            return $jsonLine | ConvertFrom-Json
+        } catch {
+            return $null
+        } finally {
+            if ($tmpJson -and (Test-Path -LiteralPath $tmpJson.FullName)) {
+                Remove-Item -LiteralPath $tmpJson.FullName -Force -ErrorAction SilentlyContinue
+            }
+            if ($tmpPy -and (Test-Path -LiteralPath $tmpPy)) {
+                Remove-Item -LiteralPath $tmpPy -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    $values = @{}
+    $pythonExe = Get-PythonExecutableLocal -Path $VenvPath
     if (-not $pythonExe) {
         foreach ($check in $Checks) {
-            $reportValues[$check.Name] = "python.exe not found"
+            $values[$check.Name] = "python.exe not found"
         }
-        $venvEntries += [PSCustomObject]@{
-            Path = $venv
-            Name = $displayName
-            Values = $reportValues
-        }
-        continue
-    }
-
-    $report = Get-VenvReport -PythonExe $pythonExe -Checks $Checks
-    if (-not $report) {
-        foreach ($check in $Checks) {
-            $reportValues[$check.Name] = "probe failed"
-        }
-        $venvEntries += [PSCustomObject]@{
-            Path = $venv
-            Name = $displayName
-            Values = $reportValues
-        }
-        continue
-    }
-
-    foreach ($check in $Checks) {
-        $value = $report.PSObject.Properties[$check.Name].Value
-        if ([string]::IsNullOrWhiteSpace([string]$value)) {
-            $reportValues[$check.Name] = "-"
+    } else {
+        $report = Get-VenvReportLocal -PythonExe $pythonExe -ChecksParam $Checks
+        if (-not $report) {
+            foreach ($check in $Checks) {
+                $values[$check.Name] = "probe failed"
+            }
         } else {
-            $reportValues[$check.Name] = [string]$value
+            foreach ($check in $Checks) {
+                $value = $report.PSObject.Properties[$check.Name].Value
+                if ([string]::IsNullOrWhiteSpace([string]$value)) {
+                    $values[$check.Name] = "-"
+                } else {
+                    $values[$check.Name] = [string]$value
+                }
+            }
         }
     }
-    $venvEntries += [PSCustomObject]@{
-        Path = $venv
-        Name = $displayName
-        Values = $reportValues
+
+    return [PSCustomObject]@{
+        Index = $Index
+        Path = $VenvPath
+        Name = $DisplayName
+        Values = $values
+    }
+}
+
+$activeJobs = New-Object System.Collections.Generic.List[object]
+$jobMeta = @{}
+$resultsByIndex = @{}
+$nextToStart = 0
+$completed = 0
+
+while ($completed -lt $workItems.Count) {
+    while ($nextToStart -lt $workItems.Count -and $activeJobs.Count -lt $effectiveJobs) {
+        $item = $workItems[$nextToStart]
+        $job = Start-Job -ScriptBlock $jobScript -ArgumentList @($item.Index, $item.Path, $item.Name, $Checks)
+        $activeJobs.Add($job) | Out-Null
+        $jobMeta[$job.Id] = $item
+        $nextToStart++
+    }
+
+    $doneJobs = @(
+        $activeJobs |
+        Where-Object { $_.State -in @("Completed", "Failed", "Stopped") }
+    )
+    if ($doneJobs.Count -eq 0) {
+        Start-Sleep -Milliseconds 150
+        continue
+    }
+
+    foreach ($job in $doneJobs) {
+        $item = $jobMeta[$job.Id]
+        $activeJobs.Remove($job) | Out-Null
+        $entry = $null
+        try {
+            $entry = Receive-Job -Job $job -ErrorAction Stop
+        } catch {
+            $entry = $null
+        } finally {
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+
+        if ($entry) {
+            $first = @($entry)[0]
+            $rawValues = $first.Values
+            $values = @{}
+            if ($rawValues -is [hashtable]) {
+                foreach ($k in $rawValues.Keys) {
+                    $values[[string]$k] = [string]$rawValues[$k]
+                }
+            } elseif ($rawValues) {
+                foreach ($p in $rawValues.PSObject.Properties) {
+                    $values[[string]$p.Name] = [string]$p.Value
+                }
+            }
+            $resultsByIndex[[int]$first.Index] = [PSCustomObject]@{
+                Path = [string]$first.Path
+                Name = [string]$first.Name
+                Values = $values
+            }
+        } else {
+            $fallback = @{}
+            foreach ($check in $Checks) {
+                $fallback[$check.Name] = "probe failed"
+            }
+            $resultsByIndex[[int]$item.Index] = [PSCustomObject]@{
+                Path = [string]$item.Path
+                Name = [string]$item.Name
+                Values = $fallback
+            }
+        }
+
+        $completed++
+        $percent = [int](($completed * 100) / [Math]::Max(1, $workItems.Count))
+        Write-Progress -Activity "Comparing venvs" -Status ("{0}/{1}: {2}" -f $completed, $workItems.Count, $item.Name) -PercentComplete $percent
+        $jobMeta.Remove($job.Id) | Out-Null
     }
 }
 Write-Progress -Activity "Comparing venvs" -Completed
+
+for ($i = 0; $i -lt $workItems.Count; $i++) {
+    if ($resultsByIndex.ContainsKey($i)) {
+        $venvEntries += $resultsByIndex[$i]
+        continue
+    }
+    $item = $workItems[$i]
+    $fallback = @{}
+    foreach ($check in $Checks) {
+        $fallback[$check.Name] = "probe failed"
+    }
+    $venvEntries += [PSCustomObject]@{
+        Path = $item.Path
+        Name = $item.Name
+        Values = $fallback
+    }
+}
 
 if ($venvEntries.Count -eq 0) {
     Write-Host "No data."
@@ -515,10 +696,14 @@ function Get-RowCellColors {
 
     if ($outliers.Count -eq 1) {
         $outlierValue = $outliers[0]
-        $cmp = Compare-VersionLike -A $outlierValue -B $baseValue
         $outlierColor = "Yellow"
-        if ($cmp -eq 1) { $outlierColor = "Green" }
-        elseif ($cmp -eq -1) { $outlierColor = "Red" }
+        if ($baseValue -eq "-" -and $outlierValue -ne "-") {
+            $outlierColor = "Green"
+        } else {
+            $cmp = Compare-VersionLike -A $outlierValue -B $baseValue
+            if ($cmp -eq 1) { $outlierColor = "Green" }
+            elseif ($cmp -eq -1) { $outlierColor = "Red" }
+        }
 
         for ($i = 0; $i -lt $Values.Count; $i++) {
             if ([string]$Values[$i] -eq $outlierValue) {

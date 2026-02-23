@@ -884,6 +884,47 @@ def inst_ver_from_map(installed: Dict[str, dict], name: str) -> Optional[Version
         return None
 
 
+def wheel_local_suffix_for_env(cfg: dict) -> str:
+    base = "cp-"
+    py = _python_cmd(cfg)
+    code = (
+        "import json, sys\n"
+        "data={\"cu\":\"\",\"torch\":\"\",\"rocm\":\"\",\"cp\":f\"cp{sys.version_info.major}{sys.version_info.minor}\"}\n"
+        "try:\n"
+        " import torch\n"
+        " tv=getattr(torch,'__version__',None)\n"
+        " if isinstance(tv,str) and tv.strip():\n"
+        "  data['torch']='torch'+tv.strip().split('+',1)[0]\n"
+        " tver=getattr(torch,'version',None)\n"
+        " if tver is not None:\n"
+        "  cu=getattr(tver,'cuda',None)\n"
+        "  if isinstance(cu,str) and cu.strip():\n"
+        "   data['cu']='cu'+cu.replace('.','').strip()\n"
+        "  hip=getattr(tver,'hip',None)\n"
+        "  if isinstance(hip,str) and hip.strip():\n"
+        "   data['rocm']='rocm'+hip.strip()\n"
+        "except Exception:\n"
+        " pass\n"
+        "print(json.dumps(data))\n"
+    )
+    try:
+        p = subprocess.run(py + ["-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=20)
+        if p.returncode != 0 or not p.stdout:
+            return base
+        lines = [ln.strip() for ln in p.stdout.splitlines() if ln.strip()]
+        if not lines:
+            return base
+        data = json.loads(lines[-1])
+        cu = str(data.get("cu") or "").strip()
+        torch_tag = str(data.get("torch") or "").strip()
+        rocm = str(data.get("rocm") or "").strip()
+        cp = str(data.get("cp") or "").strip()
+        parts = [p for p in (cu, torch_tag, rocm, cp) if p]
+        return " ".join(parts) if parts else base
+    except Exception:
+        return base
+
+
 def _normalize_vcs_url(url: str) -> str:
     s = (url or "").strip()
     if not s:
@@ -1482,7 +1523,9 @@ def main() -> None:
         pin_map[canonicalize_name(k)] = v.strip()
 
     script_path = str(Path(__file__).resolve())
+    wheel_local_suffix = wheel_local_suffix_for_env(cfg)
     print(Fore.MAGENTA + Style.BRIGHT + "--> Some useful commands <--" + Style.RESET_ALL + "\n" +
+          "wheel local suffix  - " + Fore.BLUE + wheel_local_suffix + "\n" + Style.RESET_ALL +
           "check package info - " + Fore.BLUE + "pip show <PACKAGE>\n" + Style.RESET_ALL +
           "get all available versions of package - " + Fore.BLUE + "pip index versions <PACKAGE>\n" + Style.RESET_ALL +
           "try resolver without installing - " + Fore.BLUE + "pip install <PACKAGE> --dry-run\n" + Style.RESET_ALL +
