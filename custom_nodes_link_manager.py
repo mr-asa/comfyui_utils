@@ -249,7 +249,7 @@ def _print_panels(node_names: List[str], links: List[LinkedNode], node_tags: Opt
     print("create links: a (add) | r (remove) | i (invert) [n|n-m|n,n|text|re:regex]")
     print("show links: f (filter) [text|re:regex], f=clear, ?+=linked, ?-=unlinked, ?*=all")
     print("tags: t (list), tn <tag> (new), t+ <tag> [sel], t- <tag> [sel], ta|tr|ti <tag|idx>")
-    print("other: s (sync), j (remove junk), p (presets), w (save preset), ? (help), q (quit), Enter (refresh)")
+    print("other: s (sync), j (remove failed junk), p (presets), w (save preset), ? (help), q (quit), Enter (refresh)")
 
 
 def _filter_display_nodes(display_nodes: List[str], links: List[LinkedNode], mode: str) -> List[str]:
@@ -591,6 +591,23 @@ def _parse_selection_names(selection: str, display_nodes: List[str]) -> Tuple[Li
     return names, None
 
 
+def _apply_filter_expr(expr: str, names: List[str], tags: Dict[str, List[str]]) -> Tuple[List[str], str, Optional[str]]:
+    raw = expr.strip()
+    if not raw:
+        return names, "*", None
+
+    tag_name, tag_err = _resolve_tag_token(tags, raw)
+    if tag_err is None and tag_name is not None:
+        tagged_lows = {n.lower() for n in tags.get(tag_name, [])}
+        matched = [n for n in names if n.lower() in tagged_lows]
+        return matched, f"tag:{tag_name}", None
+
+    matched, err = _parse_name_filter(raw, names)
+    if err:
+        return [], raw, err
+    return matched, raw, None
+
+
 def _print_tags(tags: Dict[str, List[str]], repo_nodes: List[str], links: List[LinkedNode]) -> None:
     names = _sorted_tags(tags)
     if not names:
@@ -598,12 +615,36 @@ def _print_tags(tags: Dict[str, List[str]], repo_nodes: List[str], links: List[L
         return
     repo_set = set(repo_nodes)
     linked_set = {ln.name for ln in links}
-    print("Tags:")
-    for i, tag in enumerate(names, 1):
+    idx_w = max(2, len(str(len(names))))
+    tag_w = max([len(t) for t in names], default=3)
+    total_vals: List[int] = []
+    in_repo_vals: List[int] = []
+    linked_vals: List[int] = []
+    rows: List[Tuple[str, int, int, int]] = []
+    for tag in names:
         items = tags.get(tag, [])
         in_repo = [n for n in items if n in repo_set]
         linked = [n for n in in_repo if n in linked_set]
-        print(f"  [{i}] {tag}  total={len(items)} in_repo={len(in_repo)} linked={len(linked)}")
+        total_n = len(items)
+        in_repo_n = len(in_repo)
+        linked_n = len(linked)
+        total_vals.append(total_n)
+        in_repo_vals.append(in_repo_n)
+        linked_vals.append(linked_n)
+        rows.append((tag, total_n, in_repo_n, linked_n))
+    total_w = max(1, len(str(max(total_vals) if total_vals else 0)))
+    in_repo_w = max(1, len(str(max(in_repo_vals) if in_repo_vals else 0)))
+    linked_w = max(1, len(str(max(linked_vals) if linked_vals else 0)))
+
+    print("Tags:")
+    for i, row in enumerate(rows, 1):
+        tag, total_n, in_repo_n, linked_n = row
+        print(
+            f"  [{i:>{idx_w}}] {tag:<{tag_w}}  "
+            f"total={total_n:>{total_w}}  "
+            f"in_repo={in_repo_n:>{in_repo_w}}  "
+            f"linked={linked_n:>{linked_w}}"
+        )
 
 
 def _build_node_tag_map(tags: Dict[str, List[str]], node_names: List[str]) -> Dict[str, List[str]]:
@@ -647,10 +688,10 @@ def main() -> int:
         extra_nodes = [ln.name for ln in links if ln.name not in repo_set]
         display_nodes_all = sorted(repo_nodes + extra_nodes)
         display_nodes = _filter_display_nodes(display_nodes_all, links, filter_mode)
+        filter_label = "*"
         if name_filter:
-            display_nodes, _ = _parse_name_filter(name_filter, display_nodes)
-        name_filter_label = name_filter if name_filter else "*"
-        print(f"\nFilter: {filter_mode} | name: {name_filter_label} | shown {len(display_nodes)}/{len(display_nodes_all)}")
+            display_nodes, filter_label, _ = _apply_filter_expr(name_filter, display_nodes, tags)
+        print(f"\nFilter: {filter_mode} | name: {filter_label} | shown {len(display_nodes)}/{len(display_nodes_all)}")
         node_tag_map = _build_node_tag_map(tags, display_nodes)
         _print_panels(display_nodes, links, node_tag_map)
 
@@ -673,12 +714,12 @@ def main() -> int:
         if low.startswith("f ") or low.startswith("filter "):
             _, _, expr = cmd.partition(" ")
             expr = expr.strip()
-            matches, err = _parse_name_filter(expr, display_nodes_all)
+            matches, _label, err = _apply_filter_expr(expr, display_nodes_all, tags)
             if err:
                 print(err)
                 continue
             name_filter = expr
-            print(f"Name filter set: {name_filter} (matches {len(matches)})")
+            print(f"Name filter set: {expr} (matches {len(matches)})")
             continue
         if low in ("t", "tags"):
             _print_tags(tags, repo_nodes, links)
@@ -779,12 +820,12 @@ def main() -> int:
             return 0
         if cmd in ("?", "h", "help"):
             print("create links: a (add) | r (remove) | i (invert) [n|n-m|n,n|text|re:regex]")
-            print("show links: f (filter) [text|re:regex], f=clear, ?+=linked, ?-=unlinked, ?*=all")
+            print("show links: f (filter) [text|re:regex|tag|tag_idx], f=clear, ?+=linked, ?-=unlinked, ?*=all")
             print("tags: t (list), tn <tag> (new), t+ <tag> <selection>, t- <tag> <selection>, ta|tr|ti <tag|idx>")
             print("presets: p (choose+apply), w (save current)")
             print("maint: s (sync repo<->custom_nodes), j (remove broken/junk links)")
             print("app: q (quit), Enter (refresh)")
-            print("examples: tn 3d, t+ 3d __3d, t+ 3d re:.*, ta 3d, t, tr 1")
+            print("examples: f SAMPLER, f 7, tn 3d, t+ 3d __3d, ta 3d, t, tr 1")
             print("    - adds links for repo nodes missing in custom_nodes")
             print("    - removes junctions that are not present in repo")
             continue
