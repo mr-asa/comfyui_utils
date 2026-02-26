@@ -574,6 +574,42 @@ def _resolve_tag_token(tags: Dict[str, List[str]], token: str) -> Tuple[Optional
     return None, f"Unknown tag: {raw}"
 
 
+def _resolve_tag_tokens(tags: Dict[str, List[str]], text: str) -> Tuple[List[str], Optional[str]]:
+    raw = text.strip()
+    if not raw:
+        return [], "Tag is empty."
+    all_names = _sorted_tags(tags)
+    out: List[str] = []
+    seen: set[str] = set()
+    for tok in raw.replace(",", " ").split():
+        if "-" in tok:
+            a, b = tok.split("-", 1)
+            if a.isdigit() and b.isdigit():
+                start, end = int(a), int(b)
+                if start > end:
+                    start, end = end, start
+                for idx in range(start, end + 1):
+                    if 1 <= idx <= len(all_names):
+                        name = all_names[idx - 1]
+                        low = name.lower()
+                        if low not in seen:
+                            seen.add(low)
+                            out.append(name)
+                continue
+        name, err = _resolve_tag_token(tags, tok)
+        if err:
+            return [], err
+        if name is None:
+            return [], f"Unknown tag: {tok}"
+        low = name.lower()
+        if low not in seen:
+            seen.add(low)
+            out.append(name)
+    if not out:
+        return [], "No valid tags selected."
+    return out, None
+
+
 def _save_tags(cfg_path: str, cfg: Dict[str, object], tags: Dict[str, List[str]]) -> None:
     cfg["junk_links_tags"] = tags
     _save_json(cfg_path, cfg)
@@ -681,6 +717,8 @@ def main() -> int:
     filter_mode = "all"
     name_filter = ""
 
+    should_render_table = True
+
     while True:
         repo_nodes = _scan_repo(repo_dir)
         links = _scan_links(custom_nodes_dir, repo_dir)
@@ -691,25 +729,31 @@ def main() -> int:
         filter_label = "*"
         if name_filter:
             display_nodes, filter_label, _ = _apply_filter_expr(name_filter, display_nodes, tags)
-        print(f"\nFilter: {filter_mode} | name: {filter_label} | shown {len(display_nodes)}/{len(display_nodes_all)}")
-        node_tag_map = _build_node_tag_map(tags, display_nodes)
-        _print_panels(display_nodes, links, node_tag_map)
+        if should_render_table:
+            print(f"\nFilter: {filter_mode} | name: {filter_label} | shown {len(display_nodes)}/{len(display_nodes_all)}")
+            node_tag_map = _build_node_tag_map(tags, display_nodes)
+            _print_panels(display_nodes, links, node_tag_map)
 
         cmd = input("> ").strip()
         if not cmd:
+            should_render_table = True
             continue
         low = cmd.lower()
         if low in ("?+", "f+", "f +", "f linked", "filter linked"):
             filter_mode = "linked"
+            should_render_table = True
             continue
         if low in ("?-", "f-", "f -", "f unlinked", "filter unlinked"):
             filter_mode = "unlinked"
+            should_render_table = True
             continue
         if low in ("?*", "f*", "f *", "f all", "filter all"):
             filter_mode = "all"
+            should_render_table = True
             continue
         if low in ("f", "filter", "fc", "f clear", "filter clear", "filter reset"):
             name_filter = ""
+            should_render_table = True
             continue
         if low.startswith("f ") or low.startswith("filter "):
             _, _, expr = cmd.partition(" ")
@@ -717,31 +761,38 @@ def main() -> int:
             matches, _label, err = _apply_filter_expr(expr, display_nodes_all, tags)
             if err:
                 print(err)
+                should_render_table = False
                 continue
             name_filter = expr
             print(f"Name filter set: {expr} (matches {len(matches)})")
+            should_render_table = True
             continue
         if low in ("t", "tags"):
             _print_tags(tags, repo_nodes, links)
+            should_render_table = False
             continue
         if low.startswith("tn "):
             _, _, raw_tag = cmd.partition(" ")
             new_tag = raw_tag.strip()
             if not new_tag:
                 print("Tag name is empty.")
+                should_render_table = False
                 continue
             existing, _ = _resolve_tag_token(tags, new_tag)
             if existing is not None:
                 print(f"Tag already exists: {existing}")
+                should_render_table = False
                 continue
             tags[new_tag] = []
             _save_tags(cfg_path, cfg, tags)
             print(f"Tag created: {new_tag}")
+            should_render_table = True
             continue
         if low.startswith("t+ ") or low.startswith("t- "):
             pieces = cmd.split(maxsplit=2)
             if len(pieces) < 2:
                 print("Usage: t+ <tag|idx> [selection] or t- <tag|idx> [selection]")
+                should_render_table = False
                 continue
             op = pieces[0].lower()
             tag_token = pieces[1]
@@ -749,18 +800,22 @@ def main() -> int:
             tag_name, err = _resolve_tag_token(tags, tag_token)
             if err:
                 print(err)
+                should_render_table = False
                 continue
             if not selection.strip():
                 print("Selection is required. Example: t+ 3d __3d or t+ 3d re:.*")
+                should_render_table = False
                 continue
             selected_names, err = _parse_selection_names(selection, display_nodes)
             if err:
                 print(err)
+                should_render_table = False
                 continue
             repo_set = set(repo_nodes)
             selected_repo = [n for n in selected_names if n in repo_set]
             if not selected_repo:
                 print("No repo packages selected.")
+                should_render_table = False
                 continue
             current = tags.get(tag_name, [])
             current_lows = {n.lower() for n in current}
@@ -781,25 +836,32 @@ def main() -> int:
                 tags[tag_name] = next_items
                 _save_tags(cfg_path, cfg, tags)
                 print(f"Tag '{tag_name}': removed {changed} package(s).")
+            should_render_table = True
             continue
         if low.startswith("ta ") or low.startswith("tr ") or low.startswith("ti "):
             pieces = cmd.split(maxsplit=1)
             if len(pieces) < 2:
-                print("Usage: ta|tr|ti <tag|idx>")
+                print("Usage: ta|tr|ti <tag|idx|idx-range> [...]")
+                should_render_table = False
                 continue
             op = pieces[0].lower()
-            tag_name, err = _resolve_tag_token(tags, pieces[1])
+            selected_tags, err = _resolve_tag_tokens(tags, pieces[1])
             if err:
                 print(err)
+                should_render_table = False
                 continue
-            tagged = tags.get(tag_name, [])
-            if not tagged:
-                print(f"Tag '{tag_name}' is empty.")
+            tagged_lows: set[str] = set()
+            for tag_name in selected_tags:
+                for pkg in tags.get(tag_name, []):
+                    tagged_lows.add(pkg.lower())
+            if not tagged_lows:
+                print("Selected tag set is empty.")
+                should_render_table = False
                 continue
-            node_set = set(display_nodes_all)
-            selected_names = [n for n in tagged if n in node_set]
+            selected_names = [n for n in display_nodes_all if n.lower() in tagged_lows]
             if not selected_names:
-                print(f"No nodes from tag '{tag_name}' are present in current list.")
+                print("No nodes from selected tags are present in current list.")
+                should_render_table = False
                 continue
             link_map = {ln.name: ln for ln in links}
             if op == "ta":
@@ -815,27 +877,31 @@ def main() -> int:
             else:
                 for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links, selected_names):
                     print(msg)
+            should_render_table = True
             continue
         if cmd.lower() in ("q", "quit", "exit"):
             return 0
         if cmd in ("?", "h", "help"):
             print("create links: a (add) | r (remove) | i (invert) [n|n-m|n,n|text|re:regex]")
             print("show links: f (filter) [text|re:regex|tag|tag_idx], f=clear, ?+=linked, ?-=unlinked, ?*=all")
-            print("tags: t (list), tn <tag> (new), t+ <tag> <selection>, t- <tag> <selection>, ta|tr|ti <tag|idx>")
+            print("tags: t (list), tn <tag> (new), t+ <tag> <selection>, t- <tag> <selection>, ta|tr|ti <tag|idx|idx-range> [...]")
             print("presets: p (choose+apply), w (save current)")
             print("maint: s (sync repo<->custom_nodes), j (remove broken/junk links)")
             print("app: q (quit), Enter (refresh)")
-            print("examples: f SAMPLER, f 7, tn 3d, t+ 3d __3d, ta 3d, t, tr 1")
+            print("examples: f SAMPLER, f 7, tn 3d, t+ 3d __3d, ta 3d, tr 1 4 6, ti 1-3")
             print("    - adds links for repo nodes missing in custom_nodes")
             print("    - removes junctions that are not present in repo")
+            should_render_table = False
             continue
         if cmd.lower() == "s":
             for msg in _sync(repo_dir, custom_nodes_dir, repo_nodes, links):
                 print(msg)
+            should_render_table = True
             continue
         if cmd.lower() == "j":
             for msg in _remove_junk_links(custom_nodes_dir, links):
                 print(msg)
+            should_render_table = True
             continue
         if cmd.lower() == "p":
             _ensure_presets_config(presets_path)
@@ -850,6 +916,7 @@ def main() -> int:
                 continue
             for msg in _apply_preset(repo_dir, custom_nodes_dir, repo_nodes, links, chosen, preset):
                 print(msg)
+            should_render_table = True
             continue
         if cmd.lower() == "w":
             _ensure_presets_config(presets_path)
@@ -859,6 +926,7 @@ def main() -> int:
             saved = _save_preset_from_links(presets_path, presets, repo_nodes, links)
             if saved:
                 print(f"Saved preset: {saved}")
+            should_render_table = False
             continue
         parts = cmd.split()
         if parts[0].lower() in ("a", "r", "i") and len(parts) == 1:
@@ -871,21 +939,25 @@ def main() -> int:
             else:
                 for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links):
                     print(msg)
+            should_render_table = True
             continue
         if len(parts) < 2:
             print("Invalid command. Example: a, r 10-23, i 1-5")
+            should_render_table = False
             continue
         action = parts[0].lower()
         selection = " ".join(parts[1:])
         selected_names, err = _parse_selection_names(selection, display_nodes)
         if err:
             print(err)
+            should_render_table = False
             continue
 
         link_map = {ln.name: ln for ln in links}
         if action == "a":
             for name in selected_names:
                 print(_add_link(repo_dir, custom_nodes_dir, name))
+            should_render_table = True
         elif action == "r":
             for name in selected_names:
                 ln = link_map.get(name)
@@ -893,11 +965,14 @@ def main() -> int:
                     print(f"Not linked: {name}")
                     continue
                 print(_remove_link(custom_nodes_dir, ln))
+            should_render_table = True
         elif action == "i":
             for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links, selected_names):
                 print(msg)
+            should_render_table = True
         else:
             print("Unknown command.")
+            should_render_table = False
 
 
 if __name__ == "__main__":
