@@ -1529,6 +1529,8 @@ def main() -> None:
           "check package info - " + Fore.BLUE + "pip show <PACKAGE>\n" + Style.RESET_ALL +
           "get all available versions of package - " + Fore.BLUE + "pip index versions <PACKAGE>\n" + Style.RESET_ALL +
           "try resolver without installing - " + Fore.BLUE + "pip install <PACKAGE> --dry-run\n" + Style.RESET_ALL +
+          "lock some packages - " + Fore.BLUE + "pip freeze > constraints.txt\n" + Style.RESET_ALL + "\tand then - " + Fore.BLUE + 
+            "pip install <PACKAGE> -c constraints.txt" + Style.RESET_ALL + "\n\tif needed - " + Fore.BLUE + "--upgrade-strategy only-if-needed\n" + Style.RESET_ALL +
           "check all errors in venv - " + Fore.BLUE + "pip check\n" + Style.RESET_ALL +
           "get all deep dependencies from a package (need pipdeptree) - " + Fore.BLUE + "pipdeptree -p <PACKAGE>\n" + Style.RESET_ALL +
           "get all reverse dependencies from a package (need pipdeptree) - " + Fore.BLUE + "pipdeptree --reverse --packages <PACKAGE>\n" + Style.RESET_ALL +

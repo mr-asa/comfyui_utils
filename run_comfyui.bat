@@ -98,7 +98,11 @@ if not defined VENV_%CHOICE% goto bad_venv
 
 set "VENV_DIR=!VENV_%CHOICE%!"
 set "PYTHON_EXE=%ROOT%!VENV_DIR!\Scripts\python.exe"
+set "VENV_SCRIPTS=%ROOT%!VENV_DIR!\Scripts"
 call :save_selected_venv
+
+rem Ensure selected venv executables (python/pip/ninja) are first in PATH
+if exist "%VENV_SCRIPTS%\python.exe" set "PATH=%VENV_SCRIPTS%;%PATH%"
 
 rem Ensure CUDA and torch DLLs are on PATH for custom extensions
 set "CUDA_HOME="
@@ -132,6 +136,7 @@ if defined CUDA_HOME (
 set "TORCH_LIB=%ROOT%!VENV_DIR!\Lib\site-packages\torch\lib"
 if exist "%CUDA_BIN%" set "PATH=%CUDA_BIN%;%PATH%"
 if exist "%TORCH_LIB%" set "PATH=%TORCH_LIB%;%PATH%"
+call :apply_venv_env
 if defined CUDA_HOME (
   echo CUDA Toolkit path ^(CUDA_HOME^): %CUDA_HOME%
 ) else (
@@ -400,6 +405,32 @@ echo Launching custom_nodes_link_manager...
 echo.
 "%PYTHON_EXE%" "%START%custom_nodes_link_manager.py" --repo "%CUSTOM_SRC%" --custom "%CUSTOM_DST%"
 echo.
+exit /b 0
+
+:apply_venv_env
+set "ENV_TMP=%TEMP%\comfyui_env_by_venv.txt"
+del /q "%ENV_TMP%" >nul 2>&1
+if not exist "%START%config.json" exit /b 0
+for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$p='%START%config.json';" ^
+  "$venv='%VENV_DIR%';" ^
+  "$j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json;" ^
+  "$m=$null; if($j.PSObject.Properties.Name -contains 'env_by_venv'){ $m=$j.env_by_venv };" ^
+  "if(-not $m){ exit 0 };" ^
+  "$emit=@();" ^
+  "if($m.PSObject.Properties.Name -contains '__all__'){ $emit += @($m.__all__.PSObject.Properties) };" ^
+  "if($m.PSObject.Properties.Name -contains $venv){ $emit += @($m.$venv.PSObject.Properties) };" ^
+  "$emit | ForEach-Object { if($_.Name -and $null -ne $_.Value){ '{0}={1}' -f $_.Name,([string]$_.Value) } }"`) do (
+  >> "%ENV_TMP%" echo %%L
+)
+if not exist "%ENV_TMP%" exit /b 0
+for /f "usebackq tokens=1* delims==" %%A in ("%ENV_TMP%") do (
+  if not "%%~A"=="" (
+    set "%%~A=%%~B"
+    echo Env override: %%~A=%%~B
+  )
+)
+del /q "%ENV_TMP%" >nul 2>&1
 exit /b 0
 
 :after_links
