@@ -18,6 +18,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from config_schema import load_legacy_compat, save_legacy_compat
 
 
 REPARSE_POINT = 0x0400
@@ -116,7 +117,7 @@ def _choose_custom_nodes_path(cfg: Dict[str, object]) -> str:
 
 
 def _resolve_paths(cfg_path: str, args: argparse.Namespace) -> Tuple[str, str, Dict[str, object]]:
-    cfg = _load_json(cfg_path)
+    cfg, _ = load_legacy_compat(cfg_path, auto_migrate=True)
     if not cfg:
         print(f"Config not loaded or empty: {cfg_path}")
     repo_raw = args.repo or (cfg.get("custom_nodes_repo_path") if isinstance(cfg.get("custom_nodes_repo_path"), str) else "")
@@ -133,7 +134,7 @@ def _resolve_paths(cfg_path: str, args: argparse.Namespace) -> Tuple[str, str, D
             print(f"Config file: {cfg_path}")
         repo = _prompt_path("Enter custom_nodes_repo path")
         cfg["custom_nodes_repo_path"] = repo
-        _save_json(cfg_path, cfg)
+        save_legacy_compat(cfg_path, cfg)
 
     if custom_nodes and not os.path.isdir(custom_nodes):
         print(f"custom_nodes_path not found: {custom_nodes}")
@@ -612,7 +613,7 @@ def _resolve_tag_tokens(tags: Dict[str, List[str]], text: str) -> Tuple[List[str
 
 def _save_tags(cfg_path: str, cfg: Dict[str, object], tags: Dict[str, List[str]]) -> None:
     cfg["junk_links_tags"] = tags
-    _save_json(cfg_path, cfg)
+    save_legacy_compat(cfg_path, cfg)
 
 
 def _parse_selection_names(selection: str, display_nodes: List[str]) -> Tuple[List[str], Optional[str]]:

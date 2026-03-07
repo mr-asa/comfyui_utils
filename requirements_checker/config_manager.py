@@ -5,12 +5,12 @@ Handles all configuration-related operations including reading and writing confi
 managing environment settings, and providing configuration defaults.
 """
 
-import json
 import sys
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, List, Set
 from dataclasses import dataclass
+from config_schema import load_legacy_compat, save_legacy_compat
 
 @dataclass
 class EnvironmentConfig:
@@ -39,7 +39,7 @@ class ConfigManager:
     def _ensure_config_exists(self) -> None:
         """Ensure the configuration file exists, create if it doesn't."""
         if not self.config_path.exists():
-            self.config_path.write_text(json.dumps({}, indent=4))
+            save_legacy_compat(str(self.config_path), {})
             print(f"\tConfig file '{self.config_path}' created.")
 
     def read_config(self) -> Dict[str, Any]:
@@ -49,7 +49,8 @@ class ConfigManager:
         Returns:
             Dict containing configuration data
         """
-        return json.loads(self.config_path.read_text(encoding="utf-8-sig"))
+        cfg, _ = load_legacy_compat(str(self.config_path), auto_migrate=True)
+        return cfg
 
     def write_config(self, config: Dict[str, Any]) -> None:
         """
@@ -58,7 +59,7 @@ class ConfigManager:
         Args:
             config: Configuration dictionary to write
         """
-        self.config_path.write_text(json.dumps(config, indent=4))
+        save_legacy_compat(str(self.config_path), config)
 
     def get_value(self, key: str, check_only: bool = False) -> Optional[Any]:
         """

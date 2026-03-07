@@ -6,16 +6,13 @@ rem =========================================================
 rem Detect ComfyUI root
 rem =========================================================
 set "START=%~dp0"
+set "CONFIG_PATH=%START%config.json"
+set "CONFIG_CLI=%START%config_cli.py"
 set "ROOT="
 
 rem Try config.json in script folder first
-if exist "%START%config.json" (
-  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$p='%START%config.json'; $j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; " ^
-    "$r=$null; if($j.PSObject.Properties.Name -contains 'Comfyui_root'){ $r=$j.Comfyui_root } " ^
-    "elseif($j.PSObject.Properties.Name -contains 'comfyui_root'){ $r=$j.comfyui_root } " ^
-    "elseif($j.PSObject.Properties.Name -contains 'COMFYUI_ROOT'){ $r=$j.COMFYUI_ROOT } " ^
-    "if($r){ $r=[string]$r; $r=$r.Trim(); if($r){ Write-Output $r } }"`) do (
+if exist "%CONFIG_PATH%" (
+  for /f "usebackq delims=" %%R in (`python "%CONFIG_CLI%" --config "%CONFIG_PATH%" get --key comfyui_root`) do (
     set "ROOT=%%R"
   )
   if defined ROOT (
@@ -65,11 +62,8 @@ if %INDEX%==0 goto no_venv
 
 set "DEFAULT_INDEX=1"
 set "DEFAULT_VENV="
-if exist "%START%config.json" (
-  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$p='%START%config.json'; $j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; " ^
-    "$r=$null; if($j.PSObject.Properties.Name -contains 'venv_path'){ $r=$j.venv_path } " ^
-    "if($r){ $r=[string]$r; $r=$r.Trim(); if($r){ Split-Path -Leaf $r } }"`) do (
+if exist "%CONFIG_PATH%" (
+  for /f "usebackq delims=" %%R in (`python "%CONFIG_CLI%" --config "%CONFIG_PATH%" get --key selected_venv_name`) do (
     set "DEFAULT_VENV=%%R"
   )
 )
@@ -108,14 +102,8 @@ rem Ensure CUDA and torch DLLs are on PATH for custom extensions
 set "CUDA_HOME="
 set "CUDA_PATH="
 set "CUDA_BIN="
-if exist "%START%config.json" (
-  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$p='%START%config.json'; $j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; " ^
-    "$venv='%VENV_DIR%'; $r=$null; " ^
-    "if($j.PSObject.Properties.Name -contains 'cuda_path_by_venv'){ " ^
-    "  $m=$j.cuda_path_by_venv; if($m -and $m.PSObject.Properties.Name -contains $venv){ $r=$m.$venv } } " ^
-    "if(-not $r -and ($j.PSObject.Properties.Name -contains 'cuda_path')){ $r=$j.cuda_path } " ^
-    "if($r){ $r=[string]$r; $r=$r.Trim(); if($r){ Write-Output $r } }"`) do (
+if exist "%CONFIG_PATH%" (
+  for /f "usebackq delims=" %%R in (`python "%CONFIG_CLI%" --config "%CONFIG_PATH%" get --key venv_cuda_path --venv-name "%VENV_DIR%"`) do (
     set "CUDA_HOME=%%R"
   )
 )
@@ -244,11 +232,8 @@ rem =========================================================
 rem Apply custom nodes preset (junctions)
 rem =========================================================
 set "CUSTOM_SRC=%START%custom_nodes_repo"
-if exist "%START%config.json" (
-  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$p='%START%config.json'; $j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; " ^
-    "$r=$null; if($j.PSObject.Properties.Name -contains 'custom_nodes_repo_path'){ $r=$j.custom_nodes_repo_path } " ^
-    "if($r){ $r=[string]$r; $r=$r.Trim(); if($r){ Write-Output $r } }"`) do (
+if exist "%CONFIG_PATH%" (
+  for /f "usebackq delims=" %%R in (`python "%CONFIG_CLI%" --config "%CONFIG_PATH%" get --key custom_nodes_repo_path`) do (
     set "CUSTOM_SRC=%%R"
   )
 )
@@ -335,32 +320,16 @@ exit /b 0
 
 :save_custom_src
 for /f "usebackq delims=" %%C in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$p='%START%config.json';" ^
-  "$cfg=$null; if(Test-Path -LiteralPath $p){ $cfg=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json };" ^
-  "if(-not $cfg){ $cfg=[pscustomobject]@{} }" ^
-  "$current=$null; if($cfg.PSObject.Properties.Name -contains 'custom_nodes_repo_path'){ $current=[string]$cfg.custom_nodes_repo_path }" ^
-  "$desired='%CUSTOM_SRC%'; if($current -ne $desired){" ^
-  "  $cfg | Add-Member -NotePropertyName custom_nodes_repo_path -NotePropertyValue $desired -Force;" ^
-  "  $cfg | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $p -Encoding UTF8;" ^
-  "  Write-Output 1" ^
-  "} else { Write-Output 0 }"`) do (
-  set "CONFIG_CHANGED=%%C"
+  "python '%CONFIG_CLI%' --config '%CONFIG_PATH%' set --key custom_nodes_repo_path --value '%CUSTOM_SRC%'; Write-Output 1"`) do (
+  set "CONFIG_CHANGED=1"
 )
 if "%CONFIG_CHANGED%"=="1" call :format_config_json
 exit /b 0
 
 :save_selected_venv
 for /f "usebackq delims=" %%C in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$p='%START%config.json';" ^
-  "$cfg=$null; if(Test-Path -LiteralPath $p){ $cfg=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json };" ^
-  "if(-not $cfg){ $cfg=[pscustomobject]@{} }" ^
-  "$current=$null; if($cfg.PSObject.Properties.Name -contains 'venv_path'){ $current=[string]$cfg.venv_path }" ^
-  "$desired='%ROOT%%VENV_DIR%'; if($current -ne $desired){" ^
-  "  $cfg | Add-Member -NotePropertyName venv_path -NotePropertyValue $desired -Force;" ^
-  "  $cfg | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $p -Encoding UTF8;" ^
-  "  Write-Output 1" ^
-  "} else { Write-Output 0 }"`) do (
-  set "CONFIG_CHANGED=%%C"
+  "python '%CONFIG_CLI%' --config '%CONFIG_PATH%' set-selected-venv --path '%ROOT%%VENV_DIR%' --name '%VENV_DIR%'; Write-Output 1"`) do (
+  set "CONFIG_CHANGED=1"
 )
 if "%CONFIG_CHANGED%"=="1" call :format_config_json
 exit /b 0
@@ -376,11 +345,8 @@ exit /b 0
 :run_link_manager
 set "CUSTOM_DST=%ROOT%custom_nodes"
 set "CUSTOM_SRC=%START%custom_nodes_repo"
-if exist "%START%config.json" (
-  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$p='%START%config.json'; $j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; " ^
-    "$r=$null; if($j.PSObject.Properties.Name -contains 'custom_nodes_repo_path'){ $r=$j.custom_nodes_repo_path } " ^
-    "if($r){ $r=[string]$r; $r=$r.Trim(); if($r){ Write-Output $r } }"`) do (
+if exist "%CONFIG_PATH%" (
+  for /f "usebackq delims=" %%R in (`python "%CONFIG_CLI%" --config "%CONFIG_PATH%" get --key custom_nodes_repo_path`) do (
     set "CUSTOM_SRC=%%R"
   )
 )
@@ -410,17 +376,8 @@ exit /b 0
 :apply_venv_env
 set "ENV_TMP=%TEMP%\comfyui_env_by_venv.txt"
 del /q "%ENV_TMP%" >nul 2>&1
-if not exist "%START%config.json" exit /b 0
-for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$p='%START%config.json';" ^
-  "$venv='%VENV_DIR%';" ^
-  "$j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json;" ^
-  "$m=$null; if($j.PSObject.Properties.Name -contains 'env_by_venv'){ $m=$j.env_by_venv };" ^
-  "if(-not $m){ exit 0 };" ^
-  "$emit=@();" ^
-  "if($m.PSObject.Properties.Name -contains '__all__'){ $emit += @($m.__all__.PSObject.Properties) };" ^
-  "if($m.PSObject.Properties.Name -contains $venv){ $emit += @($m.$venv.PSObject.Properties) };" ^
-  "$emit | ForEach-Object { if($_.Name -and $null -ne $_.Value){ '{0}={1}' -f $_.Name,([string]$_.Value) } }"`) do (
+if not exist "%CONFIG_PATH%" exit /b 0
+for /f "usebackq delims=" %%L in (`python "%CONFIG_CLI%" --config "%CONFIG_PATH%" emit-env --venv-name "%VENV_DIR%"`) do (
   >> "%ENV_TMP%" echo %%L
 )
 if not exist "%ENV_TMP%" exit /b 0

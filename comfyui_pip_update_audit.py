@@ -27,6 +27,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from config_schema import load_legacy_compat, save_legacy_compat
 
 try:
     from importlib import metadata as importlib_metadata
@@ -186,17 +187,12 @@ def _split_items(raw_items: list[str]) -> list[str]:
 
 
 def _load_json(path: str) -> dict:
-    try:
-        with open(path, "r", encoding="utf-8-sig") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    data, _ = load_legacy_compat(path, auto_migrate=True)
+    return data if isinstance(data, dict) else {}
 
 
 def _save_json(path: str, data: dict) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    save_legacy_compat(path, data)
 
 
 def _ensure_env_entry(cfg: dict, env_key: str) -> dict:
@@ -321,13 +317,11 @@ def load_or_init_config(path: str) -> dict:
         # Import locally to avoid hard dependency if the package is moved
         from requirements_checker.config_manager import ConfigManager  # type: ignore
     except Exception:
-        # Fallback: create an empty file if it doesn't exist
         if not os.path.exists(path):
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump({}, f, indent=4)
+            save_legacy_compat(path, {})
             print(f"Config file created at {path}. Please fill required fields manually.")
-        with open(path, "r", encoding="utf-8-sig") as f:
-            return json.load(f)
+        cfg, _ = load_legacy_compat(path, auto_migrate=True)
+        return cfg
 
     cm = ConfigManager(path)
     try:
@@ -547,8 +541,7 @@ def _load_venv_paths(cfg: dict) -> List[str]:
 
 
 def _save_config(path: str, cfg: dict) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=4)
+    save_legacy_compat(path, cfg)
 
 
 def _venv_has_pip(path: str) -> bool:

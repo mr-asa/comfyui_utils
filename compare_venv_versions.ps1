@@ -37,19 +37,29 @@ function Get-ConfigVenvPaths {
 
     $cfg = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
     $fromList = @()
-    if ($cfg.PSObject.Properties.Name -contains "venv_paths" -and $cfg.venv_paths) {
-        $fromList = @($cfg.venv_paths)
+    if ($cfg.PSObject.Properties.Name -contains "schema_version" -and [int]$cfg.schema_version -ge 2) {
+        if ($cfg.PSObject.Properties.Name -contains "environments" -and $cfg.environments -and
+            $cfg.environments.PSObject.Properties.Name -contains "venvs" -and $cfg.environments.venvs) {
+            foreach ($p in $cfg.environments.venvs.PSObject.Properties) {
+                if ($p.Value -and $p.Value.PSObject.Properties.Name -contains "path" -and $p.Value.path) {
+                    $fromList += [string]$p.Value.path
+                }
+            }
+        }
+    } else {
+        if ($cfg.PSObject.Properties.Name -contains "venv_paths" -and $cfg.venv_paths) {
+            $fromList = @($cfg.venv_paths)
+        }
+        if ($fromList.Count -eq 0 -and $cfg.PSObject.Properties.Name -contains "venv_path" -and $cfg.venv_path) {
+            $fromList = @([string]$cfg.venv_path)
+        }
     }
 
     if ($fromList.Count -gt 0) {
         return $fromList
     }
 
-    if ($cfg.PSObject.Properties.Name -contains "venv_path" -and $cfg.venv_path) {
-        return @([string]$cfg.venv_path)
-    }
-
-    throw "No venv_paths or venv_path found in config: $Path"
+    throw "No venv paths found in config: $Path"
 }
 
 function Get-Settings {

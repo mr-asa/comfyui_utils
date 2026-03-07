@@ -3,15 +3,14 @@ setlocal EnableExtensions EnableDelayedExpansion
 set "ROOT=%~1"
 set "START=%~2"
 set "SHOW_MODE=%~3"
+set "CFG=%START%config.json"
+set "CFG_CLI=%START%config_cli.py"
 
 set "CUSTOM_DST=%ROOT%custom_nodes"
 set "CUSTOM_SRC=%START%custom_nodes_repo"
 
-if exist "%START%config.json" (
-  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$p='%START%config.json'; $j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; " ^
-    "$r=$null; if($j.PSObject.Properties.Name -contains 'custom_nodes_repo_path'){ $r=$j.custom_nodes_repo_path } " ^
-    "if($r){ $r=[string]$r; $r=$r.Trim(); if($r){ Write-Output $r } }"`) do (
+if exist "%CFG%" (
+  for /f "usebackq delims=" %%R in (`python "%CFG_CLI%" --config "%CFG%" get --key custom_nodes_repo_path`) do (
     set "CUSTOM_SRC=%%R"
   )
 )

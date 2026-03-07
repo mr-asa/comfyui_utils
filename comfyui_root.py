@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from config_schema import load_legacy_compat, save_legacy_compat
 
 
 CONFIG_ROOT_KEY = "Comfyui_root"
@@ -12,18 +12,12 @@ _ALT_KEYS = ("comfyui_root", "COMFYUI_ROOT")
 
 
 def _load_config(path: str) -> Dict[str, object]:
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8-sig") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    cfg, _ = load_legacy_compat(path, auto_migrate=True)
+    return cfg
 
 
 def _save_config(path: str, cfg: Dict[str, object]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=4)
+    save_legacy_compat(path, cfg)
 
 
 def _get_config_root(cfg: Dict[str, object]) -> Optional[str]:

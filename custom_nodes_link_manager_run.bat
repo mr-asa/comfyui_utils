@@ -4,12 +4,11 @@ chcp 65001 >nul
 
 set "START=%~dp0"
 set "PY=python"
+set "CFG=%START%config.json"
+set "CFG_CLI=%START%config_cli.py"
 
-if exist "%START%config.json" (
-  for /f "usebackq delims=" %%R in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$p='%START%config.json'; $j=Get-Content -LiteralPath $p -Raw | ConvertFrom-Json; " ^
-    "$r=$null; if($j.PSObject.Properties.Name -contains 'venv_path'){ $r=$j.venv_path } " ^
-    "if($r){ $r=[string]$r; $r=$r.Trim(); if($r){ Write-Output $r } }"`) do (
+if exist "%CFG%" (
+  for /f "usebackq delims=" %%R in (`python "%CFG_CLI%" --config "%CFG%" get --key selected_venv_path`) do (
     set "VENV_PATH=%%R"
   )
 )

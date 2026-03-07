@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from config_schema import load_legacy_compat, save_legacy_compat
 
 try:
     from requirements_checker.config_manager import ConfigManager  # type: ignore
@@ -199,14 +200,10 @@ def load_or_init_config(path: str) -> Dict[str, object]:
     """Ensure config exists and return current settings."""
     if ConfigManager is None:
         if not os.path.exists(path):
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("{}")
+            save_legacy_compat(path, {})
             print(f"Config file created at {path}. Please fill in custom_nodes_path.")
-        try:
-            import json
-            return json.load(open(path, encoding="utf-8-sig"))
-        except Exception:
-            return {}
+        cfg, _ = load_legacy_compat(path, auto_migrate=True)
+        return cfg
 
     cm = ConfigManager(path)
     try:
