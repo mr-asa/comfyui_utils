@@ -27,6 +27,7 @@
     "venvs": {
       "<venv_name>": {
         "path": "",
+        "comment": "",
         "cuda_path": "",
         "env_vars": {},
         "pip": {
@@ -55,9 +56,10 @@
 1. Put global paths only into `paths`.
 2. Put shared env vars into `defaults.env_vars`.
 3. Put per-venv settings only into `environments.venvs.<name>`.
-4. Keep current selection only in `runtime.selected`.
-5. Put non-standard legacy/custom keys into `extras`.
-6. Do not duplicate `venv` data in multiple places.
+4. Store human-readable purpose in `environments.venvs.<name>.comment`.
+5. Keep current selection only in `runtime.selected`.
+6. Put non-standard legacy/custom keys into `extras`.
+7. Do not duplicate `venv` data in multiple places.
 
 ## Migration
 - Use `python config_cli.py ensure`.

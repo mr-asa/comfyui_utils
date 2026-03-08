@@ -270,36 +270,114 @@ class ConfigManager:
             print("Invalid path. Please enter a valid directory path.")
 
     def _prompt_venv_path(self) -> str:
-        """Prompt user for venv path, preferring auto-discovered candidates near ComfyUI."""
-        candidates = self._find_candidate_venvs()
+        """Prompt user for venv path using only config DB entries (+ manual add)."""
+        cfg = self.read_config()
+        candidates: List[str] = []
+        raw_list = cfg.get("venv_paths")
+        if isinstance(raw_list, list):
+            for p in raw_list:
+                if isinstance(p, str) and p.strip():
+                    candidates.append(p.strip())
+        raw_current = cfg.get("venv_path")
+        if isinstance(raw_current, str) and raw_current.strip():
+            candidates.append(raw_current.strip())
+        # de-dup
+        seen: Set[str] = set()
+        clean_candidates: List[str] = []
+        for p in candidates:
+            key = os.path.normcase(os.path.normpath(p))
+            if key in seen:
+                continue
+            seen.add(key)
+            clean_candidates.append(os.path.normpath(p))
+        candidates = clean_candidates
 
-        if candidates:
-            print("Found possible virtual environments:")
-            for idx, path in enumerate(candidates, 1):
-                print(f"  {idx}. {path}")
-
-            while True:
-                choice = input("Choose venv (Enter for 1st, number, or custom path; 'NO' to exit): ").strip()
-                if choice == "":
-                    candidate = candidates[0]
-                elif choice.upper() == "NO":
-                    sys.exit("Exiting script as requested.")
-                elif choice.isdigit() and 1 <= int(choice) <= len(candidates):
-                    candidate = candidates[int(choice) - 1]
-                else:
-                    candidate = choice
-
-                if os.path.exists(candidate):
-                    return candidate
-                print("Invalid path. Please enter a valid option.")
+        comments_raw = cfg.get("venv_comments")
+        comments = comments_raw if isinstance(comments_raw, dict) else {}
 
         while True:
-            path = input("Enter venv path (or 'NO' to exit): ").strip()
+            missing = [p for p in candidates if not os.path.isdir(p)]
+            if missing:
+                print("Missing venv entries in config:")
+                for p in missing:
+                    print(f"  - {p}")
+                ans = input("Remove missing entries from config? [Y/n]: ").strip().lower()
+                if ans in ("", "y", "yes"):
+                    for m in missing:
+                        m_key = os.path.normcase(os.path.normpath(m))
+                        candidates = [p for p in candidates if os.path.normcase(os.path.normpath(p)) != m_key]
+                        m_name = os.path.basename(os.path.normpath(m))
+                        if isinstance(comments, dict):
+                            comments.pop(m_name, None)
+                    cfg["venv_paths"] = candidates
+                    cfg["venv_comments"] = comments
+                    # keep current only if still present
+                    cur = cfg.get("venv_path")
+                    if isinstance(cur, str) and cur.strip():
+                        cur_key = os.path.normcase(os.path.normpath(cur.strip()))
+                        if cur_key in {os.path.normcase(os.path.normpath(m)) for m in missing}:
+                            cfg["venv_path"] = candidates[0] if candidates else ""
+                    self.write_config(cfg)
+
+            if candidates:
+                print("Venv entries from config:")
+                for idx, path in enumerate(candidates, 1):
+                    name = os.path.basename(os.path.normpath(path))
+                    cmt = comments.get(name, "") if isinstance(comments, dict) else ""
+                    cmt_text = f" | {cmt}" if cmt else ""
+                    print(f"  {idx}. {path}{cmt_text}")
+                print("  A. Add new venv")
+                choice = input("Choose venv (Enter=1, number, A, or 'NO' to exit): ").strip()
+                if choice == "":
+                    return candidates[0]
+                if choice.upper() == "NO":
+                    sys.exit("Exiting script as requested.")
+                if choice.lower() in ("a", "add", "new"):
+                    path = input("Enter new venv path: ").strip()
+                    if not path:
+                        continue
+                    if not os.path.isdir(path):
+                        print("Invalid path. Please enter a valid directory path.")
+                        continue
+                    path = os.path.normpath(path)
+                    if os.path.normcase(path) not in {os.path.normcase(os.path.normpath(p)) for p in candidates}:
+                        candidates.append(path)
+                    cmt = input("Comment (optional): ").strip()
+                    if cmt:
+                        if not isinstance(comments, dict):
+                            comments = {}
+                        comments[os.path.basename(path)] = cmt
+                    cfg["venv_paths"] = candidates
+                    cfg["venv_comments"] = comments
+                    cfg["venv_path"] = path
+                    self.write_config(cfg)
+                    return path
+                if choice.isdigit() and 1 <= int(choice) <= len(candidates):
+                    selected = candidates[int(choice) - 1]
+                    cfg["venv_path"] = selected
+                    self.write_config(cfg)
+                    return selected
+                print("Invalid choice.")
+                continue
+
+            path = input("No venv in config. Enter new venv path (or 'NO' to exit): ").strip()
             if path.upper() == "NO":
                 sys.exit("Exiting script as requested.")
-            if os.path.exists(path):
-                return path
-            print("Invalid path. Please enter a valid directory path.")
+            if not os.path.isdir(path):
+                print("Invalid path. Please enter a valid directory path.")
+                continue
+            path = os.path.normpath(path)
+            candidates = [path]
+            cfg["venv_paths"] = candidates
+            cfg["venv_path"] = path
+            cmt = input("Comment (optional): ").strip()
+            if cmt:
+                if not isinstance(comments, dict):
+                    comments = {}
+                comments[os.path.basename(path)] = cmt
+                cfg["venv_comments"] = comments
+            self.write_config(cfg)
+            return path
 
     # -------- helpers --------
     def _is_windows(self) -> bool:

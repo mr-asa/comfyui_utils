@@ -64,6 +64,55 @@ def _load_venv_paths_simple(cfg: dict) -> list[str]:
     return out
 
 
+def _venv_name_from_path(path: str) -> str:
+    p = os.path.normpath(path.strip())
+    return os.path.basename(p.rstrip("\\/")) or p
+
+
+def _load_venv_comments(cfg: dict) -> dict[str, str]:
+    raw = cfg.get("venv_comments")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str):
+            continue
+        key = k.strip()
+        if not key:
+            continue
+        out[key] = str(v).strip() if v is not None else ""
+    return out
+
+
+def _comment_for_venv_path(cfg: dict, path: str) -> str:
+    comments = _load_venv_comments(cfg)
+    return comments.get(_venv_name_from_path(path), "")
+
+
+def _set_venv_comment(cfg: dict, path: str, comment: str) -> None:
+    comments = _load_venv_comments(cfg)
+    comments[_venv_name_from_path(path)] = comment.strip()
+    cfg["venv_comments"] = comments
+
+
+def _remove_venv_comment(cfg: dict, path: str) -> None:
+    comments = _load_venv_comments(cfg)
+    comments.pop(_venv_name_from_path(path), None)
+    cfg["venv_comments"] = comments
+
+
+def _print_venv_table(cfg: dict, paths: list[str], current_norm: str) -> None:
+    if not paths:
+        return
+    idx_w = max(1, len(str(len(paths))))
+    path_w = max(len(p) for p in paths)
+    for idx, p in enumerate(paths, 1):
+        mark = "*" if current_norm and os.path.normcase(os.path.normpath(p)) == current_norm else " "
+        comment = _comment_for_venv_path(cfg, p)
+        cmt = f" | {comment}" if comment else ""
+        print(f" {idx:>{idx_w}}){mark} {p:<{path_w}}{cmt}")
+
+
 def _confirm_venv_path_simple(path: str) -> bool:
     if not os.path.isdir(path):
         print("Path does not exist.")
@@ -79,11 +128,27 @@ def _select_venv_simple(cfg: dict) -> dict:
         raise SystemExit("No venv paths found in config.json and input is non-interactive.")
 
     while True:
+        missing = [p for p in paths if not os.path.isdir(p)]
+        if missing:
+            print("Missing venv paths in config:")
+            for p in missing:
+                print(f" - {p}")
+            ans = input("Remove missing entries? [Y/n]: ").strip().lower()
+            if ans in ("", "y", "yes"):
+                for mp in missing:
+                    paths = [x for x in paths if os.path.normcase(os.path.normpath(x)) != os.path.normcase(os.path.normpath(mp))]
+                    _remove_venv_comment(cfg, mp)
+                cfg["venv_paths"] = paths
+                if current and os.path.normcase(os.path.normpath(current)) in {
+                    os.path.normcase(os.path.normpath(m)) for m in missing
+                }:
+                    current = ""
+                    current_norm = ""
+
         print("--> Select venv for updates <--")
-        for idx, p in enumerate(paths, 1):
-            mark = "*" if current_norm and os.path.normcase(os.path.normpath(p)) == current_norm else " "
-            print(f" {idx}){mark} {p}")
+        _print_venv_table(cfg, paths, current_norm)
         print(" A) Add new venv")
+        print(" D) Delete venv from config")
         if paths:
             default_idx = 1
             if current_norm:
@@ -112,8 +177,31 @@ def _select_venv_simple(cfg: dict) -> dict:
             if not _confirm_venv_path_simple(new_path):
                 continue
             paths = _load_venv_paths_simple({"venv_paths": paths + [new_path]})
+            new_comment = input("Comment (optional): ").strip()
+            if new_comment:
+                _set_venv_comment(cfg, new_path, new_comment)
             selected = new_path
             break
+
+        if choice.lower() in ("d", "del", "delete"):
+            if not paths:
+                print("No entries to delete.")
+                continue
+            raw = input("Index to delete: ").strip()
+            if not raw.isdigit():
+                print("Invalid index.")
+                continue
+            idx = int(raw)
+            if idx < 1 or idx > len(paths):
+                print("Invalid index.")
+                continue
+            removed = paths[idx - 1]
+            paths = [p for i, p in enumerate(paths, 1) if i != idx]
+            _remove_venv_comment(cfg, removed)
+            if current_norm and os.path.normcase(os.path.normpath(removed)) == current_norm:
+                current = ""
+                current_norm = ""
+            continue
 
         if choice.isdigit():
             idx = int(choice)
@@ -653,11 +741,27 @@ def select_venv(cfg: dict, config_path: str) -> dict:
         print("No venv paths found in config.")
 
     while True:
+        missing = [p for p in paths if not os.path.isdir(p)]
+        if missing:
+            print("Missing venv paths in config:")
+            for p in missing:
+                print(f" - {p}")
+            ans = input("Remove missing entries? [Y/n]: ").strip().lower()
+            if ans in ("", "y", "yes"):
+                for mp in missing:
+                    paths = [x for x in paths if os.path.normcase(os.path.normpath(x)) != os.path.normcase(os.path.normpath(mp))]
+                    _remove_venv_comment(cfg, mp)
+                cfg["venv_paths"] = paths
+                if current and os.path.normcase(os.path.normpath(current)) in {
+                    os.path.normcase(os.path.normpath(m)) for m in missing
+                }:
+                    current = ""
+                    current_norm = ""
+
         print(Fore.MAGENTA + Style.BRIGHT + "--> Select venv for updates <--" + Style.RESET_ALL)
-        for idx, p in enumerate(paths, 1):
-            mark = "*" if current_norm and os.path.normcase(os.path.normpath(p)) == current_norm else " "
-            print(f" {idx}){mark} {p}")
+        _print_venv_table(cfg, paths, current_norm)
         print(" A) Add new venv")
+        print(" D) Delete venv from config")
         if paths:
             default_idx = 1
             if current_norm:
@@ -686,8 +790,31 @@ def select_venv(cfg: dict, config_path: str) -> dict:
             if not _confirm_venv_path(new_path):
                 continue
             paths = _unique_paths(paths + [new_path])
+            new_comment = input("Comment (optional): ").strip()
+            if new_comment:
+                _set_venv_comment(cfg, new_path, new_comment)
             selected = new_path
             break
+
+        if choice.lower() in ("d", "del", "delete"):
+            if not paths:
+                print("No entries to delete.")
+                continue
+            raw = input("Index to delete: ").strip()
+            if not raw.isdigit():
+                print("Invalid index.")
+                continue
+            idx = int(raw)
+            if idx < 1 or idx > len(paths):
+                print("Invalid index.")
+                continue
+            removed = paths[idx - 1]
+            paths = [p for i, p in enumerate(paths, 1) if i != idx]
+            _remove_venv_comment(cfg, removed)
+            if current_norm and os.path.normcase(os.path.normpath(removed)) == current_norm:
+                current = ""
+                current_norm = ""
+            continue
 
         if choice.isdigit():
             idx = int(choice)

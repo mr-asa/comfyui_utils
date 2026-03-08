@@ -122,12 +122,14 @@ def _sanitize_v2(cfg: Dict[str, Any]) -> Dict[str, Any]:
             continue
         entry = _ensure_dict(raw_entry)
         venv_path = str(entry.get("path") or "").strip()
+        comment = str(entry.get("comment") or "").strip()
         env_vars = _ensure_dict(entry.get("env_vars"))
         pip = _ensure_dict(entry.get("pip"))
         hold_list = [str(p).strip() for p in _ensure_list(pip.get("hold_packages")) if str(p).strip()]
         pin_map = {str(k).strip(): str(v).strip() for k, v in _ensure_dict(pip.get("pin_packages")).items() if str(k).strip()}
         clean_venvs[name] = {
             "path": venv_path,
+            "comment": comment,
             "cuda_path": str(entry.get("cuda_path") or "").strip(),
             "env_vars": {str(k): str(v) for k, v in env_vars.items() if str(k).strip()},
             "pip": {
@@ -185,6 +187,7 @@ def _resolve_or_create_venv_name(
         idx += 1
     venvs[name] = {
         "path": _norm(raw) if _is_path_like(raw) else "",
+        "comment": "",
         "cuda_path": "",
         "env_vars": {},
         "pip": {"hold_packages": [], "pin_packages": {}},
@@ -218,6 +221,7 @@ def _legacy_to_v2(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "env_by_venv",
         "cuda_path_by_venv",
         "cuda_path",
+        "venv_comments",
     }
     out["extras"] = {k: v for k, v in cfg.items() if k not in legacy_known}
 
@@ -420,6 +424,13 @@ def _v2_to_legacy(v2: Dict[str, Any]) -> Dict[str, Any]:
 
     if holds:
         out["holds"] = holds
+    venv_comments: Dict[str, str] = {}
+    for name, raw_entry in venvs.items():
+        comment = str(_ensure_dict(raw_entry).get("comment") or "").strip()
+        if comment:
+            venv_comments[str(name)] = comment
+    if venv_comments:
+        out["venv_comments"] = venv_comments
     return out
 
 
@@ -545,6 +556,7 @@ def set_selected_venv(cfg_v2: Dict[str, Any], venv_path: str, venv_name: Optiona
     if name not in venvs:
         venvs[name] = {
             "path": norm_path,
+            "comment": "",
             "cuda_path": "",
             "env_vars": {},
             "pip": {"hold_packages": [], "pin_packages": {}},
@@ -559,6 +571,96 @@ def set_selected_venv(cfg_v2: Dict[str, Any], venv_path: str, venv_name: Optiona
     return cfg
 
 
+def venv_python_path(venv_path: str) -> str:
+    if not venv_path:
+        return ""
+    if os.name == "nt":
+        return os.path.join(venv_path, "Scripts", "python.exe")
+    return os.path.join(venv_path, "bin", "python")
+
+
+def venv_exists(venv_path: str) -> bool:
+    if not venv_path:
+        return False
+    py = venv_python_path(venv_path)
+    return os.path.isfile(py)
+
+
+def list_venvs(cfg_v2: Dict[str, Any]) -> List[Dict[str, str]]:
+    cfg = _sanitize_v2(cfg_v2)
+    envs = _ensure_dict(cfg.get("environments"))
+    venvs = _ensure_dict(envs.get("venvs"))
+    selected = _get_selected_venv_name(cfg)
+    out: List[Dict[str, str]] = []
+    for name, raw_entry in venvs.items():
+        entry = _ensure_dict(raw_entry)
+        path = str(entry.get("path") or "").strip()
+        out.append(
+            {
+                "name": str(name),
+                "path": path,
+                "comment": str(entry.get("comment") or "").strip(),
+                "exists": "1" if venv_exists(path) else "0",
+                "selected": "1" if str(name) == selected else "0",
+            }
+        )
+    out.sort(key=lambda x: x["name"].lower())
+    return out
+
+
+def remove_venv(cfg_v2: Dict[str, Any], venv_name: str) -> Dict[str, Any]:
+    cfg = _sanitize_v2(cfg_v2)
+    envs = _ensure_dict(cfg.get("environments"))
+    venvs = _ensure_dict(envs.get("venvs"))
+    if venv_name in venvs:
+        del venvs[venv_name]
+    selected = _get_selected_venv_name(cfg)
+    if selected == venv_name:
+        next_name = next(iter(venvs.keys()), "")
+        cfg["runtime"]["selected"] = {"kind": "venv", "name": next_name}
+    return cfg
+
+
+def add_or_update_venv(
+    cfg_v2: Dict[str, Any],
+    venv_path: str,
+    venv_name: Optional[str] = None,
+    comment: Optional[str] = None,
+) -> Dict[str, Any]:
+    cfg = set_selected_venv(cfg_v2, venv_path=venv_path, venv_name=venv_name)
+    envs = _ensure_dict(cfg.get("environments"))
+    venvs = _ensure_dict(envs.get("venvs"))
+    name = _get_selected_venv_name(cfg)
+    entry = _ensure_dict(venvs.get(name))
+    if comment is not None:
+        entry["comment"] = str(comment).strip()
+    venvs[name] = entry
+    return cfg
+
+
+def set_venv_comment(cfg_v2: Dict[str, Any], venv_name: str, comment: str) -> Dict[str, Any]:
+    cfg = _sanitize_v2(cfg_v2)
+    envs = _ensure_dict(cfg.get("environments"))
+    venvs = _ensure_dict(envs.get("venvs"))
+    entry = _ensure_dict(venvs.get(venv_name))
+    if not entry:
+        return cfg
+    entry["comment"] = str(comment).strip()
+    venvs[venv_name] = entry
+    return cfg
+
+
+def prune_missing_venvs(cfg_v2: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    cfg = _sanitize_v2(cfg_v2)
+    to_remove: List[str] = []
+    for row in list_venvs(cfg):
+        if row["exists"] != "1":
+            to_remove.append(row["name"])
+    for name in to_remove:
+        cfg = remove_venv(cfg, name)
+    return cfg, to_remove
+
+
 def emit_env_lines(cfg_v2: Dict[str, Any], venv_name: Optional[str] = None) -> List[str]:
     cfg = _sanitize_v2(cfg_v2)
     defaults = _ensure_dict(_ensure_dict(cfg.get("defaults")).get("env_vars"))
@@ -569,3 +671,12 @@ def emit_env_lines(cfg_v2: Dict[str, Any], venv_name: Optional[str] = None) -> L
     env_vars = {str(k): str(v) for k, v in defaults.items() if str(k).strip()}
     env_vars.update({str(k): str(v) for k, v in _ensure_dict(current).items() if str(k).strip()})
     return [f"{k}={v}" for k, v in env_vars.items()]
+    venv_comments = _ensure_dict(cfg.get("venv_comments"))
+    for raw_key, raw_comment in venv_comments.items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        name = _resolve_or_create_venv_name(venvs, path_to_name, key)
+        if not name:
+            continue
+        venvs[name]["comment"] = str(raw_comment or "").strip()

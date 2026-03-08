@@ -50,50 +50,21 @@ echo.
 rem =========================================================
 rem VENV selection
 rem =========================================================
-set "INDEX=0"
-for /f "delims=" %%D in ('dir /ad /b ".venv*" 2^>nul') do (
-  if exist "%ROOT%%%D\Scripts\python.exe" (
-    set /a INDEX+=1
-    set "VENV_!INDEX!=%%D"
-  )
+set "VENV_TMP=%TEMP%\comfyui_selected_venv.txt"
+del /q "%VENV_TMP%" >nul 2>&1
+python "%CONFIG_CLI%" --config "%CONFIG_PATH%" select-venv --out "%VENV_TMP%"
+if errorlevel 1 goto no_venv
+if not exist "%VENV_TMP%" goto no_venv
+for /f "usebackq tokens=1* delims==" %%A in ("%VENV_TMP%") do (
+  if /I "%%A"=="SELECTED_NAME" set "VENV_DIR=%%B"
+  if /I "%%A"=="SELECTED_PATH" set "VENV_PATH=%%B"
+  if /I "%%A"=="SELECTED_PYTHON" set "PYTHON_EXE=%%B"
 )
-
-if %INDEX%==0 goto no_venv
-
-set "DEFAULT_INDEX=1"
-set "DEFAULT_VENV="
-if exist "%CONFIG_PATH%" (
-  for /f "usebackq delims=" %%R in (`python "%CONFIG_CLI%" --config "%CONFIG_PATH%" get --key selected_venv_name`) do (
-    set "DEFAULT_VENV=%%R"
-  )
-)
-if defined DEFAULT_VENV (
-  for /l %%I in (1,1,%INDEX%) do (
-    if /i "!VENV_%%I!"=="%DEFAULT_VENV%" set "DEFAULT_INDEX=%%I"
-  )
-)
-
-for /l %%I in (1,1,%INDEX%) do (
-  if "%%I"=="%DEFAULT_INDEX%" (
-    echo  [%%I]* !VENV_%%I!
-  ) else (
-    echo  [%%I]  !VENV_%%I!
-  )
-)
-
-echo.
-if %INDEX%==1 (
-  set "CHOICE=1"
-) else (
-  set /p "CHOICE=Select venv number [%DEFAULT_INDEX%]: "
-  if not defined CHOICE set "CHOICE=%DEFAULT_INDEX%"
-)
-if not defined VENV_%CHOICE% goto bad_venv
-
-set "VENV_DIR=!VENV_%CHOICE%!"
-set "PYTHON_EXE=%ROOT%!VENV_DIR!\Scripts\python.exe"
-set "VENV_SCRIPTS=%ROOT%!VENV_DIR!\Scripts"
-call :save_selected_venv
+del /q "%VENV_TMP%" >nul 2>&1
+if not defined VENV_DIR goto no_venv
+if not defined VENV_PATH goto no_venv
+if not defined PYTHON_EXE goto no_venv
+set "VENV_SCRIPTS=%VENV_PATH%\Scripts"
 
 rem Ensure selected venv executables (python/pip/ninja) are first in PATH
 if exist "%VENV_SCRIPTS%\python.exe" set "PATH=%VENV_SCRIPTS%;%PATH%"
@@ -468,10 +439,9 @@ rem Error handlers
 rem =========================================================
 :no_venv
 echo.
-echo ERROR: No valid venv found in %ROOT%
-echo Expected: .venv*\Scripts\python.exe
+echo ERROR: No valid venv found in config database.
+echo Use the selector to add venv paths to config.json.
 echo.
-dir /ad /b ".venv*" 2>nul
 pause
 exit /b 1
 
