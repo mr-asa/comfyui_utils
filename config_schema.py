@@ -222,6 +222,8 @@ def _legacy_to_v2(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "cuda_path_by_venv",
         "cuda_path",
         "venv_comments",
+        "venv_name_by_path",
+        "venv_selected_name",
     }
     out["extras"] = {k: v for k, v in cfg.items() if k not in legacy_known}
 
@@ -242,6 +244,30 @@ def _legacy_to_v2(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
     venvs: Dict[str, Dict[str, Any]] = {}
     path_to_name: Dict[str, str] = {}
+    name_by_path_raw = _ensure_dict(cfg.get("venv_name_by_path"))
+    for raw_path, raw_name in name_by_path_raw.items():
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        path = raw_path.strip()
+        desired_name = str(raw_name or "").strip()
+        if not desired_name:
+            continue
+        if desired_name in venvs:
+            entry = _ensure_dict(venvs.get(desired_name))
+            if not str(entry.get("path") or "").strip():
+                entry["path"] = _norm(path)
+            venvs[desired_name] = entry
+            path_to_name[_norm_cmp(path)] = desired_name
+            continue
+        venvs[desired_name] = {
+            "path": _norm(path),
+            "comment": "",
+            "cuda_path": "",
+            "env_vars": {},
+            "pip": {"hold_packages": [], "pin_packages": {}},
+        }
+        path_to_name[_norm_cmp(path)] = desired_name
+
     for p in _ensure_list(cfg.get("venv_paths")):
         if isinstance(p, str) and p.strip():
             name = _resolve_or_create_venv_name(venvs, path_to_name, p.strip())
@@ -249,10 +275,23 @@ def _legacy_to_v2(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 venvs[name]["path"] = _norm(p.strip())
     venv_path = str(cfg.get("venv_path") or "").strip()
     selected_name = ""
-    if venv_path:
+    selected_name_hint = str(cfg.get("venv_selected_name") or "").strip()
+    if selected_name_hint and selected_name_hint in venvs:
+        selected_name = selected_name_hint
+    elif venv_path:
         selected_name = _resolve_or_create_venv_name(venvs, path_to_name, venv_path)
         if selected_name and not venvs[selected_name]["path"]:
             venvs[selected_name]["path"] = _norm(venv_path)
+
+    venv_comments = _ensure_dict(cfg.get("venv_comments"))
+    for raw_key, raw_comment in venv_comments.items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        name = _resolve_or_create_venv_name(venvs, path_to_name, key)
+        if not name:
+            continue
+        venvs[name]["comment"] = str(raw_comment or "").strip()
 
     env_by_venv = _ensure_dict(cfg.get("env_by_venv"))
     for raw_key, raw_entry in env_by_venv.items():
@@ -361,10 +400,14 @@ def _v2_to_legacy(v2: Dict[str, Any]) -> Dict[str, Any]:
 
     selected = _ensure_dict(runtime.get("selected"))
     selected_name = str(selected.get("name") or "").strip()
+    if selected_name:
+        out["venv_selected_name"] = selected_name
     if selected_name and selected_name in name_to_path:
         out["venv_path"] = name_to_path[selected_name]
     elif venv_paths:
         out["venv_path"] = venv_paths[0]
+    if name_to_path:
+        out["venv_name_by_path"] = {v: k for k, v in name_to_path.items()}
 
     env_by_venv: Dict[str, Any] = {}
     defaults = _ensure_dict(cfg.get("defaults"))

@@ -101,6 +101,41 @@ def _remove_venv_comment(cfg: dict, path: str) -> None:
     cfg["venv_comments"] = comments
 
 
+def _sync_venv_name_by_path(cfg: dict, paths: list[str]) -> dict[str, str]:
+    raw = cfg.get("venv_name_by_path")
+    name_by_path: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
+                name_by_path[_norm_path_simple(k)] = v.strip()
+    normalized_paths = [_norm_path_simple(p) for p in paths]
+    existing_keys = set(normalized_paths)
+    # prune removed paths
+    for k in list(name_by_path.keys()):
+        if _norm_path_simple(k) not in existing_keys:
+            name_by_path.pop(k, None)
+    for p in normalized_paths:
+        if p not in name_by_path:
+            name_by_path[p] = _venv_name_from_path(p)
+    cfg["venv_name_by_path"] = name_by_path
+    return name_by_path
+
+
+def _current_venv_path(cfg: dict, paths: list[str]) -> str:
+    selected_name = cfg.get("venv_selected_name")
+    if isinstance(selected_name, str) and selected_name.strip():
+        target = selected_name.strip()
+        name_map = cfg.get("venv_name_by_path")
+        if isinstance(name_map, dict):
+            for raw_path, raw_name in name_map.items():
+                if isinstance(raw_path, str) and isinstance(raw_name, str) and raw_name.strip() == target:
+                    for p in paths:
+                        if os.path.normcase(os.path.normpath(p)) == os.path.normcase(os.path.normpath(raw_path)):
+                            return p
+    raw_current = cfg.get("venv_path")
+    return raw_current.strip() if isinstance(raw_current, str) else ""
+
+
 def _print_venv_table(cfg: dict, paths: list[str], current_norm: str) -> None:
     if not paths:
         return
@@ -109,8 +144,8 @@ def _print_venv_table(cfg: dict, paths: list[str], current_norm: str) -> None:
     for idx, p in enumerate(paths, 1):
         mark = "*" if current_norm and os.path.normcase(os.path.normpath(p)) == current_norm else " "
         comment = _comment_for_venv_path(cfg, p)
-        cmt = f" | {comment}" if comment else ""
-        print(f" {idx:>{idx_w}}){mark} {p:<{path_w}}{cmt}")
+        cmt = comment if comment else "-"
+        print(f" {idx:>{idx_w}}){mark} {p:<{path_w}} | {cmt}")
 
 
 def _confirm_venv_path_simple(path: str) -> bool:
@@ -122,7 +157,8 @@ def _confirm_venv_path_simple(path: str) -> bool:
 
 def _select_venv_simple(cfg: dict) -> dict:
     paths = _load_venv_paths_simple(cfg)
-    current = cfg.get("venv_path") or ""
+    _sync_venv_name_by_path(cfg, paths)
+    current = _current_venv_path(cfg, paths)
     current_norm = os.path.normcase(os.path.normpath(current)) if current else ""
     if not paths and not sys.stdin.isatty():
         raise SystemExit("No venv paths found in config.json and input is non-interactive.")
@@ -147,8 +183,7 @@ def _select_venv_simple(cfg: dict) -> dict:
 
         print("--> Select venv for updates <--")
         _print_venv_table(cfg, paths, current_norm)
-        print(" A) Add new venv")
-        print(" D) Delete venv from config")
+        print("\nA=add new, D=delete, C=comment")
         if paths:
             default_idx = 1
             if current_norm:
@@ -203,6 +238,23 @@ def _select_venv_simple(cfg: dict) -> dict:
                 current_norm = ""
             continue
 
+        if choice.lower() in ("c", "comment"):
+            if not paths:
+                print("No entries to edit.")
+                continue
+            raw = input("Index for comment: ").strip()
+            if not raw.isdigit():
+                print("Invalid index.")
+                continue
+            idx = int(raw)
+            if idx < 1 or idx > len(paths):
+                print("Invalid index.")
+                continue
+            target = paths[idx - 1]
+            new_comment = input("New comment (empty to clear): ").strip()
+            _set_venv_comment(cfg, target, new_comment)
+            continue
+
         if choice.isdigit():
             idx = int(choice)
             if 1 <= idx <= len(paths):
@@ -215,6 +267,8 @@ def _select_venv_simple(cfg: dict) -> dict:
 
     cfg["venv_path"] = selected
     cfg["venv_paths"] = paths
+    name_map = _sync_venv_name_by_path(cfg, paths)
+    cfg["venv_selected_name"] = name_map.get(_norm_path_simple(selected), _venv_name_from_path(selected))
     return cfg
 
 
@@ -735,7 +789,8 @@ def _confirm_default_env(env_key: str) -> None:
 
 def select_venv(cfg: dict, config_path: str) -> dict:
     paths = _load_venv_paths(cfg)
-    current = cfg.get("venv_path") or ""
+    _sync_venv_name_by_path(cfg, paths)
+    current = _current_venv_path(cfg, paths)
     current_norm = os.path.normcase(os.path.normpath(current)) if current else ""
     if not paths:
         print("No venv paths found in config.")
@@ -760,8 +815,7 @@ def select_venv(cfg: dict, config_path: str) -> dict:
 
         print(Fore.MAGENTA + Style.BRIGHT + "--> Select venv for updates <--" + Style.RESET_ALL)
         _print_venv_table(cfg, paths, current_norm)
-        print(" A) Add new venv")
-        print(" D) Delete venv from config")
+        print("\nA=add new, D=delete, C=comment")
         if paths:
             default_idx = 1
             if current_norm:
@@ -816,6 +870,23 @@ def select_venv(cfg: dict, config_path: str) -> dict:
                 current_norm = ""
             continue
 
+        if choice.lower() in ("c", "comment"):
+            if not paths:
+                print("No entries to edit.")
+                continue
+            raw = input("Index for comment: ").strip()
+            if not raw.isdigit():
+                print("Invalid index.")
+                continue
+            idx = int(raw)
+            if idx < 1 or idx > len(paths):
+                print("Invalid index.")
+                continue
+            target = paths[idx - 1]
+            new_comment = input("New comment (empty to clear): ").strip()
+            _set_venv_comment(cfg, target, new_comment)
+            continue
+
         if choice.isdigit():
             idx = int(choice)
             if 1 <= idx <= len(paths):
@@ -828,6 +899,8 @@ def select_venv(cfg: dict, config_path: str) -> dict:
 
     cfg["venv_path"] = selected
     cfg["venv_paths"] = paths
+    name_map = _sync_venv_name_by_path(cfg, paths)
+    cfg["venv_selected_name"] = name_map.get(_norm_path(selected), _venv_name_from_path(selected))
     try:
         _save_config(config_path, cfg)
     except Exception as e:
@@ -1650,7 +1723,7 @@ def main() -> None:
           "get all available versions of package - " + Fore.BLUE + "pip index versions <PACKAGE>\n" + Style.RESET_ALL +
           "try resolver without installing - " + Fore.BLUE + "pip install <PACKAGE> --dry-run\n" + Style.RESET_ALL +
           "lock some packages - " + Fore.BLUE + "pip freeze > constraints.txt\n" + Style.RESET_ALL + "\tand then - " + Fore.BLUE + 
-            "pip install <PACKAGE> -c constraints.txt" + Style.RESET_ALL + "\n\tif needed - " + Fore.BLUE + "--upgrade-strategy only-if-needed\n" + Style.RESET_ALL +
+            "pip install <PACKAGE> -c constraints.txt --upgrade-strategy only-if-needed\n" + Style.RESET_ALL +
           "check all errors in venv - " + Fore.BLUE + "pip check\n" + Style.RESET_ALL +
           "get all deep dependencies from a package (need pipdeptree) - " + Fore.BLUE + "pipdeptree -p <PACKAGE>\n" + Style.RESET_ALL +
           "get all reverse dependencies from a package (need pipdeptree) - " + Fore.BLUE + "pipdeptree --reverse --packages <PACKAGE>\n" + Style.RESET_ALL +

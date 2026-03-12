@@ -144,18 +144,14 @@ def _cmd_select_venv(args: argparse.Namespace) -> int:
 
         if rows:
             print("\n--> Select venv <--")
-            idx_w = max(2, len(str(len(rows))))
-            name_w = max(4, min(26, max(len(r["name"]) for r in rows)))
-            path_w = max(8, min(62, max(len(r["path"]) for r in rows)))
-            print(f" {'#':>{idx_w}}  Sel  {'Name':<{name_w}}  {'Path':<{path_w}}  Exists  Comment")
-            print("-" * (idx_w + name_w + path_w + 28))
+            idx_w = max(1, len(str(len(rows))))
+            path_w = max(1, max((len(r["path"]) for r in rows), default=0))
             for i, r in enumerate(rows, 1):
                 mark = "*" if r["selected"] == "1" else " "
-                ex = "yes" if r["exists"] == "1" else "no"
-                name = (r["name"] or "")[:name_w]
-                path = (r["path"] or "")[:path_w]
                 comment = r["comment"] or "-"
-                print(f" {i:>{idx_w}}   {mark}   {name:<{name_w}}  {path:<{path_w}}  {ex:<6}  {comment}")
+                if r["exists"] != "1":
+                    comment = f"{comment} [missing]"
+                print(f" {i:>{idx_w}}){mark} {r['path']:<{path_w}} | {comment}")
             print("\nA=add new, D=delete, C=comment")
             default_idx = _choose_default_idx(rows)
             raw = _prompt(f"Choice [{default_idx}]: ")
