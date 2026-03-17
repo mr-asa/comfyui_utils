@@ -22,6 +22,7 @@ from config_schema import load_legacy_compat, save_legacy_compat
 
 
 REPARSE_POINT = 0x0400
+IGNORED_NODE_NAMES = {"__pycache__"}
 
 
 @dataclass
@@ -31,6 +32,12 @@ class LinkedNode:
     target: str
     target_exists: bool
     target_in_repo: bool
+
+
+@dataclass
+class DirectNode:
+    name: str
+    path: str
 
 
 def _load_json(path: str) -> Dict[str, object]:
@@ -71,6 +78,10 @@ def _real(path: str) -> str:
         return os.path.normcase(os.path.normpath(os.path.realpath(path)))
     except Exception:
         return _norm(path)
+
+
+def _is_ignored_node_name(name: str) -> bool:
+    return name in IGNORED_NODE_NAMES
 
 
 def _prompt_path(label: str) -> str:
@@ -151,6 +162,8 @@ def _resolve_paths(cfg_path: str, args: argparse.Namespace) -> Tuple[str, str, D
 def _scan_repo(repo_dir: str) -> List[str]:
     out: List[str] = []
     for name in sorted(os.listdir(repo_dir)):
+        if _is_ignored_node_name(name):
+            continue
         if name in (".disabled",) or name.endswith(".disable") or name.endswith(".disabled"):
             continue
         path = os.path.join(repo_dir, name)
@@ -163,6 +176,8 @@ def _scan_links(custom_nodes_dir: str, repo_dir: str) -> List[LinkedNode]:
     repo_norm = _real(repo_dir)
     out: List[LinkedNode] = []
     for name in sorted(os.listdir(custom_nodes_dir)):
+        if _is_ignored_node_name(name):
+            continue
         path = os.path.join(custom_nodes_dir, name)
         if not _is_reparse_point(path):
             continue
@@ -175,15 +190,38 @@ def _scan_links(custom_nodes_dir: str, repo_dir: str) -> List[LinkedNode]:
     return out
 
 
-def _print_panels(node_names: List[str], links: List[LinkedNode], node_tags: Optional[Dict[str, List[str]]] = None) -> None:
+def _scan_direct_nodes(custom_nodes_dir: str) -> List[DirectNode]:
+    out: List[DirectNode] = []
+    for name in sorted(os.listdir(custom_nodes_dir)):
+        if _is_ignored_node_name(name):
+            continue
+        path = os.path.join(custom_nodes_dir, name)
+        if not os.path.isdir(path):
+            continue
+        if _is_reparse_point(path):
+            continue
+        out.append(DirectNode(name, path))
+    return out
+
+
+def _print_panels(
+    node_names: List[str],
+    links: List[LinkedNode],
+    direct_nodes: List[DirectNode],
+    node_tags: Optional[Dict[str, List[str]]] = None,
+) -> None:
     link_set = {ln.name for ln in links}
     link_map = {ln.name: ln for ln in links}
+    direct_set = {dn.name for dn in direct_nodes}
     idx_width = 3
     prefix_width = idx_width + 6
     node_tags = node_tags or {}
 
     def _red(text: str) -> str:
         return f"\x1b[31m{text}\x1b[0m"
+
+    def _yellow(text: str) -> str:
+        return f"\x1b[33m{text}\x1b[0m"
 
     def _clip_name(name: str, max_len: int) -> str:
         if max_len <= 0:
@@ -194,29 +232,44 @@ def _print_panels(node_names: List[str], links: List[LinkedNode], node_tags: Opt
             return "." * max_len
         return name[: max_len - 3] + "..."
 
-    def _entry_text(i: int, label: str, marker: str, is_junk: bool, name_max: Optional[int] = None) -> Tuple[str, str]:
+    def _entry_text(
+        i: int,
+        label: str,
+        marker: str,
+        is_junk: bool,
+        is_direct: bool,
+        name_max: Optional[int] = None,
+    ) -> Tuple[str, str]:
         shown_name = _clip_name(label, name_max) if name_max is not None else label
         plain = f"{marker} [{i:>{idx_width}}] {shown_name}"
-        colored = f"{_red('!!')} [{i:>{idx_width}}] {shown_name}" if is_junk else plain
+        if is_junk:
+            colored = f"{_red('!!')} [{i:>{idx_width}}] {shown_name}"
+        elif is_direct:
+            colored = f"{_yellow('<>')} [{i:>{idx_width}}] {shown_name}"
+        else:
+            colored = plain
         return plain, colored
 
-    entries: List[Tuple[int, str, str, bool]] = []
+    entries: List[Tuple[int, str, str, bool, bool]] = []
     for i, name in enumerate(node_names, 1):
         is_junk = name in link_map and not link_map[name].target_exists
+        is_direct = name in direct_set
         tags = node_tags.get(name, [])
         label = name if not tags else f"{name} [{', '.join(tags)}]"
         if is_junk:
             marker = "!!"
+        elif is_direct:
+            marker = "<>"
         elif name in link_set:
             marker = "=>"
         else:
             marker = "  "
-        entries.append((i, label, marker, is_junk))
+        entries.append((i, label, marker, is_junk, is_direct))
     rows = (len(entries) + 1) // 2
     left_entries = entries[:rows]
     right_entries = entries[rows:]
-    left_plain_w = max([prefix_width + len(label) for _, label, _, _ in left_entries], default=0)
-    right_plain_w = max([prefix_width + len(label) for _, label, _, _ in right_entries], default=0)
+    left_plain_w = max([prefix_width + len(label) for _, label, _, _, _ in left_entries], default=0)
+    right_plain_w = max([prefix_width + len(label) for _, label, _, _, _ in right_entries], default=0)
 
     term_w = shutil.get_terminal_size((120, 20)).columns
     gap = 3
@@ -232,22 +285,22 @@ def _print_panels(node_names: List[str], links: List[LinkedNode], node_tags: Opt
         right_entries = []
 
     print()
-    print("Nodes ('=>' is linked)")
+    print("Nodes ('=>' repo link, '<>' direct dir in custom_nodes)")
     for i in range(rows):
-        li, llabel, lmarker, ljunk = left_entries[i]
-        left_plain, left_colored = _entry_text(li, llabel, lmarker, ljunk, max(1, left_w - prefix_width))
+        li, llabel, lmarker, ljunk, ldirect = left_entries[i]
+        left_plain, left_colored = _entry_text(li, llabel, lmarker, ljunk, ldirect, max(1, left_w - prefix_width))
         right = ""
         right_colored = ""
         if i < len(right_entries):
-            ri, rlabel, rmarker, rjunk = right_entries[i]
-            right, right_colored = _entry_text(ri, rlabel, rmarker, rjunk, max(1, right_w - prefix_width))
+            ri, rlabel, rmarker, rjunk, rdirect = right_entries[i]
+            right, right_colored = _entry_text(ri, rlabel, rmarker, rjunk, rdirect, max(1, right_w - prefix_width))
         if right:
             pad = max(1, left_w - len(left_plain) + gap)
             print(left_colored + (" " * pad) + right_colored)
         else:
             print(left_colored)
     print()
-    print("create links: a (add) | r (remove) | i (invert) [n|n-m|n,n|text|re:regex]")
+    print("create links: a (add) | r (remove) | i (invert) | m (move to repo+link) [n|n-m|n,n|text|re:regex]")
     print("show links: f (filter) [text|re:regex], f=clear, ?+=linked, ?-=unlinked, ?*=all")
     print("tags: t (list), tn <tag> (new), t+ <tag> [sel], t- <tag> [sel], ta|tr|ti <tag|idx>")
     print("other: s (sync), j (remove failed junk), p (presets), w (save preset), ? (help), q (quit), Enter (refresh)")
@@ -260,6 +313,11 @@ def _filter_display_nodes(display_nodes: List[str], links: List[LinkedNode], mod
     if mode == "unlinked":
         return [n for n in display_nodes if n not in link_set]
     return display_nodes
+
+
+def _move_dir(src: str, dst: str) -> None:
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.move(src, dst)
 
 
 def _ensure_presets_config(path: str) -> None:
@@ -429,6 +487,32 @@ def _remove_link(custom_nodes_dir: str, link: LinkedNode) -> str:
         return f"Not a junction (skip): {link.name}"
     ok = _remove_dir(link.path)
     return f"Removed: {link.name}" if ok else f"Failed to remove: {link.name}"
+
+
+def _move_installed_to_repo(repo_dir: str, custom_nodes_dir: str, direct_node: DirectNode) -> str:
+    src = direct_node.path
+    if not os.path.isdir(src) or _is_reparse_point(src):
+        return f"Not a real dir (skip): {direct_node.name}"
+
+    dst = os.path.join(repo_dir, direct_node.name)
+    if _norm(src) == _norm(dst):
+        return f"Already in repo path: {direct_node.name}"
+    if os.path.exists(dst):
+        return f"Repo target exists (skip): {direct_node.name}"
+
+    try:
+        _move_dir(src, dst)
+    except Exception as e:
+        return f"Failed to move: {direct_node.name} ({e})"
+
+    if _mklink_junction(dst, src):
+        return f"Moved+linked: {direct_node.name}"
+
+    try:
+        _move_dir(dst, src)
+    except Exception as e:
+        return f"Failed to link and rollback: {direct_node.name} ({e})"
+    return f"Failed to link, rolled back: {direct_node.name}"
 
 
 def _sync(repo_dir: str, custom_nodes_dir: str, repo_nodes: List[str], links: List[LinkedNode]) -> List[str]:
@@ -723,9 +807,11 @@ def main() -> int:
     while True:
         repo_nodes = _scan_repo(repo_dir)
         links = _scan_links(custom_nodes_dir, repo_dir)
+        direct_nodes = _scan_direct_nodes(custom_nodes_dir)
         repo_set = set(repo_nodes)
-        extra_nodes = [ln.name for ln in links if ln.name not in repo_set]
-        display_nodes_all = sorted(repo_nodes + extra_nodes)
+        extra_link_nodes = [ln.name for ln in links if ln.name not in repo_set]
+        extra_direct_nodes = [dn.name for dn in direct_nodes if dn.name not in repo_set]
+        display_nodes_all = sorted(repo_nodes + extra_link_nodes + extra_direct_nodes)
         display_nodes = _filter_display_nodes(display_nodes_all, links, filter_mode)
         filter_label = "*"
         if name_filter:
@@ -733,7 +819,7 @@ def main() -> int:
         if should_render_table:
             print(f"\nFilter: {filter_mode} | name: {filter_label} | shown {len(display_nodes)}/{len(display_nodes_all)}")
             node_tag_map = _build_node_tag_map(tags, display_nodes)
-            _print_panels(display_nodes, links, node_tag_map)
+            _print_panels(display_nodes, links, direct_nodes, node_tag_map)
 
         cmd = input("> ").strip()
         if not cmd:
@@ -883,14 +969,15 @@ def main() -> int:
         if cmd.lower() in ("q", "quit", "exit"):
             return 0
         if cmd in ("?", "h", "help"):
-            print("create links: a (add) | r (remove) | i (invert) [n|n-m|n,n|text|re:regex]")
+            print("create links: a (add) | r (remove) | i (invert) | m (move direct dir to repo and link it) [n|n-m|n,n|text|re:regex]")
             print("show links: f (filter) [text|re:regex|tag|tag_idx], f=clear, ?+=linked, ?-=unlinked, ?*=all")
             print("tags: t (list), tn <tag> (new), t+ <tag> <selection>, t- <tag> <selection>, ta|tr|ti <tag|idx|idx-range> [...]")
             print("presets: p (choose+apply), w (save current)")
             print("maint: s (sync repo<->custom_nodes), j (remove broken/junk links)")
             print("app: q (quit), Enter (refresh)")
-            print("examples: f SAMPLER, f 7, tn 3d, t+ 3d __3d, ta 3d, tr 1 4 6, ti 1-3")
+            print("examples: f SAMPLER, f 7, tn 3d, t+ 3d __3d, ta 3d, tr 1 4 6, ti 1-3, m 2-5")
             print("    - adds links for repo nodes missing in custom_nodes")
+            print("    - moves direct dirs from custom_nodes into repo and creates junctions back")
             print("    - removes junctions that are not present in repo")
             should_render_table = False
             continue
@@ -930,20 +1017,23 @@ def main() -> int:
             should_render_table = False
             continue
         parts = cmd.split()
-        if parts[0].lower() in ("a", "r", "i") and len(parts) == 1:
+        if parts[0].lower() in ("a", "r", "i", "m") and len(parts) == 1:
             if parts[0].lower() == "a":
                 for name in repo_nodes:
                     print(_add_link(repo_dir, custom_nodes_dir, name))
             elif parts[0].lower() == "r":
                 for ln in links:
                     print(_remove_link(custom_nodes_dir, ln))
+            elif parts[0].lower() == "m":
+                for dn in direct_nodes:
+                    print(_move_installed_to_repo(repo_dir, custom_nodes_dir, dn))
             else:
                 for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links):
                     print(msg)
             should_render_table = True
             continue
         if len(parts) < 2:
-            print("Invalid command. Example: a, r 10-23, i 1-5")
+            print("Invalid command. Example: a, r 10-23, i 1-5, m 2-4")
             should_render_table = False
             continue
         action = parts[0].lower()
@@ -955,6 +1045,7 @@ def main() -> int:
             continue
 
         link_map = {ln.name: ln for ln in links}
+        direct_map = {dn.name: dn for dn in direct_nodes}
         if action == "a":
             for name in selected_names:
                 print(_add_link(repo_dir, custom_nodes_dir, name))
@@ -970,6 +1061,14 @@ def main() -> int:
         elif action == "i":
             for msg in _invert(repo_dir, custom_nodes_dir, repo_nodes, links, selected_names):
                 print(msg)
+            should_render_table = True
+        elif action == "m":
+            for name in selected_names:
+                dn = direct_map.get(name)
+                if not dn:
+                    print(f"Not a direct dir: {name}")
+                    continue
+                print(_move_installed_to_repo(repo_dir, custom_nodes_dir, dn))
             should_render_table = True
         else:
             print("Unknown command.")
