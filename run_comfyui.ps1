@@ -92,6 +92,107 @@ function Set-PresetsInConfig {
     $Config.presets = $list
 }
 
+function Reload-ConfigState {
+    param([string]$Path)
+    $cfgLocal = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $presetsLocal = Get-PresetsFromConfig -Config $cfgLocal
+    $presetNamesLocal = @($presetsLocal | ForEach-Object { $_.Name })
+    $currentNamesLocal = @()
+    if ($cfgLocal.PSObject.Properties.Name -contains "current" -and $cfgLocal.current) {
+        if ($cfgLocal.current -is [string]) {
+            $currentNamesLocal = @([string]$cfgLocal.current)
+        } else {
+            $currentNamesLocal = @($cfgLocal.current)
+        }
+        $currentNamesLocal = @($currentNamesLocal | Where-Object { $presetNamesLocal -contains $_ })
+    }
+    return [pscustomobject]@{
+        Config = $cfgLocal
+        Presets = $presetsLocal
+        PresetNames = $presetNamesLocal
+        CurrentNames = $currentNamesLocal
+    }
+}
+
+function Resolve-SelectionInput {
+    param(
+        [string]$InputText,
+        [object[]]$Presets,
+        [string[]]$CurrentNames
+    )
+
+    $trimmed = [string]$InputText
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return [pscustomobject]@{
+            Ok = $true
+            Mode = "keep"
+            Names = @($CurrentNames)
+            Error = ""
+        }
+    }
+
+    $parts = @($trimmed -split "\s+" | Where-Object { $_ })
+    $mode = "replace"
+    if ($parts.Count -gt 0 -and ($parts[0] -eq "+" -or $parts[0] -eq "-")) {
+        $mode = if ($parts[0] -eq "+") { "add" } else { "remove" }
+        $parts = @($parts | Select-Object -Skip 1)
+    }
+
+    if ($parts.Count -eq 0) {
+        return [pscustomobject]@{
+            Ok = $false
+            Mode = $mode
+            Names = @($CurrentNames)
+            Error = "Use preset numbers. Examples: 1 2 3, + 5 7, - 2"
+        }
+    }
+
+    $indices = @()
+    foreach ($part in $parts) {
+        if ($part -notmatch "^\d+$") {
+            return [pscustomobject]@{
+                Ok = $false
+                Mode = $mode
+                Names = @($CurrentNames)
+                Error = "Invalid selection. Use numbers from the list. Examples: 1 2 3, + 5 7, - 2"
+            }
+        }
+
+        $index = [int]$part
+        if ($index -lt 1 -or $index -gt $Presets.Count) {
+            return [pscustomobject]@{
+                Ok = $false
+                Mode = $mode
+                Names = @($CurrentNames)
+                Error = "Invalid selection. Use numbers from the list. Examples: 1 2 3, + 5 7, - 2"
+            }
+        }
+        $indices += $index
+    }
+
+    $indices = @($indices | Sort-Object -Unique)
+    $inputNames = @($indices | ForEach-Object { $Presets[$_ - 1].Name })
+
+    switch ($mode) {
+        "add" {
+            $newNames = @($CurrentNames + $inputNames | Select-Object -Unique)
+        }
+        "remove" {
+            $newNames = @($CurrentNames | Where-Object { $inputNames -notcontains $_ })
+        }
+        default {
+            $newNames = @($inputNames)
+        }
+    }
+
+    return [pscustomobject]@{
+        Ok = $true
+        Mode = $mode
+        Names = $newNames
+        Error = ""
+    }
+}
+
 if (-not $ConfigPath) {
     $ConfigPath = Join-Path $PSScriptRoot "run_comfyui_flags_config.json"
 }
@@ -130,19 +231,11 @@ if (-not (Test-Path -LiteralPath $ConfigPath)) {
     Save-Config -Config $defaultConfig -Path $ConfigPath
 }
 
-$cfg = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
-$presets = Get-PresetsFromConfig -Config $cfg
-
-$presetNames = @($presets | ForEach-Object { $_.Name })
-$currentNames = @()
-if ($cfg.PSObject.Properties.Name -contains "current" -and $cfg.current) {
-    if ($cfg.current -is [string]) {
-        $currentNames = @([string]$cfg.current)
-    } else {
-        $currentNames = @($cfg.current)
-    }
-    $currentNames = $currentNames | Where-Object { $presetNames -contains $_ }
-}
+$state = Reload-ConfigState -Path $ConfigPath
+$cfg = $state.Config
+$presets = $state.Presets
+$presetNames = $state.PresetNames
+$currentNames = $state.CurrentNames
 
 Write-Host "======================================"
 Write-Host "Run flags preset - select preset"
@@ -208,7 +301,7 @@ while ($true) {
         $i++
     }
     Write-Host ""
-    $input = Read-Host "Enter numbers separated by spaces (A=add, E=edit, D=delete, Q=cancel)"
+    $input = Read-Host "Enter numbers to replace, or + / - to add/remove (examples: 1 2 3, + 5 7, - 2) (A=add, E=edit, D=delete, Q=cancel)"
     if ([string]::IsNullOrWhiteSpace($input)) {
         $selectedNames = $currentNames
         break
@@ -236,9 +329,11 @@ while ($true) {
         }
         Set-PresetsInConfig -Config $cfg -Presets $presets
         Save-Config -Config $cfg -Path $ConfigPath
-        $presets = Get-PresetsFromConfig -Config $cfg
-        $presetNames = @($presets | ForEach-Object { $_.Name })
-        $currentNames = @($cfg.current) | Where-Object { $presetNames -contains $_ }
+        $state = Reload-ConfigState -Path $ConfigPath
+        $cfg = $state.Config
+        $presets = $state.Presets
+        $presetNames = $state.PresetNames
+        $currentNames = $state.CurrentNames
         continue
     }
     if ($input -match "^[Ee]$") {
@@ -270,6 +365,7 @@ while ($true) {
         if ([string]::IsNullOrWhiteSpace($newComment)) {
             $newComment = $target.Comment
         }
+        $oldName = $target.Name
         if ($newName -ne $target.Name) {
             $collision = $presets | Where-Object { $_.Name -eq $newName }
             if ($collision) {
@@ -282,15 +378,16 @@ while ($true) {
         $target.Comment = $newComment
         $presets[$editIdx - 1] = $target
         Set-PresetsInConfig -Config $cfg -Presets $presets
-        Save-Config -Config $cfg -Path $ConfigPath
-        if ($currentNames -contains $presets[$editIdx - 1].Name) {
-            $currentNames = @($currentNames | ForEach-Object { if ($_ -eq $target.Name) { $newName } else { $_ } })
+        if ($currentNames -contains $oldName) {
+            $currentNames = @($currentNames | ForEach-Object { if ($_ -eq $oldName) { $newName } else { $_ } })
             $cfg.current = $currentNames
-            Save-Config -Config $cfg -Path $ConfigPath
         }
-        $presets = Get-PresetsFromConfig -Config $cfg
-        $presetNames = @($presets | ForEach-Object { $_.Name })
-        $currentNames = @($cfg.current) | Where-Object { $presetNames -contains $_ }
+        Save-Config -Config $cfg -Path $ConfigPath
+        $state = Reload-ConfigState -Path $ConfigPath
+        $cfg = $state.Config
+        $presets = $state.Presets
+        $presetNames = $state.PresetNames
+        $currentNames = $state.CurrentNames
         continue
     }
     if ($input -match "^[Dd]$") {
@@ -326,9 +423,11 @@ while ($true) {
             Set-PresetsInConfig -Config $cfg -Presets $presets
             Save-Config -Config $cfg -Path $ConfigPath
         }
-        $presets = Get-PresetsFromConfig -Config $cfg
-        $presetNames = @($presets | ForEach-Object { $_.Name })
-        $currentNames = @($cfg.current) | Where-Object { $presetNames -contains $_ }
+        $state = Reload-ConfigState -Path $ConfigPath
+        $cfg = $state.Config
+        $presets = $state.Presets
+        $presetNames = $state.PresetNames
+        $currentNames = $state.CurrentNames
         continue
     }
     if ($input -match "^[Qq]$") {
@@ -336,29 +435,13 @@ while ($true) {
         break
     }
 
-    $parts = $input -split "\s+" | Where-Object { $_ }
-    $indices = @()
-    $bad = $false
-    foreach ($p in $parts) {
-        if ($p -match "^\d+$") {
-            $idx = [int]$p
-            if ($idx -ge 1 -and $idx -le $presets.Count) {
-                $indices += $idx
-            } else {
-                $bad = $true
-            }
-        } else {
-            $bad = $true
-        }
-    }
-
-    if ($bad) {
-        Write-Host "Invalid selection. Use numbers from the list."
+    $selection = Resolve-SelectionInput -InputText $input -Presets $presets -CurrentNames $currentNames
+    if (-not $selection.Ok) {
+        Write-Host $selection.Error
         continue
     }
 
-    $indices = $indices | Sort-Object -Unique
-    $selectedNames = @($indices | ForEach-Object { $presets[$_ - 1].Name })
+    $selectedNames = @($selection.Names)
 
     $cfg.current = $selectedNames
     Save-Config -Config $cfg -Path $ConfigPath
