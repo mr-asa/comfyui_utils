@@ -9,17 +9,18 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
 
 - <img src="ico/update_comfy_repos_run.ico" width="16" height="16" alt=""> `update_comfy_repos.py` updates the main ComfyUI repo and every repo in `custom_nodes` (skips
   disabled folders), and writes a detailed change log with commit messages and file diffs.
-- <img src="ico/update_workflow_repos_run.ico" width="16" height="16" alt=""> `update_workflow_repos.py` updates all Git repos under `user/default/workflows/github` and
-  reports skipped non-repo folders.
+- <img src="ico/update_workflow_repos_run.ico" width="16" height="16" alt=""> `update_workflow_repos.py` updates workflow sources under `user/default/workflows/github`:
+  full Git repositories and partial sync folders with `.workflow_source.json`.
 - <img src="ico/comfyui_pip_update_audit_run.ico" width="16" height="16" alt=""> `comfyui_pip_update_audit.py` scans `requirements.txt` in the ComfyUI root and top-level
   custom nodes, compares installed vs latest versions, and prints update commands.
 - <img src="ico/run_comfyui.ico" width="16" height="16" alt=""> `run_comfyui.bat` launches ComfyUI with venv selection and custom-nodes presets via junctions.
 - <img src="ico/custom_nodes_link_manager_run.ico" width="16" height="16" alt=""> `custom_nodes_link_manager.py` manages custom nodes junction links (compare repo vs custom_nodes, add/remove).
-- <img src="ico/partial_repo_sync_run.ico" width="16" height="16" alt=""> `partial_repo_sync.py` syncs selected files/folders from a git repo into a target folder.
+- <img src="ico/partial_repo_sync_run.ico" width="16" height="16" alt=""> `partial_repo_sync.py` syncs selected files/folders from a git repo into a target folder
+  outside the main workflow-source flow.
 - `requirements_checker/` provides a richer requirements audit with config-driven environment
   selection (venv/conda), custom paths, and per-package status reporting.
-- <img src="ico/clone_workflow_repos_run.ico" width="16" height="16" alt=""> `clone-workflow_repos.py` clones workflow repos from `clone-workflow_repos.txt` into the
-  workflows `github` folder (prompts for target path).
+- <img src="ico/clone_workflow_repos_run.ico" width="16" height="16" alt=""> `clone-workflow_repos.py` adds workflow sources from console-entered URLs:
+  full repositories are cloned, folder URLs are synced as partial sources.
 - `rename_to_english.py` renames files and folders with non-ASCII names into English equivalents (translate/transliterate) — handy for making sense of a batch of workflows with CJK names.
 - `make_tmp_custom_nodes.py` generates `tmp_custom_nodes.json` with loaded/disabled nodes and
   their repo URLs, useful for collecting all plugins into a single list/repository.
@@ -131,6 +132,8 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 
 ## Partial repo sync (partial_repo_sync.py)
 
+- For workflows, prefer `clone-workflow_repos.py` and `update_workflow_repos.py`.
+- Old workflow jobs from `partial_repo_sync_config.json` are migrated to `.workflow_source.json` when `update_workflow_repos.py` runs.
 - Syncs only selected files/directories from a git repo (not the full repo).
 - Uses a local cache and git sparse-checkout, then copies selected paths into `target`.
 - Jobs: `partial_repo_sync_config.json` (repo, branch, target, paths).

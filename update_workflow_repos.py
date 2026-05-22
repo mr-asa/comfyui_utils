@@ -21,6 +21,7 @@ branch: <branch name or DETACHED>
 
 from __future__ import annotations
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -32,6 +33,13 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from comfyui_root import default_workflows_dir, resolve_comfyui_root
+from workflow_sources import (
+    METADATA_FILE,
+    read_metadata,
+    source_from_partial_job,
+    sync_partial_source,
+    write_metadata,
+)
 
 def _configure_console_encoding() -> None:
     for s in (sys.stdout, sys.stderr):
@@ -841,6 +849,92 @@ def update_repo(path: Path) -> RepoReport:
     )
 
 
+def update_partial_repo(path: Path, cache_root: Path) -> RepoReport:
+    source = read_metadata(path)
+    if source is None or source.mode != "partial":
+        return RepoReport(
+            path.name,
+            path,
+            "",
+            "",
+            False,
+            [],
+            [],
+            [],
+            error=f"Invalid {METADATA_FILE}",
+        )
+
+    ok, messages = sync_partial_source(source, path, cache_root)
+    if ok:
+        write_metadata(path, source)
+        return RepoReport(
+            path.name,
+            path,
+            source.repo_url,
+            source.branch or "",
+            True,
+            [],
+            [],
+            ["Partial workflow source.", *messages],
+        )
+
+    return RepoReport(
+        path.name,
+        path,
+        source.repo_url,
+        source.branch or "",
+        False,
+        [],
+        [],
+        ["Partial workflow source."],
+        error="; ".join(messages),
+    )
+
+
+def _load_partial_sync_jobs(script_dir: Path) -> List[dict]:
+    path = script_dir / "partial_repo_sync_config.json"
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return []
+    jobs = data.get("jobs") if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        return []
+    return [job for job in jobs if isinstance(job, dict)]
+
+
+def _is_relative_to(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def migrate_partial_workflow_jobs(workflows_dir: Path, script_dir: Path) -> List[str]:
+    migrated: List[str] = []
+    workflows_root = workflows_dir.resolve()
+    for job in _load_partial_sync_jobs(script_dir):
+        raw_target = str(job.get("target") or "").strip()
+        if not raw_target:
+            continue
+        target = Path(raw_target).expanduser().resolve()
+        if not _is_relative_to(target, workflows_root):
+            continue
+        if not target.is_dir():
+            continue
+        if (target / ".git").exists() or (target / METADATA_FILE).exists():
+            continue
+        source = source_from_partial_job(job, target)
+        if source is None or not source.paths:
+            continue
+        write_metadata(target, source)
+        migrated.append(str(target))
+    return migrated
+
+
 def print_report(report: RepoReport) -> None:
     print(f"{C.BOLD}{C.CYAN}--- {report.name} ---{C.RESET}")
     print(f" path: {report.path}")
@@ -921,13 +1015,35 @@ def main() -> int:
         return 1
 
     print(f"Updating repositories in: {workflows_dir}\n")
+    migrated = migrate_partial_workflow_jobs(workflows_dir, script_dir)
+    if migrated:
+        print(f"{C.CYAN}Migrated partial workflow sources:{C.RESET}")
+        for target in migrated:
+            print(f"  {target}")
+        print()
 
+    cache_root = (script_dir / ".partial_repo_cache").resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
     for child in sorted(workflows_dir.iterdir()):
         if not child.is_dir():
             continue
         if not (child / ".git").exists():
-            continue
-        report = update_repo(child)
+            if (child / METADATA_FILE).exists():
+                report = update_partial_repo(child, cache_root)
+            else:
+                report = RepoReport(
+                    child.name,
+                    child,
+                    "",
+                    "",
+                    False,
+                    [],
+                    [],
+                    [],
+                    skipped=f"No .git directory and no {METADATA_FILE}",
+                )
+        else:
+            report = update_repo(child)
         print_report(report)
 
     return 0

@@ -1,13 +1,20 @@
+from __future__ import annotations
+
+import ctypes
+import os
 import subprocess
 from pathlib import Path
-from urllib.parse import urlparse
-from typing import Optional, Tuple, List
-import os
-import ctypes
+from typing import List, Optional
 
 from comfyui_root import default_workflows_dir, resolve_comfyui_root
+from workflow_sources import (
+    WorkflowSource,
+    parse_workflow_url,
+    sync_partial_source,
+    write_metadata,
+)
 
-# Simple ANSI color helper with Windows enablement
+
 def _enable_ansi_on_windows() -> None:
     if os.name != "nt":
         return
@@ -26,11 +33,16 @@ _enable_ansi_on_windows()
 RED = "\033[91m"
 YELLOW = "\033[93m"
 CYAN = "\033[96m"
+GREEN = "\033[92m"
 RESET = "\033[0m"
 
 
 def info(message: str) -> None:
     print(f"{CYAN}{message}{RESET}")
+
+
+def ok(message: str) -> None:
+    print(f"{GREEN}{message}{RESET}")
 
 
 def warn(message: str) -> None:
@@ -46,15 +58,14 @@ def prompt_exit() -> None:
 
 
 def pick_target_root(script_dir: Path) -> Optional[Path]:
-    repos_file = script_dir / "clone-workflow_repos.txt"
     config_path = str(script_dir / "config.json")
     comfy_root = resolve_comfyui_root(config_path, start_path=script_dir)
     default_target = default_workflows_dir(comfy_root).resolve()
 
     info(f"Default clone path: {default_target}")
-    print("1 - yes")
+    print("1 - yes (default)")
     print("2 - enter custom path")
-    choice = input("Use the default path? ").strip()
+    choice = input("Use the default path? ").strip() or "1"
 
     if choice == "1":
         target_root = default_target
@@ -68,77 +79,95 @@ def pick_target_root(script_dir: Path) -> Optional[Path]:
         error("Unknown option. Stopping.")
         return None
 
-    if not repos_file.exists():
-        error(f"List file not found at: {repos_file}")
-        return None
-
     target_root.mkdir(parents=True, exist_ok=True)
     return target_root
 
 
-def load_repos_list(repos_file: Path) -> List[str]:
-    lines = repos_file.read_text(encoding="utf-8").splitlines()
-    return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+def prompt_urls() -> List[str]:
+    print()
+    print("Enter workflow repo URLs. Empty line starts cloning.")
+    print("Supported: GitHub/HuggingFace full repo URLs and tree/blob folder URLs.")
+    urls: List[str] = []
+    while True:
+        raw = input("URL: ").strip()
+        if not raw:
+            break
+        urls.append(raw)
+    return urls
 
 
-def parse_owner_repo(raw_url: str) -> Optional[Tuple[str, str]]:
-    try:
-        parsed = urlparse(raw_url)
-    except Exception:
-        return None
-
-    segments = [segment for segment in parsed.path.split("/") if segment]
-    if len(segments) < 2:
-        return None
-
-    owner, repo = segments[0], segments[1]
-    if repo.endswith(".git"):
-        repo = repo[:-4]
-
-    return owner, repo
-
-
-def clone_repo(url: str, dest: Path) -> bool:
-    info(f"Cloning {url} -> {dest}")
-    result = subprocess.run(["git", "clone", url, str(dest)])
+def clone_full_repo(source: WorkflowSource, dest: Path) -> bool:
+    info(f"Cloning {source.repo_url} -> {dest}")
+    result = subprocess.run(["git", "clone", source.repo_url, str(dest)])
     if result.returncode != 0:
-        error(f"Clone failed (code {result.returncode}): {url}")
+        error(f"Clone failed (code {result.returncode}): {source.repo_url}")
         return False
     return True
 
 
+def sync_partial_repo(source: WorkflowSource, dest: Path, script_dir: Path) -> bool:
+    info(f"Syncing partial source {source.repo_url} -> {dest}")
+    cache_root = (script_dir / ".partial_repo_cache").resolve()
+    ok_sync, messages = sync_partial_source(source, dest, cache_root)
+    if not ok_sync:
+        for message in messages:
+            error(message)
+        return False
+    write_metadata(dest, source)
+    for message in messages:
+        print(message)
+    return True
+
+
+def add_source(raw_url: str, target_root: Path, script_dir: Path) -> bool:
+    source = parse_workflow_url(raw_url)
+    if source is None:
+        error(f"Invalid or unsupported URL, skipping: {raw_url}")
+        return False
+
+    folder_path = target_root / source.folder_name
+    if folder_path.exists():
+        warn(f"Folder already exists, skipping: {folder_path}")
+        return False
+
+    if source.mode == "full":
+        cloned = clone_full_repo(source, folder_path)
+        if cloned:
+            ok(f"Added full repo: {folder_path}")
+        return cloned
+
+    if source.mode == "partial":
+        synced = sync_partial_repo(source, folder_path, script_dir)
+        if synced:
+            ok(f"Added partial repo: {folder_path}")
+        return synced
+
+    error(f"Unsupported source mode '{source.mode}', skipping: {raw_url}")
+    return False
+
+
 def main() -> None:
     script_dir = Path(__file__).resolve().parent
-    repos_file = script_dir / "clone-workflow_repos.txt"
 
     target_root = pick_target_root(script_dir)
     if target_root is None:
         return
 
-    if not repos_file.exists():
-        error(f"List file not found at: {repos_file}")
+    urls = prompt_urls()
+    if not urls:
+        warn("No URLs provided.")
         return
 
-    repos = load_repos_list(repos_file)
-    if not repos:
-        warn("No active URL lines in the list file.")
-        return
+    added = 0
+    failed = 0
+    for raw_url in urls:
+        if add_source(raw_url, target_root, script_dir):
+            added += 1
+        else:
+            failed += 1
 
-    for raw_url in repos:
-        parsed = parse_owner_repo(raw_url)
-        if parsed is None:
-            error(f"Invalid or unsupported URL, skipping: {raw_url}")
-            continue
-
-        owner, repo = parsed
-        folder_name = f"{repo}_{owner}"
-        folder_path = target_root / folder_name
-
-        if folder_path.exists():
-            warn(f"Folder '{folder_path}' already exists, skipping: {raw_url}")
-            continue
-
-        clone_repo(raw_url, folder_path)
+    print()
+    ok(f"Done. Added: {added}, skipped/failed: {failed}.")
 
 
 if __name__ == "__main__":

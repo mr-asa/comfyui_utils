@@ -9,17 +9,18 @@
 
 - <img src="ico/update_comfy_repos_run.ico" width="16" height="16" alt=""> `update_comfy_repos.py` обновляет основной репозиторий ComfyUI и все репозитории в `custom_nodes`
   (пропускает отключенные папки), пишет детальный лог с коммитами и измененными файлами.
-- <img src="ico/update_workflow_repos_run.ico" width="16" height="16" alt=""> `update_workflow_repos.py` обновляет все Git-репозитории в `user/default/workflows/github` и
-  сообщает о пропущенных папках без Git.
+- <img src="ico/update_workflow_repos_run.ico" width="16" height="16" alt=""> `update_workflow_repos.py` обновляет workflow-источники в `user/default/workflows/github`:
+  полные Git-репозитории и частичные выгрузки с `.workflow_source.json`.
 - <img src="ico/comfyui_pip_update_audit_run.ico" width="16" height="16" alt=""> [`comfyui_pip_update_audit.py`](#обновление-виртуального-окружения-comfyui_pip_update_auditpy) сканирует `requirements.txt` в корне ComfyUI и в верхнем уровне
   `custom_nodes`, сравнивает установленные версии с последними и печатает команды обновления.
 - <img src="ico/run_comfyui.ico" width="16" height="16" alt=""> [`run_comfyui.bat`](#загрузчик-comfyui-run_comfyui-bat) запускает ComfyUI с выбором окружения и пресетами custom nodes через junction.
 - <img src="ico/custom_nodes_link_manager_run.ico" width="16" height="16" alt=""> [`custom_nodes_link_manager.py`](#менеджер-custom-nodes-custom_nodes_link_managerpy) управляет junction-ссылками custom nodes (сравнение repo и custom_nodes, добавление/удаление).
-- <img src="ico/partial_repo_sync_run.ico" width="16" height="16" alt=""> [`partial_repo_sync.py`](#частичная-синхронизация-репозиториев-partial_repo_syncpy) синхронизирует выбранные файлы/папки из git-репозитория в целевой каталог.
+- <img src="ico/partial_repo_sync_run.ico" width="16" height="16" alt=""> [`partial_repo_sync.py`](#частичная-синхронизация-репозиториев-partial_repo_syncpy) синхронизирует выбранные файлы/папки из git-репозитория в целевой каталог
+  вне основного workflow-сценария.
 - `requirements_checker/` дает расширенную проверку требований с выбором окружения (venv/conda),
   пользовательскими путями и статусами по каждому пакету.
-- <img src="ico/clone_workflow_repos_run.ico" width="16" height="16" alt=""> `clone-workflow_repos.py` клонирует репозитории воркфлоу из `clone-workflow_repos.txt`
-  в папку `github` (предлагает выбрать путь).
+- <img src="ico/clone_workflow_repos_run.ico" width="16" height="16" alt=""> `clone-workflow_repos.py` добавляет workflow-источники по ссылкам из консоли:
+  полный репозиторий клонирует целиком, ссылку на папку синхронизирует частично.
 - `rename_to_english.py` переименовывает файлы и папки с не-ASCII символами в английские эквиваленты (перевод/транслит) — удобно, чтобы разобраться с пачкой воркфлоу с иероглифами в названии.
 - `make_tmp_custom_nodes.py` создает `tmp_custom_nodes.json` со списком загруженных/отключенных
   нод и их URL репозиториев, полезно для сбора плагинов в единый список/репозиторий.
@@ -132,6 +133,8 @@
 
 ## Частичная синхронизация репозиториев (partial_repo_sync.py)
 
+- Для workflow теперь обычно используйте `clone-workflow_repos.py` и `update_workflow_repos.py`.
+- Старые workflow-задания из `partial_repo_sync_config.json` автоматически мигрируют в `.workflow_source.json` при запуске `update_workflow_repos.py`.
 - Синхронизирует только выбранные файлы/каталоги из git-репозитория (не весь репозиторий).
 - Использует локальный кэш и git sparse-checkout, затем копирует выбранные пути в `target`.
 - Задания: `partial_repo_sync_config.json` (repo, branch, target, paths).
