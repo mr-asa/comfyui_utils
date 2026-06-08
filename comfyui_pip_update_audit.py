@@ -6,6 +6,9 @@ ComfyUI environment updater and audit (pip) — streamlined
 - Scans only requirements.txt files:
   * In the ComfyUI root (top level only)
   * In each top-level plugin directory (ignores *.disable; no subfolder recursion)
+- Detects comfy-env plugin configs:
+  * comfy-env-root.toml at plugin root (host/runtime helper, no isolation by itself)
+  * comfy-env.toml in plugin subdirectories (isolated pixi env managed by install.py)
 - Merges duplicate constraints
 - Installed color codes:
     RED     — not installed
@@ -518,10 +521,85 @@ def plugin_dirs(custom_nodes: str) -> List[str]:
 
 
 REQ_FILE_RE = re.compile(r"^requirements\.txt$", re.I)
+COMFY_ENV_FILE = "comfy-env.toml"
+COMFY_ENV_ROOT_FILE = "comfy-env-root.toml"
 
 
 def find_reqs(folder: str) -> List[str]:
     return [os.path.join(folder, f) for f in os.listdir(folder) if REQ_FILE_RE.match(f)]
+
+
+def _is_ignored_walk_dir(name: str) -> bool:
+    low = name.lower()
+    return (
+        low in {".git", "__pycache__", ".pixi", ".venv", "venv", "env", "node_modules"}
+        or low.endswith(".disable")
+    )
+
+
+def _find_comfy_env_configs(plugin_dir: str) -> List[str]:
+    out: List[str] = []
+    for root, dirs, files in os.walk(plugin_dir):
+        dirs[:] = [d for d in dirs if not _is_ignored_walk_dir(d)]
+        if COMFY_ENV_FILE in files:
+            out.append(os.path.join(root, COMFY_ENV_FILE))
+    return sorted(out)
+
+
+def _comfy_env_workspace() -> str:
+    override = os.environ.get("COMFY_ENV_ROOT", "").strip()
+    if override:
+        return os.path.normpath(override)
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA", "").strip()
+        if local:
+            return os.path.normpath(os.path.join(local, "Programs", "comfy-env"))
+    return os.path.normpath(os.path.expanduser("~/.ce"))
+
+
+def _comfy_env_base_plugin_name(plugin_dir: str) -> str:
+    name = os.path.basename(os.path.normpath(plugin_dir)).strip().lower()
+    if name.startswith("comfyui-"):
+        name = name[len("comfyui-") :]
+    return name
+
+
+def _comfy_env_name(plugin_dir: str, config_path: str) -> str:
+    base = _comfy_env_base_plugin_name(plugin_dir)
+    cfg_dir = os.path.dirname(os.path.normpath(config_path))
+    rel = os.path.relpath(cfg_dir, plugin_dir)
+    if rel in ("", "."):
+        return base
+    parts = [
+        re.sub(r"[^a-z0-9]+", "-", p.strip().lower()).strip("-")
+        for p in rel.split(os.sep)
+        if p.strip()
+    ]
+    suffix = "-".join(p for p in parts if p)
+    return f"{base}-{suffix}" if suffix else base
+
+
+def _quote_cmd_part(part: str) -> str:
+    if not part:
+        return '""'
+    if re.search(r"\s", part):
+        return f'"{part}"'
+    return part
+
+
+def _format_python_script_cmd(py: List[str], script_path: str) -> str:
+    return " ".join([_quote_cmd_part(p) for p in py + [script_path]])
+
+
+def _format_comfy_env_workspace_install_cmd(py: List[str], comfy_root: str, node_dir: str) -> str:
+    code = (
+        "import sys; "
+        f"sys.path.insert(0, r'{comfy_root}'); "
+        "from pathlib import Path; "
+        "from comfy_env import install; "
+        f"install(node_dir=Path(r'{node_dir}'))"
+    )
+    return " ".join([_quote_cmd_part(p) for p in py + ["-c", code]])
 
 
 def _marker_allows_raw(raw: str) -> bool:
@@ -947,6 +1025,87 @@ class VcsReport:
     installed_commit: Optional[str] = None
     ref_ok: Optional[bool] = None
     ref_error: Optional[str] = None
+
+
+@dataclass
+class ComfyEnvIsolation:
+    config: str
+    subdir: str
+    env_name: str
+    env_path: str
+    built: bool
+    stale: bool = False
+    stale_sources: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ComfyEnvReport:
+    repo: str
+    plugin_dir: str
+    root_config: Optional[str] = None
+    install_py: Optional[str] = None
+    isolations: List[ComfyEnvIsolation] = field(default_factory=list)
+
+
+def _path_mtime(path: str) -> Optional[float]:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def _comfy_env_rebuild_sources(plugin_dir: str, root_config: Optional[str], install_py: Optional[str], cfg_path: str) -> List[str]:
+    sources = [cfg_path]
+    if root_config:
+        sources.append(root_config)
+    if install_py:
+        sources.append(install_py)
+    req_path = os.path.join(plugin_dir, "requirements.txt")
+    if os.path.isfile(req_path):
+        sources.append(req_path)
+    return _unique_paths(sources)
+
+
+def inspect_comfy_env_plugin(plugin_dir: str) -> Optional[ComfyEnvReport]:
+    repo = os.path.basename(os.path.normpath(plugin_dir))
+    root_config = os.path.join(plugin_dir, COMFY_ENV_ROOT_FILE)
+    has_root_config = os.path.isfile(root_config)
+    configs = _find_comfy_env_configs(plugin_dir)
+    if not has_root_config and not configs:
+        return None
+
+    workspace = _comfy_env_workspace()
+    install_py = os.path.join(plugin_dir, "install.py")
+    report = ComfyEnvReport(
+        repo=repo,
+        plugin_dir=plugin_dir,
+        root_config=root_config if has_root_config else None,
+        install_py=install_py if os.path.isfile(install_py) else None,
+    )
+    for cfg_path in configs:
+        env_name = _comfy_env_name(plugin_dir, cfg_path)
+        env_path = os.path.join(workspace, ".pixi", "envs", env_name)
+        cfg_dir = os.path.dirname(os.path.normpath(cfg_path))
+        built = os.path.isdir(env_path)
+        stale_sources: List[str] = []
+        env_mtime = _path_mtime(env_path) if built else None
+        if env_mtime is not None:
+            for src in _comfy_env_rebuild_sources(plugin_dir, report.root_config, report.install_py, cfg_path):
+                src_mtime = _path_mtime(src)
+                if src_mtime is not None and src_mtime > env_mtime:
+                    stale_sources.append(src)
+        report.isolations.append(
+            ComfyEnvIsolation(
+                config=cfg_path,
+                subdir=os.path.relpath(cfg_dir, plugin_dir),
+                env_name=env_name,
+                env_path=env_path,
+                built=built,
+                stale=bool(stale_sources),
+                stale_sources=stale_sources,
+            )
+        )
+    return report
 
 
 def _python_cmd(cfg: dict) -> List[str]:
@@ -1801,7 +1960,11 @@ def main() -> None:
     for cn in custom_nodes_paths:
         plugin_paths.extend(plugin_dirs(cn))
     plugin_paths = _dedupe_dirs(plugin_paths)
+    comfy_env_reports: List[ComfyEnvReport] = []
     for pl in plugin_paths:
+        ce_report = inspect_comfy_env_plugin(pl)
+        if ce_report:
+            comfy_env_reports.append(ce_report)
         for reqf in find_reqs(pl):
             reqs, extras, commented = parse_req_file(reqf)
             for r in reqs:
@@ -2105,6 +2268,55 @@ def main() -> None:
                     print(" - Update:", Fore.GREEN + "Installed (no ref check); no reinstall planned" + Style.RESET_ALL)
             print()
 
+    if comfy_env_reports:
+        print(Style.BRIGHT + "=== comfy-env plugin isolation ===" + Style.RESET_ALL)
+        workspace_install_needed = [
+            rep
+            for rep in comfy_env_reports
+            if rep.install_py and any((not iso.built) or iso.stale for iso in rep.isolations)
+        ]
+        for rep in comfy_env_reports:
+            print(Fore.MAGENTA + Style.BRIGHT + f"--- {rep.repo} ---" + Style.RESET_ALL)
+            if rep.root_config:
+                print(f" - Root config: {rep.root_config}")
+                if not rep.isolations:
+                    print(
+                        " - Isolation:",
+                        Fore.YELLOW + "No comfy-env.toml found; root config does not isolate host pip deps by itself" + Style.RESET_ALL,
+                    )
+            if rep.isolations:
+                print(" - Isolation envs:")
+                for iso in rep.isolations:
+                    if not iso.built:
+                        status = Fore.RED + "MISSING" + Style.RESET_ALL
+                    elif iso.stale:
+                        status = Fore.YELLOW + "STALE" + Style.RESET_ALL
+                    else:
+                        status = Fore.GREEN + "OK" + Style.RESET_ALL
+                    print(f"    - {iso.subdir} -> {iso.env_name} [{status}]")
+                    print(f"      config: {iso.config}")
+                    print(f"      env: {iso.env_path}")
+                    if iso.stale_sources:
+                        print("      newer sources:")
+                        for src in iso.stale_sources:
+                            print(f"        - {src}")
+            if rep.isolations and not rep.install_py:
+                print(" - Install/rerun command:", Fore.RED + "install.py not found; build command is unknown" + Style.RESET_ALL)
+            print()
+        if workspace_install_needed:
+            rep = workspace_install_needed[0]
+            print(
+                " - Workspace install/rerun command:",
+                Fore.BLUE
+                + _format_comfy_env_workspace_install_cmd(_python_cmd(cfg), comfy_root, rep.plugin_dir)
+                + Style.RESET_ALL,
+            )
+            print("   One run rebuilds every active comfy-env workspace environment.")
+            print()
+        else:
+            print(" - Workspace install/rerun command:", Fore.GREEN + "not needed; all detected envs are current" + Style.RESET_ALL)
+            print()
+
     def cmdline(lst: List[Tuple[str, Version]]) -> str:
         return " ".join(f"{n}=={v}" for n, v in lst)
 
@@ -2151,6 +2363,23 @@ def main() -> None:
         for v in extra_reqs:
             if v.raw in extra_to_install:
                 print(f"    - {v.repo} [{v.file}] -> {v.raw}")
+    comfy_env_install_reruns = [
+        rep
+        for rep in comfy_env_reports
+        if rep.install_py and any((not iso.built) or iso.stale for iso in rep.isolations)
+    ]
+    if comfy_env_install_reruns:
+        trigger_names: List[str] = []
+        for rep in comfy_env_install_reruns:
+            for iso in rep.isolations:
+                if not iso.built:
+                    trigger_names.append(f"{iso.env_name}:missing")
+                elif iso.stale:
+                    trigger_names.append(f"{iso.env_name}:stale")
+        rep = comfy_env_install_reruns[0]
+        print("comfy-env workspace install/rerun:")
+        print("  " + Fore.BLUE + _format_comfy_env_workspace_install_cmd(_python_cmd(cfg), comfy_root, rep.plugin_dir) + Style.RESET_ALL)
+        print("  Triggers: " + ", ".join(trigger_names))
     if downgrades:
         down_cmd = " ".join(pip) + " install " + cmdline(downgrades)
         print("Downgrades:\n  " + Fore.BLUE + down_cmd + Style.RESET_ALL)

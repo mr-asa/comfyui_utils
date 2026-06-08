@@ -12,7 +12,7 @@
 - <img src="ico/update_workflow_repos_run.ico" width="16" height="16" alt=""> `update_workflow_repos.py` обновляет workflow-источники в `user/default/workflows/github`:
   полные Git-репозитории и частичные выгрузки с `.workflow_source.json`.
 - <img src="ico/comfyui_pip_update_audit_run.ico" width="16" height="16" alt=""> [`comfyui_pip_update_audit.py`](#обновление-виртуального-окружения-comfyui_pip_update_auditpy) сканирует `requirements.txt` в корне ComfyUI и в верхнем уровне
-  `custom_nodes`, сравнивает установленные версии с последними и печатает команды обновления.
+  `custom_nodes`, отмечает `comfy-env` isolated env, сравнивает установленные версии с последними и печатает команды обновления.
 - <img src="ico/run_comfyui.ico" width="16" height="16" alt=""> [`run_comfyui.bat`](#загрузчик-comfyui-run_comfyui-bat) запускает ComfyUI с выбором окружения и пресетами custom nodes через junction.
 - <img src="ico/custom_nodes_link_manager_run.ico" width="16" height="16" alt=""> [`custom_nodes_link_manager.py`](#менеджер-custom-nodes-custom_nodes_link_managerpy) управляет junction-ссылками custom nodes (сравнение repo и custom_nodes, добавление/удаление).
 - <img src="ico/partial_repo_sync_run.ico" width="16" height="16" alt=""> [`partial_repo_sync.py`](#частичная-синхронизация-репозиториев-partial_repo_syncpy) синхронизирует выбранные файлы/папки из git-репозитория в целевой каталог
@@ -165,6 +165,10 @@
 - Классифицирует обновления как safe/risky/unknown и показывает причины для risky.
 - Проверяет обратные зависимости установленных пакетов, чтобы ловить конфликты до установки.
 - Корректно обрабатывает inline-комментарии в `requirements.txt` (например `pkg  # comment`).
+- Обнаруживает `comfy-env-root.toml` и вложенные `comfy-env.toml` в custom nodes.
+  - `comfy-env-root.toml` без `comfy-env.toml` помечается как host/runtime helper: зависимости из `requirements.txt` всё ещё относятся к основному pip-окружению.
+  - Вложенный `comfy-env.toml` помечается как isolated pixi env; если env отсутствует, в финальных командах печатается запуск `install.py`.
+  - Скрипт только аудирует `comfy-env` и печатает команды, но не запускает `install.py` автоматически.
 
 ### Hold / pin 
 
