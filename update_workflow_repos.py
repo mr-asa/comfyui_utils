@@ -251,7 +251,8 @@ def _is_tracked_path(repo_path: Path, rel_path: str) -> bool:
 
 
 def move_local_jsons(repo_path: Path) -> tuple[List[str], List[str]]:
-    ok, out, err = run_git(["status", "--porcelain"], repo_path)
+    # Expand untracked directories so nested JSON files are moved individually.
+    ok, out, err = run_git(["status", "--porcelain", "--untracked-files=all"], repo_path)
     if not ok:
         return [], [f"git status failed: {(err or out).strip()}"]
 
