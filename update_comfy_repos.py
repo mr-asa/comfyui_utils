@@ -442,6 +442,37 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
     # Local changes: ask what to do before pulling (so we don't spam an error log)
     dirty, status_out, ignored_paths = repo_dirty(path)
     stashed = False
+
+    conflicted = find_conflicted_paths(status_out) if dirty else []
+    if conflicted and not dry_run:
+        if name not in _PRINTED_HEADERS:
+            print_repo_header(name, path, web_url, branch)
+        notes.append("Unresolved merge conflict (left over from a previous run):")
+        notes.extend(["  " + ln for ln in remedy_unmerged_conflict(path, conflicted)])
+        resolution = prompt_conflict_resolution(name, path, web_url, branch, conflicted)
+        if resolution is None:
+            skip_notes = notes + ["Skipped due to unresolved merge conflict."]
+            abort_note = abort_in_progress_operation(path)
+            if abort_note:
+                skip_notes.append(abort_note)
+            return UpdateResult(
+                name, path, web_url, branch, False, [], [],
+                skip_notes, skipped="Unresolved merge conflict", error=None,
+            )
+        ok, msg = hard_reset_to_remote(path, branch)
+        if not ok:
+            return UpdateResult(name, path, web_url, branch, False, [], [], notes, error=f"Hard reset failed: {msg}")
+        notes.append(msg)
+        new_head = get_head_commit(path)
+        changed = bool(new_head and new_head != old_head)
+        commit_msgs = get_commit_messages(path, old_head, new_head) if changed else []
+        numstat = get_numstat(path, old_head, new_head) if changed else []
+        new_dt = get_commit_datetime(path, new_head) if new_head else old_dt
+        return UpdateResult(
+            name, path, web_url, branch, changed, commit_msgs, numstat, notes,
+            error=None, last_update_at=_fmt_dt(new_dt), delta_from_local=_human_gap(old_dt, new_dt),
+        )
+
     if dirty and not dry_run:
         if name not in _PRINTED_HEADERS:
             print_repo_header(name, path, web_url, branch)
@@ -504,17 +535,19 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
                 delta_from_local=_human_gap(old_dt, new_dt),
             )
         if action == "1":
-            ok, out, err = run_git(["reset", "--hard"], cwd=path)
+            ok, msg = hard_reset_to_remote(path, branch)
             if not ok:
-                return UpdateResult(
-                    name, path, web_url, branch, False, [], [], notes, error=f"git reset --hard failed: {(err or out).strip()}"
-                )
-            ok, out, err = run_git(["clean", "-fd"], cwd=path)
-            if not ok:
-                return UpdateResult(
-                    name, path, web_url, branch, False, [], [], notes, error=f"git clean -fd failed: {(err or out).strip()}"
-                )
-            notes.append("Local changes discarded (reset --hard + clean -fd).")
+                return UpdateResult(name, path, web_url, branch, False, [], [], notes, error=f"Hard reset failed: {msg}")
+            notes.append(msg)
+            new_head = get_head_commit(path)
+            changed = bool(new_head and new_head != old_head)
+            commit_msgs = get_commit_messages(path, old_head, new_head) if changed else []
+            numstat = get_numstat(path, old_head, new_head) if changed else []
+            new_dt = get_commit_datetime(path, new_head) if new_head else old_dt
+            return UpdateResult(
+                name, path, web_url, branch, changed, commit_msgs, numstat, notes,
+                error=None, last_update_at=_fmt_dt(new_dt), delta_from_local=_human_gap(old_dt, new_dt),
+            )
         if action == "2":
             stash_msg = f"comfyui-updater {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             ok, out, err = run_git(["stash", "push", "-u", "-m", stash_msg], cwd=path)
@@ -544,22 +577,53 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
     else:
         ok, out, err = run_git(pull_args, cwd=path)
         if not ok:
-            tips = remedy_pull_failure(out, err)
-            combined = (out or "") + "\n" + (err or "")
-            conflict_paths = extract_conflict_paths(combined)
-            if conflict_paths:
-                tips = tips + ["Conflicting paths:"] + [f"  {p}" for p in conflict_paths]
-            return UpdateResult(
-                name,
-                path,
-                web_url,
-                branch,
-                False,
-                [],
-                [],
-                tips,
-                error=f"git pull failed: {(err or out).strip()}",
-            )
+            _, status_out2, _ = repo_dirty(path)
+            conflicted2 = find_conflicted_paths(status_out2)
+            if conflicted2 and (rebase_in_progress(path) or merge_in_progress(path)):
+                if name not in _PRINTED_HEADERS:
+                    print_repo_header(name, path, web_url, branch)
+                notes.append("Pull hit a merge conflict:")
+                notes.extend(["  " + ln for ln in remedy_unmerged_conflict(path, conflicted2)])
+                resolution = prompt_conflict_resolution(name, path, web_url, branch, conflicted2)
+                if resolution is None:
+                    skip_notes = notes + ["Skipped due to unresolved merge conflict."]
+                    abort_note = abort_in_progress_operation(path)
+                    if abort_note:
+                        skip_notes.append(abort_note)
+                    return UpdateResult(
+                        name, path, web_url, branch, False, [], [],
+                        skip_notes, skipped="Unresolved merge conflict", error=None,
+                    )
+                ok2, msg2 = hard_reset_to_remote(path, branch)
+                if not ok2:
+                    return UpdateResult(name, path, web_url, branch, False, [], [], notes, error=f"Hard reset failed: {msg2}")
+                notes.append(msg2)
+                new_head = get_head_commit(path)
+                changed = bool(new_head and new_head != old_head)
+                commit_msgs = get_commit_messages(path, old_head, new_head) if changed else []
+                numstat = get_numstat(path, old_head, new_head) if changed else []
+                new_dt = get_commit_datetime(path, new_head) if new_head else old_dt
+                return UpdateResult(
+                    name, path, web_url, branch, changed, commit_msgs, numstat, notes,
+                    error=None, last_update_at=_fmt_dt(new_dt), delta_from_local=_human_gap(old_dt, new_dt),
+                )
+            else:
+                tips = remedy_pull_failure(out, err)
+                combined = (out or "") + "\n" + (err or "")
+                conflict_paths = extract_conflict_paths(combined)
+                if conflict_paths:
+                    tips = tips + ["Conflicting paths:"] + [f"  {p}" for p in conflict_paths]
+                return UpdateResult(
+                    name,
+                    path,
+                    web_url,
+                    branch,
+                    False,
+                    [],
+                    [],
+                    tips,
+                    error=f"git pull failed: {(err or out).strip()}",
+                )
 
         if stashed:
             ok, out, err = run_git(["stash", "pop"], cwd=path)
@@ -604,9 +668,13 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
 
 # ------------------------- Git helpers -------------------------
 
-def run_git(args: List[str], cwd: str) -> Tuple[bool, str, str]:
+def run_git(args: List[str], cwd: str, env: Optional[Dict[str, str]] = None) -> Tuple[bool, str, str]:
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        proc = subprocess.run(
+            ["git", *args], cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+            env=env, check=False,
+        )
         out = proc.stdout.decode("utf-8", errors="replace")
         err = proc.stderr.decode("utf-8", errors="replace")
         return proc.returncode == 0, out, err
@@ -841,6 +909,71 @@ def clean_ignored_changes(path: str, ignored_paths: List[str]) -> Tuple[bool, st
     return ok, (err or out).strip()
 
 
+# Porcelain status codes meaning "unresolved merge conflict" (e.g. from a botched
+# `git stash pop` or interrupted merge/rebase in a previous run).
+_CONFLICT_CODES = {"UU", "AA", "DD", "AU", "UA", "DU", "UD"}
+
+
+def find_conflicted_paths(status_out: str) -> List[str]:
+    paths: List[str] = []
+    for line in status_out.splitlines():
+        if len(line) < 2 or line[:2] not in _CONFLICT_CODES:
+            continue
+        p = _extract_porcelain_path(line)
+        if p:
+            paths.append(p)
+    return paths
+
+
+def rebase_in_progress(path: str) -> bool:
+    git_dir = os.path.join(path, ".git")
+    return os.path.isdir(os.path.join(git_dir, "rebase-apply")) or os.path.isdir(os.path.join(git_dir, "rebase-merge"))
+
+
+def merge_in_progress(path: str) -> bool:
+    return os.path.isfile(os.path.join(path, ".git", "MERGE_HEAD"))
+
+
+def abort_in_progress_operation(path: str) -> Optional[str]:
+    """Best-effort cleanup so skipping a conflict doesn't leave the repo stuck mid-rebase/merge
+    for the next run."""
+    if rebase_in_progress(path):
+        ok, _, _ = run_git(["rebase", "--abort"], cwd=path, env=_NO_EDITOR_ENV)
+        return "Aborted the in-progress rebase (repo restored to its pre-rebase state)." if ok else None
+    if merge_in_progress(path):
+        ok, _, _ = run_git(["merge", "--abort"], cwd=path, env=_NO_EDITOR_ENV)
+        return "Aborted the in-progress merge (repo restored to its pre-merge state)." if ok else None
+    return None
+
+
+_NO_EDITOR_ENV = dict(os.environ, GIT_EDITOR="true", GIT_SEQUENCE_EDITOR="true")
+
+
+def hard_reset_to_remote(path: str, branch: str, remote: str = "origin") -> Tuple[bool, str]:
+    """Unconditionally forget all local commits/edits and match the remote branch exactly.
+    Aborts any in-progress rebase/merge first, so it works no matter what state the
+    conflict left the repo in."""
+    abort_note = abort_in_progress_operation(path)
+
+    ok, out, err = run_git(["fetch", remote], cwd=path)
+    if not ok:
+        return False, f"git fetch failed: {(err or out).strip()}"
+
+    ref = f"{remote}/{branch}" if branch and branch != "DETACHED" else f"{remote}/HEAD"
+    ok, out, err = run_git(["reset", "--hard", ref], cwd=path)
+    if not ok:
+        return False, f"git reset --hard {ref} failed: {(err or out).strip()}"
+
+    ok, out, err = run_git(["clean", "-fd"], cwd=path)
+    if not ok:
+        return False, f"git clean -fd failed: {(err or out).strip()}"
+
+    msg = f"Hard reset to {ref} (all local commits/edits discarded)."
+    if abort_note:
+        msg = abort_note + " " + msg
+    return True, msg
+
+
 def extract_conflict_paths(git_output: str, limit: int = 40) -> List[str]:
     """
     Best-effort extraction of file paths from common Git conflict messages.
@@ -950,6 +1083,34 @@ def prompt_local_changes_action(name: str, path: str, web_url: str, branch: str,
         if choice in {"1", "2", "3", "4"}:
             return choice
         print("\tPlease enter 1, 2, 3, 4, or 7.")
+
+def prompt_conflict_resolution(name: str, path: str, web_url: str, branch: str, conflicted: List[str]) -> Optional[str]:
+    if name not in _PRINTED_HEADERS:
+        print_repo_header(name, path, web_url, branch)
+    print(f"\t{C.RED}Unresolved merge conflict (left over from a previous run):{C.RESET}")
+    print(f"\t   Path: {path}")
+    for f in conflicted:
+        print(f"\t   {C.GRAY}UU {f}{C.RESET}")
+
+    print("\tChoose how to resolve:")
+    print("\t  1 - hard reset to remote (forget ALL local changes/commits, match origin exactly)")
+    print("\t  2 - skip this repository (resolve manually, see notes above)")
+
+    if not sys.stdin.isatty():
+        print(f"\t{C.GRAY}stdin is not interactive; defaulting to option 2 (skip).{C.RESET}")
+        return None
+
+    while True:
+        try:
+            choice = input("\tYour choice (default 2): ").strip() or "2"
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if choice == "1":
+            return "reset"
+        if choice == "2":
+            return None
+        print("\tPlease enter 1 or 2.")
+
 
 def reclone_repo(path: str, remote_url: str, branch: str) -> Tuple[bool, str]:
     """
@@ -1132,6 +1293,32 @@ def remedy_not_git_repo(name: str, path: str) -> List[str]:
         "  * If it's just an unpacked folder without git, consider deleting and reinstall via git clone.",
         'Script hint: REMOTE_OVERRIDES["%s"] = "https://github.com/user/%s.git"' % (name, name),
     ]
+
+
+def remedy_unmerged_conflict(path: str, conflicted: List[str]) -> List[str]:
+    if rebase_in_progress(path):
+        cause = "a 'git pull --rebase' from a previous run was interrupted mid-rebase"
+    elif merge_in_progress(path):
+        cause = "a 'git merge'/'git pull' from a previous run was interrupted mid-merge"
+    else:
+        cause = "a 'git stash pop' from a previous run conflicted and was never resolved"
+
+    lines = [
+        f"This repo has unresolved merge conflicts (status 'UU'), most likely because {cause}.",
+        "A new 'git stash'/'git pull' can't run until this is resolved. Conflicting file(s):",
+    ]
+    for f in conflicted:
+        lines.append(f"  {f}")
+    lines += [
+        "Easiest fix: pick 'hard reset to remote' at the prompt below (forgets all local",
+        "commits/edits for this repo and matches origin exactly).",
+        "Manual fix instead:",
+        f'  cd "{path}"',
+        "  git rebase --abort   # or: git merge --abort   (whichever applies)",
+        "  git reset --hard origin/<branch>",
+        "  git clean -fd",
+    ]
+    return lines
 
 
 def remedy_pull_failure(out: str, err: str) -> List[str]:

@@ -1084,7 +1084,7 @@ def inspect_comfy_env_plugin(plugin_dir: str) -> Optional[ComfyEnvReport]:
     )
     for cfg_path in configs:
         env_name = _comfy_env_name(plugin_dir, cfg_path)
-        env_path = os.path.join(workspace, ".pixi", "envs", env_name)
+        env_path = os.path.join(workspace, "envs", env_name, ".pixi", "envs", "default")
         cfg_dir = os.path.dirname(os.path.normpath(cfg_path))
         built = os.path.isdir(env_path)
         stale_sources: List[str] = []
