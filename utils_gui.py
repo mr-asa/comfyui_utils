@@ -37,7 +37,7 @@ from build_venv import CUDA_CANDIDATES, PY_CANDIDATES, Candidate, PlanCancelled,
 import custom_nodes_link_manager as nodes_mgr
 import update_workflow_repos as wf
 from comfyui_root import default_workflows_dir
-from workflow_sources import METADATA_FILE
+from workflow_sources import METADATA_FILE, parse_workflow_url, sync_partial_source, write_metadata
 from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, update_repo
 from wheels import download_wheel, load_catalog
 from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_install_changes, run_audit
@@ -517,6 +517,32 @@ def compare_venvs(names: List[str], scope: str) -> dict:
     return {"venvs": names, "rows": rows}
 
 
+def add_workflow_job(job: dict, url: str) -> dict:
+    """Add a workflow source by URL: a whole repository is cloned, a folder URL becomes a partial (sparse) source."""
+    source = parse_workflow_url(url.strip())
+    if source is None:
+        raise ValueError("invalid or unsupported URL (GitHub repository / folder or Hugging Face)")
+    wdir = default_workflows_dir(resolve_comfyui_root(CONFIG_PATH))
+    wdir.mkdir(parents=True, exist_ok=True)
+    dest = wdir / source.folder_name
+    if dest.exists():
+        raise ValueError(f"{dest} already exists")
+    if source.mode == "full":
+        code, _ = stream(job, ["git", "clone", source.repo_url, str(dest)])
+        if code:
+            raise RuntimeError(f"git clone failed (exit code {code})")
+    else:
+        cache_root = (HERE / ".partial_repo_cache").resolve()
+        cache_root.mkdir(exist_ok=True)
+        ok, messages = sync_partial_source(source, dest, cache_root)
+        job["log"] += list(messages)
+        if not ok:
+            raise RuntimeError("partial sync failed")
+        write_metadata(dest, source)
+    job["log"].append(f"Added {source.mode} source: {dest}")
+    return {"path": str(dest), "mode": source.mode}
+
+
 def save_rules(name: str, hold: List[str], pins: Dict[str, str]) -> None:
     venv_entry(name)
     hold = [canonicalize_name(h) for h in hold if h.strip()]
@@ -608,6 +634,10 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/repos_scan":
                 job = new_job("repos")
                 run_in_thread(job, repos_scan_job, str(body.get("kind", "nodes")), bool(body.get("fetch", True)), bool(body.get("include_disabled")))
+                self.send_json({"job": job["id"]})
+            elif self.path == "/api/add_workflow":
+                job = new_job("repos")
+                run_in_thread(job, add_workflow_job, str(body["url"]))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repo_detail":
                 if str(body["path"]) not in REPO_PATHS:

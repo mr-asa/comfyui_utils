@@ -185,6 +185,7 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
       <label><input type="checkbox" id="r-hide" checked> hide up-to-date</label>
       <label><input type="checkbox" id="r-dirtyonly"> only with local changes</label>
       <span id="r-chips"></span>
+      <span id="r-add" hidden><input type="text" id="r-url" size="40" placeholder="GitHub / Hugging Face URL (repository or folder)"> <button id="r-addbtn">Add workflow source</button></span>
       <span class="muted" id="r-count"></span>
     </div>
     <div class="toolbar">
@@ -685,6 +686,7 @@ function setRepoOptions() {
   $("r-local").innerHTML = o.local.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
   $("r-conflict").innerHTML = o.conflict.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
   $("r-conflict-label").textContent = o.conflictLabel;
+  $("r-add").hidden = $("r-kind").value !== "workflows";
 }
 setRepoOptions();
 $("r-kind").onchange = () => { setRepoOptions(); repos = []; rSel.clear(); rBuildChips(); rRender(); $("r-detail").innerHTML = '<span class="muted">Scan to list the repositories.</span>'; };
@@ -794,6 +796,17 @@ $("r-update").onclick = async () => {
   } catch (e) { finish(); setStatus("failed"); logAdd([e.message]); }
 };
 
+$("r-addbtn").onclick = async () => {
+  const url = $("r-url").value.trim(); if (!url) return;
+  showLog("Add workflow source", url, "running");
+  try {
+    const {job} = await api("/api/add_workflow", {url});
+    watch(job, j => {
+      if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
+      setStatus("done"); $("r-url").value = ""; $("r-scan").onclick();
+    }, logAdd);
+  } catch (e) { logAdd([e.message]); setStatus("failed"); }
+};
 $("r-selbehind").onclick = () => { repos.filter(r => r.state === "behind").forEach(r => rSel.add(r.path)); rRender(); };
 $("r-selvis").onclick = () => { rVisible().forEach(r => rSel.add(r.path)); rRender(); };
 $("r-selnone").onclick = () => { rSel.clear(); rRender(); };
