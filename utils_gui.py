@@ -35,6 +35,9 @@ from comfyui_root import resolve_comfyui_root
 from envtools import custom_nodes_paths, dedupe_dirs, install_prefix, installed_pythons, run_uv
 from build_venv import CUDA_CANDIDATES, PY_CANDIDATES, Candidate, PlanCancelled, PlanOptions, build_venv, default_venv_name, describe_plan, make_plan
 import custom_nodes_link_manager as nodes_mgr
+import update_workflow_repos as wf
+from comfyui_root import default_workflows_dir
+from workflow_sources import METADATA_FILE
 from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, update_repo
 from wheels import download_wheel, load_catalog
 from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_install_changes, run_audit
@@ -46,6 +49,7 @@ PRESETS_PATH = str(HERE / "run_comfyui_presets_config.json")
 TOKEN = secrets.token_urlsafe(16)
 CONFIG_LOCK = threading.Lock()
 JOBS: Dict[str, dict] = {}
+REPO_KIND: Dict[str, str] = {}  # scanned path -> "nodes" | "workflows"
 REPO_PATHS: set = set()  # repositories found by the last scan; the only paths the update endpoints accept
 PLANS: Dict[str, tuple] = {}  # plan id -> (Plan, temp dir kept alive for the build that follows)
 
@@ -280,16 +284,31 @@ def build_job(job: dict, plan_id: str, index: int, name: str, select: bool) -> d
         (LOG_DIR / f"{stamp}_build_{name}.log").write_text("\n".join(job["log"]) + "\n", encoding="utf-8")
 
 
-def repos_scan_job(job: dict, fetch: bool, include_disabled: bool) -> dict:
+def source_status(path: str, fetch: bool) -> dict:
+    """repo_status, plus the workflow sources that are not git repos (partial syncs or plain folders)."""
+    if REPO_KIND.get(path) == "workflows" and not os.path.isdir(os.path.join(path, ".git")):
+        row = repo_status(path, fetch=False)
+        row["state"] = "partial" if os.path.isfile(os.path.join(path, METADATA_FILE)) else "not-git"
+        return row
+    return repo_status(path, fetch)
+
+
+def repos_scan_job(job: dict, kind: str, fetch: bool, include_disabled: bool) -> dict:
     with CONFIG_LOCK:
         cfg, _ = config_schema.load_legacy_compat(CONFIG_PATH)
     root = resolve_comfyui_root(CONFIG_PATH)
-    repos = collect_repos(root, custom_nodes_paths(cfg, str(root)), include_disabled)
+    if kind == "workflows":
+        wdir = default_workflows_dir(root)
+        repos = [str(p) for p in wf.collect_workflow_sources(wdir)] if wdir.is_dir() else []
+    else:
+        repos = collect_repos(root, custom_nodes_paths(cfg, str(root)), include_disabled)
     REPO_PATHS.clear()
     REPO_PATHS.update(repos)
+    REPO_KIND.clear()
+    REPO_KIND.update({r: kind for r in repos})
     rows, done = [], 0
     with ThreadPoolExecutor(max_workers=8) as ex:
-        futs = {ex.submit(repo_status, r, fetch): r for r in repos}
+        futs = {ex.submit(source_status, r, fetch): r for r in repos}
         try:
             for fut in as_completed(futs):
                 rows.append(fut.result())
@@ -306,16 +325,28 @@ def repos_scan_job(job: dict, fetch: bool, include_disabled: bool) -> dict:
 
 
 def repos_update_job(job: dict, paths: List[str], on_local: str, on_conflict: str, dry_run: bool) -> dict:
+    """Nodes: local changes stash/replace/skip, conflicts skip/reset. Workflows: local changes also fetch-only / move edited JSONs,
+    "conflicts" is the Windows-incompatible-paths answer (skip / fetch + sparse checkout)."""
     unknown = [p for p in paths if p not in REPO_PATHS]
     if unknown:
         raise ValueError("not a scanned repository: " + unknown[0])
-    local = {"stash": "2", "replace": "1", "skip": "3"}[on_local]
-    resolve = {"skip": "skip", "reset": "reset"}[on_conflict]
+    local = {"stash": "2", "replace": "1", "skip": "3", "fetch": "5", "move_json": "6"}[on_local]
+    resolve = {"skip": "skip", "reset": "reset", "sparse": "sparse"}[on_conflict]
+    cache_root = (HERE / ".partial_repo_cache").resolve()
     results, done = [], 0
 
     def one(path: str) -> dict:
-        res = result_to_dict(update_repo(path, dry_run=dry_run, on_local=local, on_conflict=resolve))
-        res["row"] = repo_status(path, fetch=False)
+        if REPO_KIND.get(path) == "workflows":
+            if dry_run:
+                res = {"name": os.path.basename(path), "path": path, "branch": "", "changed": False, "skipped": "", "error": "", "commits": [], "files": [], "notes": ["[dry-run] not supported for workflow sources"], "last_update_at": ""}
+            elif os.path.isdir(os.path.join(path, ".git")):
+                res = wf.report_to_dict(wf.update_repo(Path(path), on_local=local, on_incompatible="5" if resolve == "sparse" else "3"))
+            else:
+                cache_root.mkdir(exist_ok=True)
+                res = wf.report_to_dict(wf.update_partial_repo(Path(path), cache_root))
+        else:
+            res = result_to_dict(update_repo(path, dry_run=dry_run, on_local=local, on_conflict=resolve))
+        res["row"] = source_status(path, False)
         return res
 
     root_first = [p for p in paths if p == str(resolve_comfyui_root(CONFIG_PATH))]
@@ -535,7 +566,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repos_scan":
                 job = new_job("repos")
-                run_in_thread(job, repos_scan_job, bool(body.get("fetch", True)), bool(body.get("include_disabled")))
+                run_in_thread(job, repos_scan_job, str(body.get("kind", "nodes")), bool(body.get("fetch", True)), bool(body.get("include_disabled")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repo_detail":
                 if str(body["path"]) not in REPO_PATHS:

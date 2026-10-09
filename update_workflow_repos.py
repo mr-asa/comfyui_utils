@@ -684,7 +684,9 @@ def collect_numstat(path: Path, old: str, new: str) -> List[Tuple[int, int, str]
     return stats
 
 
-def update_repo(path: Path) -> RepoReport:
+def update_repo(path: Path, on_local: str | None = None, on_incompatible: str | None = None) -> RepoReport:
+    """on_local answers the local-changes prompt ("1".."6"), on_incompatible the Windows-path prompt ("3" skip, "5" fetch + sparse);
+    None asks on the console."""
     if not path.is_dir():
         return RepoReport(path.name, path, "", "", False, [], [], [], skipped="Not a directory")
 
@@ -703,7 +705,7 @@ def update_repo(path: Path) -> RepoReport:
     # In this case, allow "fetch only" so we still download what we can.
     bad_paths = find_windows_incompatible_paths(path, ref="HEAD", limit=12)
     if bad_paths:
-        choice = prompt_windows_incompatible_action(path, branch, bad_paths)
+        choice = on_incompatible or prompt_windows_incompatible_action(path, branch, bad_paths)
         if choice == "5":
             ok, info = fetch_only(path)
             if not ok:
@@ -753,7 +755,7 @@ def update_repo(path: Path) -> RepoReport:
             status_note = "Local changes (git status --porcelain): " + "; ".join(local_lines)
         else:
             status_note = "Local changes detected."
-        action = prompt_local_changes_action(path.name, path, branch, status_out)
+        action = on_local or prompt_local_changes_action(path.name, path, branch, status_out)
         if action == "3":
             return RepoReport(path.name, path, web_url, branch, False, [], [], notes, skipped=status_note)
         if action == "4":
@@ -974,6 +976,18 @@ def print_report(report: RepoReport) -> None:
         for note in report.notes:
             print(f" {C.GRAY}{note}{C.RESET}")
         print(f" {C.GREEN}No changes{C.RESET}\n")
+
+
+def collect_workflow_sources(workflows_dir: Path) -> List[Path]:
+    return [c for c in sorted(workflows_dir.iterdir()) if c.is_dir()]
+
+
+def report_to_dict(r: RepoReport) -> dict:
+    return {
+        "name": r.name, "path": str(r.path), "branch": r.branch, "changed": r.changed, "skipped": r.skipped or "", "error": r.error or "",
+        "commits": r.commit_messages, "files": [{"added": a, "deleted": d, "path": p} for a, d, p in r.numstat],
+        "notes": r.notes, "last_update_at": r.last_update_at or "",
+    }
 
 
 def resolve_workflows_dir(

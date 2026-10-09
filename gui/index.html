@@ -90,7 +90,7 @@ nav button.on { color: var(--text); border-color: var(--accent); }
 #b-detail ul { margin: 2px 0 8px; padding-left: 18px; }
 #b-foot { flex: none; border-top: 1px solid var(--line); }
 .s-behind { color: var(--info); } .s-diverged, .s-fetch-failed, .s-not-git { color: var(--bad); } .s-ahead { color: var(--warn); }
-.s-up-to-date { color: var(--muted); } .s-no-upstream { color: var(--muted); border-style: dashed; }
+.s-partial { color: var(--info); border-style: dashed; } .s-up-to-date { color: var(--muted); } .s-no-upstream { color: var(--muted); border-style: dashed; }
 #r-detail { flex: none; height: 150px; overflow: auto; border-top: 1px solid var(--line); padding: 8px 14px; font-size: 13px; }
 #r-detail .files { color: var(--muted); }
 tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
@@ -176,6 +176,7 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 <section id="tab-repos" class="tabsec" hidden>
   <div class="panel" id="r-panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
     <div class="filters">
+      <select id="r-kind" title="What to scan and update"><option value="nodes">ComfyUI &amp; custom nodes</option><option value="workflows">Workflow sources</option></select>
       <button class="primary" id="r-scan">Scan</button>
       <label title="git fetch every repository so ahead/behind is current (slower)"><input type="checkbox" id="r-fetch" checked> fetch from remotes</label>
       <label><input type="checkbox" id="r-disabled"> include disabled folders</label>
@@ -187,8 +188,8 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
     </div>
     <div class="toolbar">
       <button id="r-selbehind">Select behind</button><button id="r-selvis">Select visible</button><button id="r-selnone">Clear</button>
-      <label>local changes <select id="r-local"><option value="stash">stash and re-apply</option><option value="skip">skip the repository</option><option value="replace">discard (replace from remote)</option></select></label>
-      <label>conflicts <select id="r-conflict"><option value="skip">skip</option><option value="reset">hard reset to remote</option></select></label>
+      <label>local changes <select id="r-local"></select></label>
+      <label><span id="r-conflict-label">conflicts</span> <select id="r-conflict"></select></label>
       <label><input type="checkbox" id="r-dry"> dry run</label>
       <button class="primary" id="r-update" disabled>Update selected…</button>
       <span class="muted" id="r-selinfo"></span>
@@ -655,8 +656,21 @@ $("b-build").onclick = async () => {
 };
 
 // ---- repos
-const RSTATES = ["behind", "diverged", "fetch-failed", "not-git", "ahead", "no-upstream", "up-to-date"];
+const RSTATES = ["behind", "diverged", "fetch-failed", "not-git", "ahead", "partial", "no-upstream", "up-to-date"];
 const RRANK = Object.fromEntries(RSTATES.map((x, i) => [x, i]));
+const R_OPTS = {
+  nodes: {local: [["stash", "stash and re-apply"], ["skip", "skip the repository"], ["replace", "discard (replace from remote)"]], conflictLabel: "conflicts", conflict: [["skip", "skip"], ["reset", "hard reset to remote"]]},
+  workflows: {local: [["stash", "stash and re-apply"], ["skip", "skip the repository"], ["replace", "discard (replace from remote)"], ["fetch", "fetch only, keep the working tree"], ["move_json", "move edited JSONs to github_edits, discard"]],
+    conflictLabel: "Windows-bad paths", conflict: [["skip", "skip"], ["sparse", "fetch + sparse checkout"]]},
+};
+function setRepoOptions() {
+  const o = R_OPTS[$("r-kind").value];
+  $("r-local").innerHTML = o.local.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+  $("r-conflict").innerHTML = o.conflict.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+  $("r-conflict-label").textContent = o.conflictLabel;
+}
+setRepoOptions();
+$("r-kind").onchange = () => { setRepoOptions(); repos = []; rSel.clear(); rBuildChips(); rRender(); $("r-detail").innerHTML = '<span class="muted">Scan to list the repositories.</span>'; };
 let repos = [], rSel = new Set(), rActive = new Set(RSTATES), rJob = null, rSortKey = "state", rSortDir = 1, rPicked = "", rDetailSeq = 0;
 
 $("r-scan").onclick = async () => {
@@ -665,10 +679,10 @@ $("r-scan").onclick = async () => {
     api("/api/cancel", {job: rJob}).catch(e => logAdd([e.message]));
     return;
   }
-  showLog("Scan repositories", "", "running");
+  showLog("Scan: " + $("r-kind").selectedOptions[0].textContent, "", "running");
   const idle = () => { rJob = null; $("r-scan").disabled = false; $("r-scan").textContent = "Scan"; };
   try {
-    const {job} = await api("/api/repos_scan", {fetch: $("r-fetch").checked, include_disabled: $("r-disabled").checked});
+    const {job} = await api("/api/repos_scan", {kind: $("r-kind").value, fetch: $("r-fetch").checked, include_disabled: $("r-disabled").checked});
     rJob = job; $("r-scan").textContent = "Cancel scan"; rSel.clear();
     watch(job, j => {
       idle();
@@ -731,8 +745,8 @@ $("r-update").onclick = async () => {
   const paths = [...rSel], local = $("r-local").value, conflict = $("r-conflict").value, dry = $("r-dry").checked;
   const dirty = paths.map(p => repos.find(r => r.path === p)).filter(r => r.dirty);
   if (!confirm(`${dry ? "Dry run for" : "Update"} ${paths.length} repositor${paths.length === 1 ? "y" : "ies"}?`
-    + (dirty.length ? `\n\n${dirty.length} have local changes → ${local === "stash" ? "stash and re-apply after the pull" : local === "skip" ? "they will be skipped" : "LOCAL CHANGES WILL BE DISCARDED"}.` : "")
-    + (conflict === "reset" ? "\nConflicts → hard reset to the remote (local commits are lost)." : ""))) return;
+    + (dirty.length ? `\n\n${dirty.length} have local changes → ${local === "stash" ? "stash and re-apply after the pull" : local === "skip" ? "they will be skipped" : local === "fetch" ? "only fetched, the working tree stays as it is" : "LOCAL CHANGES WILL BE DISCARDED"}.` : "")
+    + (conflict === "reset" ? "\nConflicts → hard reset to the remote (local commits are lost)." : "") + (local === "move_json" ? "\nEdited JSONs are moved to github_edits, other local changes are discarded." : ""))) return;
   showLog(`${dry ? "Dry run" : "Update"}: ${paths.length} repositories`, "", "running");
   $("r-update").dataset.busy = "1"; $("r-update").disabled = true; $("r-update").textContent = "Updating…";
   const finish = () => { $("r-update").dataset.busy = "0"; $("r-update").textContent = "Update selected…"; rUpdateSel(); };
