@@ -51,6 +51,7 @@ except Exception:
     ConfigManager = None  # type: ignore
 
 from comfyui_root import default_custom_nodes, resolve_comfyui_root
+from envtools import dedupe_dirs, norm_real_path
 
 
 def _configure_console_encoding() -> None:
@@ -150,34 +151,9 @@ AUTO_INIT_MISSING_GIT = False
 
 # ========================================================================
 
-def _norm_real_path(path: str) -> str:
-    try:
-        return os.path.normcase(os.path.normpath(os.path.realpath(path)))
-    except Exception:
-        return os.path.normcase(os.path.normpath(path))
-
-
-def _dedupe_dirs(paths: List[str]) -> List[str]:
-    out: List[str] = []
-    seen: set[str] = set()
-    for p in paths:
-        if not p:
-            continue
-        norm = os.path.normcase(os.path.normpath(p))
-        real = _norm_real_path(p)
-        if norm in seen or real in seen:
-            continue
-        if not os.path.isdir(p):
-            continue
-        out.append(os.path.normpath(p))
-        seen.add(norm)
-        seen.add(real)
-    return out
-
-
 def _load_plugins_dirs(cfg: Dict[str, object], comfy_root: Path, override_dir: Optional[str]) -> List[str]:
     if override_dir:
-        return _dedupe_dirs([os.path.join(str(comfy_root), override_dir)])
+        return dedupe_dirs([os.path.join(str(comfy_root), override_dir)])
 
     paths: List[str] = []
     raw_list = cfg.get("custom_nodes_paths")
@@ -193,7 +169,7 @@ def _load_plugins_dirs(cfg: Dict[str, object], comfy_root: Path, override_dir: O
         paths.append(repo_path.strip())
     if not paths:
         paths.append(str(default_custom_nodes(comfy_root)))
-    return _dedupe_dirs(paths)
+    return dedupe_dirs(paths)
 
 
 def load_or_init_config(path: str) -> Dict[str, object]:
@@ -304,7 +280,7 @@ def main() -> int:
                 continue
             if not args.include_disabled and (name.lower().startswith("disabled") or name.lower().endswith(".disabled")):
                 continue
-            real = _norm_real_path(path)
+            real = norm_real_path(path)
             if real in seen_repos:
                 continue
             seen_repos.add(real)

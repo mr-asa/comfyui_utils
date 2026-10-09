@@ -34,6 +34,7 @@ from packaging.version import Version
 
 import config_schema
 from comfyui_root import resolve_comfyui_root
+from envtools import enabled_node_dirs, find_requirements_files, installed_pythons, parse_requirements_file, run_uv as uv
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
@@ -186,48 +187,29 @@ def custom_nodes_dirs(root: Path) -> List[Path]:
 
 def collect_requirements(root: Path, skip: set) -> Tuple[Dict[str, List[str]], List[str]]:
     """Return ({source: [requirement lines]}, [vcs/url lines])."""
-    files = [(root.name, root / "requirements.txt"), ("manager", root / "manager_requirements.txt")]
+    files = [(root.name, [str(root / "requirements.txt")]), ("manager", [str(root / "manager_requirements.txt")])]
     for d in custom_nodes_dirs(root):
-        for n in sorted(os.listdir(d)):
-            if n.endswith(".disable") or n in skip:
-                continue
-            files.append((n, d / n / "requirements.txt"))
+        for node in enabled_node_dirs(str(d)):
+            if os.path.basename(node) not in skip:
+                files.append((os.path.basename(node), find_requirements_files(node)))
     by_src: Dict[str, List[str]] = {}
     vcs: List[str] = []
-    for src, f in files:
-        if not f.is_file():
-            continue
+    for src, paths in files:
         lines = []
-        for raw in f.read_text(encoding="utf-8", errors="ignore").splitlines():
-            s = raw.split(" #")[0].strip()
-            if not s or s.startswith(("#", "-")):
-                continue
-            try:
-                r = Requirement(s)
-            except Exception:
-                vcs.append(s)
-                continue
-            if r.url:
-                vcs.append(s)
-            elif canonicalize_name(r.name) not in TORCH_FAMILY:
-                lines.append(s)
-        by_src[src] = lines
+        for path in paths:
+            reqs, unparsed, _ = parse_requirements_file(path, evaluate_markers=False)
+            vcs += unparsed
+            for r in reqs:
+                if r.url:
+                    vcs.append(str(r))
+                elif canonicalize_name(r.name) not in TORCH_FAMILY:
+                    lines.append(str(r))
+        if lines or any(os.path.isfile(p) for p in paths):
+            by_src[src] = lines
     return by_src, vcs
 
 
 # ---------------------------------------------------------------- uv
-
-def uv(*args: str, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
-    exe = shutil.which("uv")
-    cmd = [exe] if exe else [sys.executable, "-m", "uv"]
-    return subprocess.run(cmd + list(args), check=check, text=True, capture_output=capture)
-
-
-def installed_pythons() -> List[str]:
-    out = uv("python", "list", "--only-installed", "--output-format", "json", capture=True).stdout
-    found = {f"{p['version_parts']['major']}.{p['version_parts']['minor']}" for p in json.loads(out)}
-    return [p for p in PY_CANDIDATES if p in found]
-
 
 def triton_spec(torch_mm: Tuple[int, int]) -> str:
     # triton-windows minor follows torch minor: torch 2.9 -> 3.5, 2.11 -> 3.7, 2.12 -> 3.8
@@ -389,7 +371,7 @@ def run_plan(args, tmp: Path):
     order = head + prefer + sorted(k for k in by_src if k not in head + prefer)
     ordered = [(k, [l for l in by_src[k] if canonicalize_name(Requirement(l).name) not in excl]) for k in order if k in by_src]
     catalog, wheel_dir, wanted = load_catalog(args.remote)
-    pythons = [args.python] if args.python else installed_pythons()
+    pythons = [args.python] if args.python else installed_pythons(PY_CANDIDATES)
     print(f"ComfyUI: {root}\nNodes with requirements: {sum(1 for v in by_src.values() if v)}, vcs/url: {len(vcs)}")
     print(f"Wheel catalog: {len(catalog)} for {', '.join(wanted)} (dir: {wheel_dir}); pythons: {', '.join(pythons)}")
 

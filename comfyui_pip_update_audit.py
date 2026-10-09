@@ -25,7 +25,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
-import shutil
 import sys
 import subprocess
 from dataclasses import dataclass, field
@@ -443,13 +442,21 @@ if _early_hold_pin():
 
 import requests
 from packaging.requirements import Requirement
-from packaging.markers import Marker
 from packaging.specifiers import Specifier, SpecifierSet
 from packaging.version import Version
 from packaging.utils import canonicalize_name
 from colorama import init as colorama_init, Fore, Style
 
 from comfyui_root import default_custom_nodes, resolve_comfyui_root
+from envtools import (
+    dedupe_dirs,
+    enabled_node_dirs,
+    find_requirements_files,
+    install_prefix,
+    parse_requirements_file,
+    python_cmd,
+    quote_cmd_part,
+)
 colorama_init(autoreset=True)
 
 
@@ -500,34 +507,8 @@ def guess_paths(cfg: dict, comfy_root: Optional[str] = None) -> Tuple[str, List[
     sys.exit("custom_nodes_path missing in config.json")
 
 
-def plugin_dirs(custom_nodes: str) -> List[str]:
-    out: List[str] = []
-    if not os.path.isdir(custom_nodes):
-        print(f"custom_nodes_path is not a directory: {custom_nodes}")
-        return out
-    try:
-        entries = sorted(os.listdir(custom_nodes))
-    except OSError as e:
-        print(f"Failed to list custom_nodes_path: {custom_nodes} ({e})")
-        return out
-    for n in entries:
-        p = os.path.join(custom_nodes, n)
-        try:
-            if os.path.isdir(p) and not n.endswith(".disable"):
-                out.append(p)
-        except OSError:
-            # Skip broken/inaccessible junctions or special entries
-            continue
-    return out
-
-
-REQ_FILE_RE = re.compile(r"^requirements\.txt$", re.I)
 COMFY_ENV_FILE = "comfy-env.toml"
 COMFY_ENV_ROOT_FILE = "comfy-env-root.toml"
-
-
-def find_reqs(folder: str) -> List[str]:
-    return [os.path.join(folder, f) for f in os.listdir(folder) if REQ_FILE_RE.match(f)]
 
 
 def _is_ignored_walk_dir(name: str) -> bool:
@@ -580,16 +561,8 @@ def _comfy_env_name(plugin_dir: str, config_path: str) -> str:
     return f"{base}-{suffix}" if suffix else base
 
 
-def _quote_cmd_part(part: str) -> str:
-    if not part:
-        return '""'
-    if re.search(r"\s", part):
-        return f'"{part}"'
-    return part
-
-
 def _format_python_script_cmd(py: List[str], script_path: str) -> str:
-    return " ".join([_quote_cmd_part(p) for p in py + [script_path]])
+    return " ".join([quote_cmd_part(p) for p in py + [script_path]])
 
 
 def _format_comfy_env_workspace_install_cmd(py: List[str], comfy_root: str, node_dir: str) -> str:
@@ -600,61 +573,7 @@ def _format_comfy_env_workspace_install_cmd(py: List[str], comfy_root: str, node
         "from comfy_env import install; "
         f"install(node_dir=Path(r'{node_dir}'))"
     )
-    return " ".join([_quote_cmd_part(p) for p in py + ["-c", code]])
-
-
-def _marker_allows_raw(raw: str) -> bool:
-    if ";" not in raw:
-        return True
-    marker_text = raw.split(";", 1)[1].strip()
-    if not marker_text:
-        return True
-    try:
-        return Marker(marker_text).evaluate()
-    except Exception:
-        # If marker parsing fails, keep the entry to avoid accidental drops
-        return True
-
-
-def parse_req_file(path: str) -> Tuple[List[Requirement], List[str], List[str]]:
-    try:
-        txt = open(path, encoding="utf-8").read()
-    except Exception:
-        return [], [], []
-    reqs: List[Requirement] = []
-    extras: List[str] = []
-    commented_lines: List[str] = []
-    for line in txt.splitlines():
-        s = line.strip()
-        if not s:
-            continue
-        if s.startswith("#"):
-            c = s[1:].strip()
-            if not c:
-                continue
-            if "#" in c:
-                c = c.split("#", 1)[0].strip()
-                if not c:
-                    continue
-            commented_lines.append(c)
-            continue
-        if s.startswith("-"):
-            continue
-        # Strip inline comments.
-        if "#" in s:
-            s = s.split("#", 1)[0].strip()
-            if not s:
-                continue
-        try:
-            req = Requirement(s)
-            if req.marker and not req.marker.evaluate():
-                continue
-            reqs.append(req)
-        except Exception:
-            # Keep unparsed entries (e.g. VCS/URL requirements) so we can surface them later
-            if _marker_allows_raw(s):
-                extras.append(s)
-    return reqs, extras, commented_lines
+    return " ".join([quote_cmd_part(p) for p in py + ["-c", code]])
 
 
 def _norm_path(path: str) -> str:
@@ -675,31 +594,6 @@ def _unique_paths(paths: List[str]) -> List[str]:
     return out
 
 
-def _norm_real_path(path: str) -> str:
-    try:
-        return os.path.normcase(os.path.normpath(os.path.realpath(path)))
-    except Exception:
-        return os.path.normcase(os.path.normpath(path))
-
-
-def _dedupe_dirs(paths: List[str]) -> List[str]:
-    out: List[str] = []
-    seen: set[str] = set()
-    for p in paths:
-        if not p:
-            continue
-        norm = os.path.normcase(os.path.normpath(p))
-        real = _norm_real_path(p)
-        if norm in seen or real in seen:
-            continue
-        if not os.path.isdir(p):
-            continue
-        out.append(os.path.normpath(p))
-        seen.add(norm)
-        seen.add(real)
-    return out
-
-
 def _load_custom_nodes_paths(cfg: dict, comfy_root: str = "") -> List[str]:
     paths: List[str] = []
     raw_list = cfg.get("custom_nodes_paths")
@@ -712,7 +606,7 @@ def _load_custom_nodes_paths(cfg: dict, comfy_root: str = "") -> List[str]:
         paths.append(cn.strip())
     if not paths and comfy_root:
         paths.append(str(default_custom_nodes(Path(comfy_root))))
-    return _dedupe_dirs(paths)
+    return dedupe_dirs(paths)
 
 
 def _get_custom_nodes_repo_path(cfg: dict) -> str:
@@ -1109,28 +1003,6 @@ def inspect_comfy_env_plugin(plugin_dir: str) -> Optional[ComfyEnvReport]:
     return report
 
 
-def _python_cmd(cfg: dict) -> List[str]:
-    env_type = (cfg.get("env_type") or "").lower()
-    if env_type == "venv":
-        venv = cfg.get("venv_path") or ""
-        if venv:
-            c = os.path.join(venv, "Scripts", "python.exe")
-            if os.path.exists(c):
-                return [c]
-            c = os.path.join(venv, "bin", "python")
-            if os.path.exists(c):
-                return [c]
-    env = cfg.get("conda_env_folder") or ""
-    if env:
-        c = os.path.join(env, "python.exe")
-        if os.path.exists(c):
-            return [c]
-        c = os.path.join(env, "bin", "python")
-        if os.path.exists(c):
-            return [c]
-    return [sys.executable]
-
-
 def _load_installed_from_python(py: List[str]) -> Optional[Dict[str, dict]]:
     code = (
         "import json, re, importlib.metadata as m;"
@@ -1166,7 +1038,7 @@ def _load_installed_from_python(py: List[str]) -> Optional[Dict[str, dict]]:
 
 
 def load_installed_dists(cfg: dict) -> Dict[str, dict]:
-    py = _python_cmd(cfg)
+    py = python_cmd(cfg)
     data = _load_installed_from_python(py)
     if isinstance(data, dict) and data:
         return data
@@ -1208,7 +1080,7 @@ def _target_python_version(cfg: dict) -> str:
     Falls back to current interpreter version on any failure.
     """
     fallback = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    py = _python_cmd(cfg)
+    py = python_cmd(cfg)
     try:
         p = subprocess.run(
             py + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"],
@@ -1239,7 +1111,7 @@ def inst_ver_from_map(installed: Dict[str, dict], name: str) -> Optional[Version
 
 def wheel_local_suffix_for_env(cfg: dict) -> str:
     base = "cp-"
-    py = _python_cmd(cfg)
+    py = python_cmd(cfg)
     code = (
         "import json, sys\n"
         "data={\"cu\":\"\",\"torch\":\"\",\"rocm\":\"\",\"cp\":f\"cp{sys.version_info.major}{sys.version_info.minor}\"}\n"
@@ -1519,36 +1391,6 @@ def _find_safe_upgrade_fallback(
         if checks >= max_dry_run_checks:
             break
     return None
-
-
-def pip_cmd(cfg: dict, force_pip: bool = False) -> List[str]:
-    """Install command prefix: `uv pip install --python <py>` when uv is on PATH, else the env's `pip install`."""
-    uv = None if force_pip else shutil.which("uv")
-    if uv:
-        return [uv, "pip", "install", "--python", _python_cmd(cfg)[0]]
-    return _env_pip(cfg) + ["install"]
-
-
-def _env_pip(cfg: dict) -> List[str]:
-    env_type = (cfg.get("env_type") or "").lower()
-    if env_type == "venv":
-        venv = cfg.get("venv_path") or ""
-        if venv:
-            c = os.path.join(venv, "Scripts", "pip.exe")
-            if os.path.exists(c):
-                return [c]
-            c = os.path.join(venv, "bin", "pip")
-            if os.path.exists(c):
-                return [c]
-    env = cfg.get("conda_env_folder") or cfg.get("conda_env") or ""
-    if env:
-        c = os.path.join(env, "Scripts", "pip.exe")
-        if os.path.exists(c):
-            return [c]
-        c = os.path.join(env, "bin", "pip")
-        if os.path.exists(c):
-            return [c]
-    return [sys.executable, "-m", "pip"]
 
 
 def dry_run(pip: List[str], pkgs: List[Tuple[str, Version]], timeout_s: int = 60) -> Tuple[bool, str]:
@@ -1846,7 +1688,7 @@ def main() -> None:
     if (cfg.get("env_type") or "").lower() == "venv":
         cfg = select_venv(cfg, cfg_path)
     comfy_root, custom_nodes_paths = guess_paths(cfg, comfy_root=str(comfy_root))
-    pip = pip_cmd(cfg, force_pip=args.force_pip)
+    pip = install_prefix(cfg, force_pip=args.force_pip)
     installed_map = load_installed_dists(cfg)
 
     if args.hold_pkg or args.pin_pkg:
@@ -1964,8 +1806,8 @@ def main() -> None:
     allc: Dict[str, List[SourceConstraint]] = {}
     extra_reqs: List[VcsReport] = []
     commented_reqs: List[Tuple[str, str, str]] = []
-    for reqf in find_reqs(comfy_root):
-        reqs, extras, commented = parse_req_file(reqf)
+    for reqf in find_requirements_files(comfy_root):
+        reqs, extras, commented = parse_requirements_file(reqf)
         for r in reqs:
             n = canonicalize_name(r.name)
             allc.setdefault(n, []).append(SourceConstraint("ComfyUI", reqf, r.specifier))
@@ -1983,20 +1825,20 @@ def main() -> None:
     )
     args.show_commented = bool(args.show_commented or prompt_show_commented)
     if include_repo_path:
-        custom_nodes_paths = _dedupe_dirs(custom_nodes_paths + [repo_custom_nodes_path])
+        custom_nodes_paths = dedupe_dirs(custom_nodes_paths + [repo_custom_nodes_path])
         print("Included custom_nodes_repo_path in requirements scan for this run.")
 
     plugin_paths: List[str] = []
     for cn in custom_nodes_paths:
-        plugin_paths.extend(plugin_dirs(cn))
-    plugin_paths = _dedupe_dirs(plugin_paths)
+        plugin_paths.extend(enabled_node_dirs(cn))
+    plugin_paths = dedupe_dirs(plugin_paths)
     comfy_env_reports: List[ComfyEnvReport] = []
     for pl in plugin_paths:
         ce_report = inspect_comfy_env_plugin(pl)
         if ce_report:
             comfy_env_reports.append(ce_report)
-        for reqf in find_reqs(pl):
-            reqs, extras, commented = parse_req_file(reqf)
+        for reqf in find_requirements_files(pl):
+            reqs, extras, commented = parse_requirements_file(reqf)
             for r in reqs:
                 n = canonicalize_name(r.name)
                 allc.setdefault(n, []).append(SourceConstraint(os.path.basename(pl), reqf, r.specifier))
@@ -2338,7 +2180,7 @@ def main() -> None:
             print(
                 " - Workspace install/rerun command:",
                 Fore.BLUE
-                + _format_comfy_env_workspace_install_cmd(_python_cmd(cfg), comfy_root, rep.plugin_dir)
+                + _format_comfy_env_workspace_install_cmd(python_cmd(cfg), comfy_root, rep.plugin_dir)
                 + Style.RESET_ALL,
             )
             print("   One run rebuilds every active comfy-env workspace environment.")
@@ -2355,7 +2197,7 @@ def main() -> None:
     risky = _dedupe_pkg_versions(risky)
     unknown = _dedupe_pkg_versions(unknown)
     extra_unique = sorted(set(v.raw for v in extra_reqs))
-    pip_prefix = " ".join(_quote_cmd_part(p) for p in pip)
+    pip_prefix = " ".join(quote_cmd_part(p) for p in pip)
     safe_cmd = pip_prefix + " --upgrade " + cmdline(safe)
     risky_cmd = pip_prefix + " --upgrade " + cmdline(risky)
     unknown_cmd = pip_prefix + " --upgrade " + cmdline(unknown)
@@ -2409,7 +2251,7 @@ def main() -> None:
                     trigger_names.append(f"{iso.env_name}:stale")
         rep = comfy_env_install_reruns[0]
         print("comfy-env workspace install/rerun:")
-        print("  " + Fore.BLUE + _format_comfy_env_workspace_install_cmd(_python_cmd(cfg), comfy_root, rep.plugin_dir) + Style.RESET_ALL)
+        print("  " + Fore.BLUE + _format_comfy_env_workspace_install_cmd(python_cmd(cfg), comfy_root, rep.plugin_dir) + Style.RESET_ALL)
         print("  Triggers: " + ", ".join(trigger_names))
     if downgrades:
         down_cmd = pip_prefix + " " + cmdline(downgrades)
