@@ -2,10 +2,71 @@
 
 # ComfyUI Utils
 
-Utilities for maintaining a ComfyUI install and related repos. The scripts can live anywhere,
-but placing this repo near your ComfyUI folder keeps paths tidy.
+A local toolbox for looking after a ComfyUI install: venvs, pip packages, repositories, workflows and custom-node links,
+all in one browser UI. The original console tools still work (see the collapsed section at the bottom).
 
-## What is included
+## Quick start
+
+1. Start the GUI: `utils_gui_run.bat` (Linux: `utils_gui_run.sh`) or the **Utils GUI** shortcut. It opens `http://127.0.0.1:8765/`
+   (`python utils_gui.py --port N --no-browser` to change that). The server listens on `127.0.0.1` only and uses the Python standard library.
+2. Click the **gear** in the header and set your folders (ComfyUI, `custom_nodes`, the junction repo, workflows, wheels) and venvs. No hand editing of JSON needed.
+3. Work through the tabs from left to right.
+
+Needs: Python with `requests` and `packaging` (any ComfyUI venv has them) and [`uv`](https://docs.astral.sh/uv/) (`pip install uv`) for installs and venv building.
+
+## Tabs (in the order you work)
+
+| Tab | What it is for |
+|---|---|
+| **Build venv** | Plan and build a fresh venv: picks the Python / CUDA / torch combination for which all your node requirements resolve and the most prebuilt wheels exist, then installs it with `uv`. |
+| **Repos** | Scan ComfyUI and all custom nodes (fetch, ahead / behind, local changes), read the incoming commits, update with a policy for local changes, add a node by URL, unlink or delete. |
+| **Pip audit** | Compare installed packages with the requirements of all nodes. States safe / safe +deps / risky, install preview with dependency changes, versions list, hold / pin, wheel updates. |
+| **Nodes** | Junction links between your node repo and `custom_nodes`: link / unlink, presets, tags, select by tag. |
+| **Workflows** | The same scan / update / add / delete for workflow sources, including partial (folder-only) sources. |
+| **Compare venvs** | Package versions side by side with colors; favorites (the key modules) are editable with undo. |
+
+Common to all tabs: a log panel at the bottom (resizable, clearable, colored), long jobs can be cancelled, confirmations before anything destructive.
+
+## Updates
+
+What changed in the toolbox and why:
+
+- **One GUI for everything.** Tables, filters, previews and a live log instead of console prompts. Console scripts are unchanged and keep working.
+- **Pip audit judges side effects.** "safe" now means only that package changes; "safe +deps" lists the dependency changes; anything that would break a requirement, downgrade something, or touch torch / numpy is "risky". Why: one innocent update used to move numpy and a dozen packages silently.
+- **Install preview + protection.** A dry run shows every package that would change, with a choice to keep held / pinned or all other packages. Every real install saves a `_before.txt` snapshot and a log in `install_logs/` for rollback.
+- **No more `--upgrade`.** With uv it upgrades every dependency too. Updates now install exact versions only.
+- **Versions list per package.** Every PyPI release with a verdict from the requirements files and from installed dependents; pick or install any version (answers "is there something newer that still fits?").
+- **Wheel-installed packages are recognised** (sageattention, flash-attn, llama-cpp...). They are compared against `wheel_sources.json` instead of PyPI, and newer matching wheels can be downloaded and installed from the GUI.
+- **Build venv.** `build_venv.py` (also a console tool): resolves all node requirements with uv, loosens conflicting pins, carries over packages from your other venvs, installs matching wheels, saves a lock in `locks/`.
+- **Repos / Workflows.** Fetch and ahead / behind at a glance, incoming commits before updating, local changes stashed / skipped / discarded by choice. Partial workflow sources now remember the synced commit, so they show up-to-date or behind, with a link to the original. Add and remove sources from the UI; delete refuses to lose local work unless you confirm.
+- **Nodes.** Junctions, presets and tags (the old link manager) with GitHub links per node.
+- **Settings gear.** All folders, venvs (comment, CUDA path, environment variables), global environment variables, wheel sources and updater options in one dialog.
+- **Shared core.** `envtools.py`, `pip_audit_core.py`, `wheels.py` hold the logic used by both the console tools and the GUI. New console flags: `comfyui_pip_update_audit.py --hide-unchanged`, `--pip`. `run_comfyui.bat` now updates the frontend packages with uv when it is on PATH.
+
+## Shortcuts and launchers
+
+- Windows: `*.bat` files; `powershell -ExecutionPolicy Bypass -File create_windows_links.ps1` creates `.lnk` shortcuts (with the repo icons) in `run_windows`.
+- Linux: `*.sh` equivalents; `bash create_linux_links.sh` creates `.desktop` files in `run_linux`.
+
+## Files it keeps
+
+| File / folder | Content |
+|---|---|
+| `config.json` | folders, venvs (with hold / pin rules), environment variables, node tags. Edit it in **Settings**. |
+| `wheel_sources.json` | wheel folder, package names and the GitHub / Hugging Face sources. |
+| `update_comfy_repos_config.json` | updater options (parallel jobs, auto-merge patterns). |
+| `run_comfyui_presets_config.json` | node presets (managed in the Nodes tab). |
+| `compare_venv_versions_config.json` | favorite modules for Compare venvs (a `.bak` of the previous state is kept). |
+| `install_logs/` | install / build logs, `_before.txt` snapshots, constraints used. |
+| `locks/` | package lists of venvs built by `build_venv.py`. |
+
+<details>
+<summary><b>Console tools (older, still supported)</b></summary>
+
+The original scripts and their `.bat` / `.sh` launchers are unchanged. Most of them now have a GUI tab; the sections below stay useful for scripting,
+headless use, or when you prefer the terminal. Parts of the config template below are the legacy flat format; the current format is written by Settings.
+
+### Console tools
 
 - <img src="ico/update_comfy_repos_run.ico" width="16" height="16" alt=""> `update_comfy_repos.py` updates the main ComfyUI repo and every repo in `custom_nodes` (skips
   disabled folders), and writes a detailed change log with commit messages and file diffs.
@@ -26,24 +87,16 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
   their repo URLs, useful for collecting all plugins into a single list/repository.
 - <img src="ico/png_to_json_run.ico" width="16" height="16" alt=""> `png_to_json.py` scans a folder of images and video (`.png/.jpeg/.webp/.bmp/.tif/.mp4/.mkv/.webm/.mov/.gif`), reads ComfyUI `workflow` metadata,
   and writes a matching `.json` file next to each file that contains a workflow.
-- <img src="ico/build_venv_run.ico" width="16" height="16" alt=""> `build_venv.py` builds a fresh venv with `uv`: picks the Python / CUDA / torch combination for which all custom-node
-  requirements resolve and the most prebuilt wheels (sageattention, flash-attn, llama-cpp...) exist, installs it, writes a lock to `locks/`.
-  Commands: `plan` (rank only), `build`, `wheels` (catalog). Wheel folder and remote sources live in `wheel_sources.json`.
-  Conflicting pins are loosened, packages from your other venvs are carried over (`--seed-from`, `--no-seed`), the new venv is selected only with `--select`.
-- <img src="ico/utils_gui_run.ico" width="16" height="16" alt=""> `utils_gui.py` starts a local browser GUI (stdlib only, `127.0.0.1`): pip audit table with filters
-  (hide unchanged, state chips, per-node), hold/pin buttons, install preview with dependency changes, wheel updates, a live log,
-  a "Build venv" tab (plan the Python/CUDA/torch combination, pick a candidate, build), a "Repos" tab (scan and update ComfyUI and
-  custom nodes), a "Workflows" tab (the same for workflow sources, plus adding new ones by URL), a "Nodes" tab (junction links, presets, tags) and a "Compare venvs" tab. The gear in the header opens Settings: folders (ComfyUI, custom_nodes, the junction repo, workflows, wheels), venvs with comments / CUDA path / environment variables, global environment variables, wheel sources and updater options, so config.json and the other JSON files need no hand editing.
 - `comfyui_root.py` resolves the ComfyUI root using config, validation, and upward search.
 
-## Path handling
+### Path handling
 
 - Scripts not assume a fixed folder layout.
 - `comfyui_root.py` validates a root by checking `custom_nodes`, `models`, `main.py`,
   and `extra_model_paths.yaml.example`.
 - If `Comfyui_root` is missing or invalid, the scripts search upward and save it to `config.json`.
 
-## config.json template
+### config.json template
 
 Example with comments (JSONC). Remove comments in a real `config.json`.
 
@@ -106,25 +159,15 @@ Example with comments (JSONC). Remove comments in a real `config.json`.
 }
 ```
 
-## Launchers
+### Custom nodes manager (custom_nodes_link_manager.py)
 
-- Windows: `*.bat` files.
-- Linux: `*.sh` equivalents (same names, run with `bash` or `./file.sh`).
-
-## Shortcuts
-
-- Windows: `powershell -ExecutionPolicy Bypass -File create_windows_links.ps1` (creates `.lnk` in `run_windows`).
-- Linux: `bash create_linux_links.sh` (creates `.desktop` in `run_linux`).
-
-## Custom nodes manager (custom_nodes_link_manager.py)
-
-### Concept: moving nodes
+#### Concept: moving nodes
 
 Core idea: keep all real nodes in a single `custom_nodes_repo` folder, while
 `custom_nodes` contains only junction links. This gives one source of truth,
 easier maintenance, and fast enable/disable of node sets without moving files.
 
-### Utility
+#### Utility
 
 - Shows a compact two-column list of repo nodes; linked items are marked with `=>`.
 - Numbering runs top-to-bottom per column (first column, then second).
@@ -138,7 +181,7 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 - `custom_nodes_path`/`custom_nodes_paths` defines the target `custom_nodes`.
 - Presets are read/saved in `run_comfyui_presets_config.json`. When saving, mode (`blacklist`/`whitelist`) is chosen by the smaller disabled/enabled count.
 
-## Partial repo sync (partial_repo_sync.py)
+### Partial repo sync (partial_repo_sync.py)
 
 - For workflows, prefer `clone-workflow_repos.py` and `update_workflow_repos.py`.
 - Old workflow jobs from `partial_repo_sync_config.json` are migrated to `.workflow_source.json` when `update_workflow_repos.py` runs.
@@ -148,7 +191,7 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 - `paths` can use regex patterns: `re:^styles/.*\\.json$` or `regex:^styles/` (git paths use `/`).
 - Launcher: `partial_repo_sync_run.bat`.
 
-## ComfyUI launcher (run_comfyui.bat)
+### ComfyUI launcher (run_comfyui.bat)
 
 - Reads ComfyUI root from `config.json` (`Comfyui_root`/`comfyui_root`/`COMFYUI_ROOT`) or searches upward.
 - Lists `.venv*` folders and launches the selected `python.exe`.
@@ -162,7 +205,7 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 - Use `@no_update` in a preset to skip frontend package updates for that run.
 - Updates ComfyUI frontend packages before launch.
 
-## comfyui_pip_update_audit.py highlights
+### comfyui_pip_update_audit.py highlights
 
 - Scans `requirements.txt` only (root and top-level custom nodes).
 - Merges duplicate constraints and reports max allowed versions.
@@ -172,7 +215,7 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 - Treats inline comments in `requirements.txt` correctly (e.g. `pkg  # comment`).
 - Uses `uv pip install --dry-run` for checks and prints `uv pip install --python ...` commands when `uv` is on PATH (`--pip` forces pip); the header lists pip and uv equivalents. `--hide-unchanged` skips packages that need no action. The analysis lives in `pip_audit_core.py` (`run_audit()` returns data, no printing), the script only prompts and prints.
 
-## Hold / pin usage (comfyui_pip_update_audit.py)
+### Hold / pin usage (comfyui_pip_update_audit.py)
 
 - Hold: exclude packages from updates for the current env.
 - Pin: lock packages to a specific version for the current env.
@@ -187,6 +230,8 @@ python comfyui_pip_update_audit.py --unhold pkg1 pkg2
 python comfyui_pip_update_audit.py --pin pkg1==1.2.3 pkg2
 python comfyui_pip_update_audit.py --unpin pkg1 pkg2
 ```
+
+</details>
 
 ---
 
