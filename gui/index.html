@@ -55,9 +55,15 @@ tr.side td { background: color-mix(in srgb, var(--warn) 16%, transparent); }
 .risk { color: var(--warn); }
 .bad { color: var(--bad); }
 pre { margin: 0; padding: 12px; overflow: auto; background: var(--bg); font-size: 12px; white-space: pre-wrap; }
-#drawer { flex: none; background: var(--panel); border-top: 2px solid var(--accent); }
-#drawer pre { max-height: 34vh; }
+#drawer { flex: none; background: var(--panel); border-top: 2px solid var(--accent); position: relative; }
+#grip { position: absolute; left: 0; right: 0; top: -6px; height: 10px; cursor: ns-resize; z-index: 3; }
+#drawer pre { height: var(--logh, 200px); }
 #drawer.min pre { display: none; }
+#drawer .toolbar { padding: 6px 12px; }
+.l-add { color: var(--ok); } .l-del { color: var(--bad); } .l-err { color: var(--bad); font-weight: 600; } .l-warn { color: var(--warn); }
+.l-cmd { color: var(--accent); } .l-dim { color: var(--muted); }
+.l-head { display: block; color: var(--text); font-weight: 700; margin-top: 6px; padding-top: 4px; border-top: 1px dashed var(--line); }
+.l-head:first-child { margin-top: 0; border-top: none; padding-top: 0; }
 #extrapanel { flex: none; max-height: 26vh; overflow: auto; }
 details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
 .link { background: none; border: none; color: var(--accent); padding: 0 4px; }
@@ -111,9 +117,10 @@ h3 { margin: 12px 0 4px; font-size: 13px; }
     <details id="envd"><summary>comfy-env isolation</summary><div id="env"></div></details>
   </div>
 </main>
-<div id="drawer" hidden>
-  <div class="toolbar"><b id="logtitle">Output</b><span class="badge" id="logstatus"></span><span class="muted" id="logsummary"></span>
-    <span style="flex:1"></span><button id="logmin">minimize</button><button id="logclose">close</button></div>
+<div id="drawer">
+  <div id="grip" title="Drag to resize"></div>
+  <div class="toolbar"><b>Log</b><span class="badge" id="logstatus"></span><span id="logtitle" class="muted"></span><span class="muted" id="logsummary"></span>
+    <span style="flex:1"></span><button id="logcopy">copy</button><button id="logclear">clear</button><button id="logmin">minimize</button></div>
   <pre id="log"></pre>
 </div>
 <dialog id="dlg">
@@ -165,12 +172,12 @@ async function init() {
   try { const s = JSON.parse(localStorage.getItem("audit-ui") || "{}"); if (s.venv && [...$("venv").options].some(o => o.value === s.venv)) $("venv").value = s.venv; $("repo").checked = !!s.repo; $("pip").checked = !!s.pip; } catch (e) {}
 }
 
-function watch(jobId, onDone, logEl) {
+function watch(jobId, onDone, sink) {
   let since = 0;
   const tick = async () => {
     const j = await api(`/api/job/${jobId}?since=${since}`);
     since = j.next;
-    if (logEl && j.log.length) { logEl.textContent += j.log.join("\n") + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+    if (sink && j.log.length) sink(j.log);
     if (j.progress) { $("progress").style.display = "flex"; $("plabel").textContent = `${j.progress.label} ${j.progress.i}/${j.progress.n}`; $("pbar").style.width = (j.progress.n ? 100 * j.progress.i / j.progress.n : 0) + "%"; }
     if (j.status === "running") return setTimeout(tick, 500);
     $("progress").style.display = "none";
@@ -183,27 +190,73 @@ $("run").onclick = async () => {
   const venv = $("venv").value;
   localStorage.setItem("audit-ui", JSON.stringify({venv, repo: $("repo").checked, pip: $("pip").checked}));
   $("run").disabled = true; selected.clear();
+  showLog(`Audit: ${venv}`, "", "running");
   try {
     const {job} = await api("/api/audit", {venv, include_repo: $("repo").checked, force_pip: $("pip").checked});
     watch(job, j => {
       $("run").disabled = false;
-      if (j.status === "error") { showLog("Audit failed", j.error, "failed"); return; }
+      if (j.status === "error") { logAdd(["Audit failed: " + j.error]); setStatus("failed"); return; }
       data = j.result; rules.hold = new Set(data.hold); rules.pins = {...data.pins};
       buildFilters(); render();
       $("resultpanel").hidden = false;
       renderExtra();
-    });
-  } catch (e) { $("run").disabled = false; alert(e.message); }
+      const todo = data.rows.filter(r => !isUnchanged(r)).length;
+      logAdd([`Audit done: ${data.rows.length} packages, ${todo} need attention, ${data.vcs.length} VCS/URL entries.`]);
+      setStatus("done");
+    }, logAdd);
+  } catch (e) { $("run").disabled = false; logAdd(["Audit failed: " + e.message]); setStatus("failed"); }
 };
 
+const LOGRULES = [
+  [/^exit code [1-9]|error|×|failed|unsatisfiable|cannot be|conflict/i, "l-err"],
+  [/^updated as requested|^exit code 0|^audit done|^saved:/i, "l-add"],
+  [/warning|downgrade|side effect|risky|re-run the audit/i, "l-warn"],
+  [/^\s*\+ /, "l-add"], [/^\s*- /, "l-del"],
+  [/^> /, "l-cmd"],
+  [/^(Resolved|Prepared|Installed|Uninstalled|Using|Audited|Checked|Downloaded)/, "l-dim"],
+];
+function logAdd(lines) {
+  const el = $("log"), stick = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  lines.flatMap(l => String(l).split("\n")).forEach(l => {
+    const cls = (LOGRULES.find(([re]) => re.test(l)) || [])[1];
+    const sp = document.createElement("div");
+    sp.textContent = l || " "; if (cls) sp.className = cls;
+    el.appendChild(sp);
+  });
+  if (stick) el.scrollTop = el.scrollHeight;
+}
+function logHead(title) {
+  const h = document.createElement("div"); h.className = "l-head"; h.textContent = `${new Date().toLocaleTimeString()}  ${title}`;
+  $("log").appendChild(h); $("log").scrollTop = $("log").scrollHeight;
+}
 function showLog(title, text, status) {
-  $("drawer").hidden = false; $("drawer").classList.remove("min"); $("logmin").textContent = "minimize";
-  $("logtitle").textContent = title; $("log").textContent = text || ""; $("logsummary").textContent = "";
+  if ($("drawer").classList.contains("min")) $("logmin").onclick();
+  logHead(title); $("logtitle").textContent = title; $("logsummary").textContent = "";
+  if (text) logAdd([text]);
   setStatus(status || "running");
 }
-function setStatus(st) { const b = $("logstatus"); b.textContent = st; b.className = "badge " + (st === "done" ? "s-safe" : st === "running" ? "s-unknown" : "s-risky"); }
+function setStatus(st) {
+  const b = $("logstatus"); b.textContent = st;
+  b.className = "badge " + (st === "done" ? "s-safe" : st === "running" ? "s-unknown" : st === "idle" ? "s-ok" : "s-risky");
+}
+setStatus("idle");
 $("logmin").onclick = () => { const m = $("drawer").classList.toggle("min"); $("logmin").textContent = m ? "expand" : "minimize"; };
-$("logclose").onclick = () => { $("drawer").hidden = true; };
+$("logclear").onclick = () => { $("log").textContent = ""; $("logtitle").textContent = ""; $("logsummary").textContent = ""; setStatus("idle"); };
+$("logcopy").onclick = () => navigator.clipboard.writeText($("log").innerText).catch(() => {});
+// drag the top edge to change the log height; remembered between sessions
+(() => {
+  const set = h => document.documentElement.style.setProperty("--logh", Math.max(60, Math.min(h, window.innerHeight * 0.8)) + "px");
+  try { const h = parseInt(localStorage.getItem("log-h")); if (h) set(h); } catch (e) {}
+  $("grip").onpointerdown = e => {
+    e.preventDefault(); $("grip").setPointerCapture(e.pointerId);
+    const startY = e.clientY, startH = $("log").getBoundingClientRect().height;
+    $("grip").onpointermove = ev => set(startH + startY - ev.clientY);
+    $("grip").onpointerup = ev => {
+      $("grip").onpointermove = null; $("grip").onpointerup = null;
+      try { localStorage.setItem("log-h", String(Math.round($("log").getBoundingClientRect().height))); } catch (e) {}
+    };
+  };
+})();
 
 function buildFilters() {
   const nodes = [...new Set(data.rows.flatMap(r => r.used_in.map(u => u.repo)))].sort((a, b) => a.localeCompare(b));
@@ -287,10 +340,10 @@ async function preview() {
   const seq = ++previewSeq;
   $("dlgok").disabled = true; $("dlgnote").textContent = "";
   $("dlgbody").innerHTML = '<span class="muted">Checking what would change…</span>';
-  const logEl = document.createElement("pre"); logEl.textContent = "";
+  const buf = [];
   try {
     const {job} = await api("/api/install", {venv: data.venv, packages: pending.pkgs, force_pip: $("pip").checked, protect: protectMode(), dry_run: true});
-    watch(job, j => { if (seq === previewSeq) showPreview(j, logEl); }, logEl);
+    watch(job, j => { if (seq === previewSeq) showPreview(j, buf); }, lines => buf.push(...lines));
   } catch (e) { $("dlgbody").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 }
 
@@ -301,10 +354,10 @@ function chgRow(c, extra) {
   return `<div class="chg"><span class="mono">${esc(c.name)}${hold}</span><span class="mono ${down ? "bad" : extra ? "risk" : ""}">${esc(c.from || "—")} → ${esc(c.to || "—")} ${what ? `<b>${what}</b>` : ""}</span></div>`;
 }
 
-function showPreview(j, logEl) {
+function showPreview(j, buf) {
   if (j.status === "error" || j.result.exit_code !== 0) {
     $("dlgbody").innerHTML = '<div class="bad"><b>This cannot be installed with the chosen protection.</b> Pick a weaker option, or hold/pin differently.</div>';
-    const pre = document.createElement("pre"); pre.textContent = (j.error ? j.error + "\n" : "") + logEl.textContent.split("\n").slice(-14).join("\n");
+    const pre = document.createElement("pre"); pre.textContent = (j.error ? j.error + "\n" : "") + buf.slice(-14).join("\n");
     $("dlgbody").appendChild(pre); $("dlgok").disabled = true; return;
   }
   const want = new Set(pending.items.map(i => i.name));
@@ -329,7 +382,7 @@ async function doInstall(protect) {
     watch(job, j => {
       finish();
       if (j.status === "error" || j.result.exit_code !== 0) {
-        setStatus("failed"); if (j.error) $("log").textContent += "\n" + j.error;
+        setStatus("failed"); if (j.error) logAdd([j.error]);
         $("logsummary").textContent = "the table was not changed, check the output"; return;
       }
       const want = Object.fromEntries(items.map(i => [i.name, i.ver]));
@@ -347,15 +400,14 @@ async function doInstall(protect) {
       });
       const fmt = c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`;
       setStatus("done");
-      $("log").textContent += `\n\nUpdated as requested: ${done.length}` + (done.length ? "\n  " + done.map(fmt).join("\n  ") : "")
+      logAdd([`\nUpdated as requested: ${done.length}` + (done.length ? "\n  " + done.map(fmt).join("\n  ") : "")
         + (side.length ? `\nChanged as a side effect (in the table, highlighted): ${side.length}\n  ` + side.map(fmt).join("\n  ") : "")
         + (other.length ? `\nChanged, not in the table: ${other.length}\n  ` + other.map(fmt).join("\n  ") : "")
-        + (side.length + other.length ? "\nRe-run the audit to re-check the packages that changed as side effects." : "");
+        + (side.length + other.length ? "\nRe-run the audit to re-check the packages that changed as side effects." : "")]);
       $("logsummary").textContent = `${done.length} updated` + (side.length + other.length ? `, ${side.length + other.length} changed by dependencies` : "");
-      $("log").scrollTop = $("log").scrollHeight;
       buildFilters(); render();
-    }, $("log"));
-  } catch (e) { finish(); setStatus("failed"); $("log").textContent += "\n" + e.message; }
+    }, logAdd);
+  } catch (e) { finish(); setStatus("failed"); logAdd([e.message]); }
 }
 
 $("selsafe").onclick = () => { data.rows.filter(r => r.state === "safe").forEach(r => selected.add(r.name)); render(); };
