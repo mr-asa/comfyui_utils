@@ -59,6 +59,10 @@ $Shortcuts = @(
   @{
     name   = "Build New Venv"
     target = "build_venv_run.bat"
+  },
+  @{
+    name   = "Utils GUI"
+    target = "utils_gui_run.bat"
   }
 )
 

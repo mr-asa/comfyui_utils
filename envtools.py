@@ -10,10 +10,13 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import List, Tuple
 
 from packaging.markers import Marker
 from packaging.requirements import Requirement
+
+from comfyui_root import default_custom_nodes
 
 REQ_FILE_RE = re.compile(r"^requirements\.txt$", re.I)
 
@@ -64,6 +67,22 @@ def quote_cmd_part(part: str) -> str:
     if re.search(r"\s", part):
         return f'"{part}"'
     return part
+
+
+def custom_nodes_paths(cfg: dict, comfy_root: str = "") -> List[str]:
+    """custom_nodes folders from a legacy-style config (falls back to <root>/custom_nodes)."""
+    paths: List[str] = []
+    raw_list = cfg.get("custom_nodes_paths")
+    if isinstance(raw_list, list):
+        for p in raw_list:
+            if isinstance(p, str) and p.strip():
+                paths.append(p.strip())
+    cn = cfg.get("custom_nodes_path")
+    if isinstance(cn, str) and cn.strip():
+        paths.append(cn.strip())
+    if not paths and comfy_root:
+        paths.append(str(default_custom_nodes(Path(comfy_root))))
+    return dedupe_dirs(paths)
 
 
 def enabled_node_dirs(custom_nodes: str) -> List[str]:

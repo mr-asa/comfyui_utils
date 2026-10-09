@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComfyUI Utils</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #667085; --line: #e1e5ec;
+  --accent: #3b6ef5; --ok: #1a8f4c; --warn: #b7791f; --bad: #c0392b; --info: #0e7490;
+  --chip: #eef1f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171d; --panel: #1c2028; --text: #e6e9f0; --muted: #98a2b3; --line: #2b313c;
+    --accent: #6d94ff; --ok: #4cc27e; --warn: #e0a64a; --bad: #ef6b5b; --info: #4cc3dc; --chip: #262b35;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 15px; margin: 0 8px 0 0; }
+main { padding: 16px; max-width: 1500px; margin: 0 auto; }
+select, input[type=text], button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); }
+.bar { height: 6px; background: var(--chip); border-radius: 3px; width: 220px; overflow: hidden; }
+.bar > div { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+.progress { display: none; align-items: center; gap: 8px; color: var(--muted); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 14px; }
+.filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.chip { padding: 2px 9px; border-radius: 999px; background: var(--chip); border: 1px solid transparent; cursor: pointer; color: var(--muted); user-select: none; }
+.chip.on { border-color: var(--accent); color: var(--text); }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 600; cursor: pointer; white-space: nowrap; }
+tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.badge { padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; white-space: nowrap; }
+.s-safe { color: var(--ok); } .s-ok { color: var(--muted); } .s-risky { color: var(--bad); } .s-unknown { color: var(--warn); }
+.s-missing { color: var(--info); } .s-downgrade { color: var(--warn); } .s-held, .s-pinned { color: var(--accent); } .s-pin-mismatch { color: var(--bad); }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.muted { color: var(--muted); }
+.issue { color: var(--bad); max-width: 460px; overflow-wrap: anywhere; font-size: 12px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; }
+pre { margin: 0; padding: 12px; max-height: 320px; overflow: auto; background: var(--bg); border-radius: 0 0 8px 8px; font-size: 12px; white-space: pre-wrap; }
+details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
+.link { background: none; border: none; color: var(--accent); padding: 0 4px; }
+@media (max-width: 700px) { main { padding: 8px; } header { padding: 8px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>ComfyUI Utils · pip audit</h1>
+  <label>venv <select id="venv"></select></label>
+  <label><input type="checkbox" id="repo"> include custom_nodes_repo</label>
+  <label><input type="checkbox" id="pip"> use pip instead of uv</label>
+  <button class="primary" id="run">Run audit</button>
+  <div class="progress" id="progress"><span id="plabel"></span><div class="bar"><div id="pbar"></div></div></div>
+  <span class="muted" id="info"></span>
+</header>
+<main>
+  <div class="panel" id="resultpanel" hidden>
+    <div class="filters">
+      <input type="text" id="search" placeholder="Filter packages…" size="22">
+      <label><input type="checkbox" id="hide" checked> hide unchanged</label>
+      <select id="node"><option value="">all nodes</option></select>
+      <span id="chips"></span>
+      <span class="muted" id="count"></span>
+    </div>
+    <div class="toolbar">
+      <button id="selsafe">Select safe</button>
+      <button id="selvis">Select visible</button>
+      <button id="selnone">Clear</button>
+      <button class="primary" id="install">Install selected</button>
+      <span class="muted" id="selinfo"></span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th></th><th data-k="name">Package</th><th data-k="installed">Installed</th><th data-k="target">Target</th><th data-k="state">State</th><th>Used in</th><th>Issue</th><th>Rule</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+  </div>
+  <div class="panel" id="logpanel" hidden>
+    <div class="toolbar"><b id="logtitle">Output</b></div>
+    <pre id="log"></pre>
+  </div>
+  <div class="panel" id="extrapanel" hidden>
+    <details id="vcsd"><summary>VCS / URL requirements</summary><div id="vcs"></div></details>
+    <details id="envd"><summary>comfy-env isolation</summary><div id="env"></div></details>
+  </div>
+</main>
+<script>
+const TOKEN = "__TOKEN__";
+const $ = id => document.getElementById(id);
+const STATES = ["safe", "risky", "unknown", "missing", "downgrade", "held", "pinned", "pin-mismatch", "ok"];
+let data = null, rules = {hold: new Set(), pins: {}}, selected = new Set(), activeStates = new Set(STATES.filter(s => s !== "ok"));
+let sortKey = "state", sortDir = 1;
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : {method: "POST", headers: {"X-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify(body)};
+  const r = await fetch(path, opt);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+
+async function init() {
+  const st = await api("/api/state");
+  $("venv").innerHTML = st.venvs.filter(v => v.exists === "1").map(v => `<option value="${esc(v.name)}" ${v.selected === "1" ? "selected" : ""}>${esc(v.name)}${v.comment ? " — " + esc(v.comment) : ""}</option>`).join("");
+  $("info").textContent = st.uv ? "uv found" : "uv not found, pip will be used";
+  try { const s = JSON.parse(localStorage.getItem("audit-ui") || "{}"); if (s.venv && [...$("venv").options].some(o => o.value === s.venv)) $("venv").value = s.venv; $("repo").checked = !!s.repo; $("pip").checked = !!s.pip; } catch (e) {}
+}
+
+function watch(jobId, onDone, logEl) {
+  let since = 0;
+  const tick = async () => {
+    const j = await api(`/api/job/${jobId}?since=${since}`);
+    since = j.next;
+    if (logEl && j.log.length) { logEl.textContent += j.log.join("\n") + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+    if (j.progress) { $("progress").style.display = "flex"; $("plabel").textContent = `${j.progress.label} ${j.progress.i}/${j.progress.n}`; $("pbar").style.width = (j.progress.n ? 100 * j.progress.i / j.progress.n : 0) + "%"; }
+    if (j.status === "running") return setTimeout(tick, 500);
+    $("progress").style.display = "none";
+    onDone(j);
+  };
+  tick();
+}
+
+$("run").onclick = async () => {
+  const venv = $("venv").value;
+  localStorage.setItem("audit-ui", JSON.stringify({venv, repo: $("repo").checked, pip: $("pip").checked}));
+  $("run").disabled = true; selected.clear();
+  try {
+    const {job} = await api("/api/audit", {venv, include_repo: $("repo").checked, force_pip: $("pip").checked});
+    watch(job, j => {
+      $("run").disabled = false;
+      if (j.status === "error") { showLog("Audit failed", j.error); return; }
+      data = j.result; rules.hold = new Set(data.hold); rules.pins = {...data.pins};
+      buildFilters(); render();
+      $("resultpanel").hidden = false;
+      renderExtra();
+    });
+  } catch (e) { $("run").disabled = false; alert(e.message); }
+};
+
+function showLog(title, text) { $("logpanel").hidden = false; $("logtitle").textContent = title; $("log").textContent = text || ""; }
+
+function buildFilters() {
+  const nodes = [...new Set(data.rows.flatMap(r => r.used_in.map(u => u.repo)))].sort((a, b) => a.localeCompare(b));
+  $("node").innerHTML = '<option value="">all nodes</option>' + nodes.map(n => `<option>${esc(n)}</option>`).join("");
+  const counts = {}; data.rows.forEach(r => counts[r.state] = (counts[r.state] || 0) + 1);
+  $("chips").innerHTML = STATES.filter(s => counts[s]).map(s => `<span class="chip ${activeStates.has(s) ? "on" : ""}" data-s="${s}">${s} ${counts[s]}</span>`).join(" ");
+  $("chips").querySelectorAll(".chip").forEach(c => c.onclick = () => { const s = c.dataset.s; activeStates.has(s) ? activeStates.delete(s) : activeStates.add(s); c.classList.toggle("on"); render(); });
+}
+
+function visibleRows() {
+  const q = $("search").value.trim().toLowerCase(), node = $("node").value, hide = $("hide").checked;
+  const rows = data.rows.filter(r => activeStates.has(r.state)
+    && !(hide && r.state === "ok")
+    && (!q || r.name.includes(q))
+    && (!node || r.used_in.some(u => u.repo === node)));
+  rows.sort((a, b) => (a[sortKey] > b[sortKey] ? 1 : a[sortKey] < b[sortKey] ? -1 : 0) * sortDir || a.name.localeCompare(b.name));
+  return rows;
+}
+
+function spec(r) { return r.safe_update || (r.state === "missing" || r.state === "downgrade" ? r.target : "") || ""; }
+
+function render() {
+  if (!data) return;
+  const rows = visibleRows();
+  $("count").textContent = `${rows.length} of ${data.rows.length}`;
+  $("rows").innerHTML = rows.map(r => {
+    const held = rules.hold.has(r.name), pin = rules.pins[r.name];
+    const used = r.used_in.map(u => `<span title="${esc(u.spec || "no specifier")}">${esc(u.repo)}</span>`).join(", ");
+    const to = r.safe_update && r.safe_update !== r.target ? `${esc(r.target)} <span class="muted">(safe ${esc(r.safe_update)})</span>` : esc(r.target);
+    return `<tr><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
+      <td class="mono">${esc(r.name)}</td><td class="mono">${esc(r.installed) || "—"}</td><td class="mono">${to || "—"}</td>
+      <td><span class="badge s-${r.state}">${r.state}</span></td><td>${used}</td><td class="issue">${esc(r.issue)}</td>
+      <td>${held ? `<button class="link" data-a="unhold" data-n="${esc(r.name)}">unhold</button>` : `<button class="link" data-a="hold" data-n="${esc(r.name)}">hold</button>`}
+          ${pin ? `<button class="link" data-a="unpin" data-n="${esc(r.name)}">unpin ${esc(pin)}</button>` : r.installed ? `<button class="link" data-a="pin" data-n="${esc(r.name)}">pin ${esc(r.installed)}</button>` : ""}</td></tr>`;
+  }).join("");
+  $("rows").querySelectorAll("input[type=checkbox]").forEach(cb => cb.onchange = () => { cb.checked ? selected.add(cb.dataset.n) : selected.delete(cb.dataset.n); updateSel(); });
+  $("rows").querySelectorAll("button[data-a]").forEach(b => b.onclick = () => rule(b.dataset.a, b.dataset.n));
+  updateSel();
+}
+
+function updateSel() { $("selinfo").textContent = selected.size ? `${selected.size} selected` : ""; $("install").disabled = !selected.size; }
+
+async function rule(action, name) {
+  const row = data.rows.find(r => r.name === name);
+  if (action === "hold") rules.hold.add(name);
+  if (action === "unhold") rules.hold.delete(name);
+  if (action === "pin") rules.pins[name] = row.installed;
+  if (action === "unpin") delete rules.pins[name];
+  await api("/api/rules", {venv: data.venv, hold: [...rules.hold], pins: rules.pins});
+  row.state = rules.pins[name] ? (rules.pins[name] === row.installed ? "pinned" : "pin-mismatch") : rules.hold.has(name) ? "held" : (row.action ? "upgrade" : "ok");
+  render();
+}
+
+function renderExtra() {
+  const vcs = data.vcs.map(v => `<div class="mono">${esc(v.name || "?")} <span class="muted">${esc(v.repo)}</span> ${esc(v.raw)} — ${v.installed ? "installed " + esc(v.installed) : "missing"}${v.need_install ? " (will install)" : ""}</div>`).join("");
+  $("vcs").innerHTML = vcs || '<span class="muted">none</span>';
+  const env = data.comfy_env.map(e => `<div><b>${esc(e.repo)}</b> ${e.isolations.map(i => `<span class="badge ${i.built ? (i.stale ? "s-unknown" : "s-safe") : "s-risky"}">${esc(i.env)}: ${i.built ? (i.stale ? "stale" : "ok") : "missing"}</span>`).join(" ")}</div>`).join("");
+  $("env").innerHTML = env || '<span class="muted">none</span>';
+  $("extrapanel").hidden = false;
+}
+
+$("install").onclick = async () => {
+  const pkgs = [...selected].map(n => { const r = data.rows.find(x => x.name === n); const v = spec(r) || r.risky_update; return v ? `${n}==${v}` : null; }).filter(Boolean);
+  if (!pkgs.length) return alert("Nothing to install for the selected rows.");
+  const risky = [...selected].filter(n => data.rows.find(x => x.name === n).state === "risky");
+  if (!confirm(`Install ${pkgs.length} package(s) into ${data.venv}?` + (risky.length ? `\n\nRisky: ${risky.join(", ")}` : "") + "\n\n" + pkgs.join("\n"))) return;
+  showLog("Install", "");
+  const {job} = await api("/api/install", {venv: data.venv, packages: pkgs, force_pip: $("pip").checked});
+  watch(job, j => { $("log").textContent += j.status === "error" ? "\n" + j.error : "\nDone. Run the audit again to refresh."; });
+};
+
+$("selsafe").onclick = () => { data.rows.filter(r => r.state === "safe").forEach(r => selected.add(r.name)); render(); };
+$("selvis").onclick = () => { visibleRows().forEach(r => selected.add(r.name)); render(); };
+$("selnone").onclick = () => { selected.clear(); render(); };
+["search", "hide", "node"].forEach(id => $(id).oninput = render);
+document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => { sortDir = sortKey === th.dataset.k ? -sortDir : 1; sortKey = th.dataset.k; render(); });
+init().catch(e => alert(e.message));
+</script>
+</body>
+</html>

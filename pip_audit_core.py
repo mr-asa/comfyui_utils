@@ -859,6 +859,43 @@ def package_action(r: PackageReport) -> Optional[str]:
     return None
 
 
+def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> List[dict]:
+    """One JSON-friendly row per package: what a table (or a GUI) needs without touching the dataclasses."""
+    safe = dict(result.safe)
+    risky = dict(result.risky)
+    unknown = dict(result.unknown)
+    rows = []
+    for n in result.names:
+        r = result.reports[n]
+        action = package_action(r)
+        pin_off = n in pin_map and str(r.installed) != pin_map[n]
+        if n in pin_map:
+            state = "pin-mismatch" if pin_off else "pinned"
+        elif n in hold_set:
+            state = "held"
+        elif action == "install":
+            state = "missing"
+        elif action == "downgrade":
+            state = "downgrade"
+        elif action == "upgrade":
+            state = "safe" if n in safe else "risky" if n in risky else "unknown" if n in unknown else "upgrade"
+        else:
+            state = "ok"
+        rows.append({
+            "name": n,
+            "installed": str(r.installed) if r.installed else "",
+            "target": str(r.installable_max or r.max_allowed or ""),
+            "safe_update": str(safe.get(n) or r.safe_update or ""),
+            "risky_update": str(risky.get(n) or r.risky_update or ""),
+            "action": action or "",
+            "state": state,
+            "issue": r.update_error or r.availability_issue or "",
+            "pin": pin_map.get(n, ""),
+            "used_in": [{"repo": c.repo, "spec": str(c.spec)} for c in r.constraints],
+        })
+    return rows
+
+
 def run_audit(
     cfg: dict,
     comfy_root: str,

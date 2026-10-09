@@ -723,3 +723,19 @@ def emit_env_lines(cfg_v2: Dict[str, Any], venv_name: Optional[str] = None) -> L
         if not name:
             continue
         venvs[name]["comment"] = str(raw_comment or "").strip()
+
+
+def get_pip_rules(cfg_v2: Dict[str, Any], venv_name: str) -> Tuple[List[str], Dict[str, str]]:
+    """(hold_packages, pin_packages) of one venv."""
+    cfg = _sanitize_v2(cfg_v2)
+    entry = _ensure_dict(_ensure_dict(_ensure_dict(cfg.get("environments")).get("venvs")).get(venv_name))
+    pip = _ensure_dict(entry.get("pip"))
+    return list(pip.get("hold_packages", [])), dict(pip.get("pin_packages", {}))
+
+
+def set_pip_rules(cfg_v2: Dict[str, Any], venv_name: str, hold: List[str], pins: Dict[str, str]) -> Dict[str, Any]:
+    cfg = _sanitize_v2(cfg_v2)
+    venvs = _ensure_dict(_ensure_dict(cfg.get("environments")).get("venvs"))
+    if venv_name in venvs:
+        venvs[venv_name]["pip"] = {"hold_packages": sorted(set(hold)), "pin_packages": dict(sorted(pins.items()))}
+    return cfg

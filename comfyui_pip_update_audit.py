@@ -444,6 +444,7 @@ from colorama import init as colorama_init, Fore, Style
 
 from comfyui_root import default_custom_nodes, resolve_comfyui_root
 from envtools import (
+    custom_nodes_paths,
     dedupe_dirs,
     install_prefix,
     python_cmd,
@@ -504,7 +505,7 @@ def load_or_init_config(path: str) -> dict:
 
 def guess_paths(cfg: dict, comfy_root: Optional[str] = None) -> Tuple[str, List[str]]:
     root = str(comfy_root) if comfy_root else ""
-    paths = _load_custom_nodes_paths(cfg, root)
+    paths = custom_nodes_paths(cfg, root)
     if paths:
         return root or os.path.dirname(paths[0].rstrip("\\/")), paths
     sys.exit("custom_nodes_path missing in config.json")
@@ -512,21 +513,6 @@ def guess_paths(cfg: dict, comfy_root: Optional[str] = None) -> Tuple[str, List[
 
 def _norm_path(path: str) -> str:
     return os.path.normpath(path.strip())
-
-
-def _load_custom_nodes_paths(cfg: dict, comfy_root: str = "") -> List[str]:
-    paths: List[str] = []
-    raw_list = cfg.get("custom_nodes_paths")
-    if isinstance(raw_list, list):
-        for p in raw_list:
-            if isinstance(p, str) and p.strip():
-                paths.append(p.strip())
-    cn = cfg.get("custom_nodes_path")
-    if isinstance(cn, str) and cn.strip():
-        paths.append(cn.strip())
-    if not paths and comfy_root:
-        paths.append(str(default_custom_nodes(Path(comfy_root))))
-    return dedupe_dirs(paths)
 
 
 def _get_custom_nodes_repo_path(cfg: dict) -> str:
