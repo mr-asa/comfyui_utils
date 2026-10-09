@@ -105,6 +105,11 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .s-linked { color: var(--ok); } .s-unlinked { color: var(--muted); border-style: dashed; } .s-junk { color: var(--bad); } .s-external { color: var(--info); } .s-direct { color: var(--warn); }
 .star { font-size: 15px; padding: 0 2px; } .star.on { color: var(--warn); }
 .cell-up { color: var(--ok); font-weight: 600; } .cell-down { color: var(--bad); font-weight: 600; } .cell-mid { color: var(--warn); font-weight: 600; } .cell-miss { color: var(--warn); }
+.clr { position: relative; display: inline-flex; align-items: center; }
+.clr input { padding-right: 20px; }
+.clr .x { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); border: none; background: none; color: var(--muted); padding: 0 4px; cursor: pointer; display: none; font-size: 14px; line-height: 1; }
+.clr.has .x { display: block; } .clr .x:hover { color: var(--text); }
+button.tag { border: none; cursor: pointer; } button.tag:hover { color: var(--text); }
 .tag { padding: 0 7px; border-radius: 999px; background: var(--chip); color: var(--muted); font-size: 12px; margin-right: 4px; }
 
 /* control rows: a small label on the left, the controls of one purpose on the right */
@@ -261,6 +266,7 @@ header .spacer { flex: 1; }
       <button id="n-papply">Apply…</button><button id="n-psave">Save current as…</button><button id="n-pdel" class="danger">Delete</button>
       <span class="sep"></span>
       <label>tag <input type="text" id="n-tagname" size="12" list="n-taglist"></label><datalist id="n-taglist"></datalist>
+      <button id="n-tagsel" title="Select every node that has this tag (the field above, or the tag filter)">Select by tag</button>
       <button id="n-tagadd">Tag selected</button><button id="n-tagdel">Untag selected</button>
     </div>
     <div class="tablewrap"><table>
@@ -967,7 +973,8 @@ function nRender() {
   $("n-count").textContent = `${rows.length} of ${nodes.rows.length}`;
   $("n-rows").innerHTML = rows.map(r => `<tr><td><input type="checkbox" data-n="${esc(r.name)}" ${nSel.has(r.name) ? "checked" : ""}></td>
     <td class="mono">${r.web_url ? `<a href="${esc(r.web_url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name)}${r.in_repo ? "" : ' <span class="muted">(not in repo)</span>'}</td><td><span class="badge s-${r.kind}">${r.kind}</span></td>
-    <td>${r.tags.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</td><td class="muted trunc" title="${esc(r.target)}">${esc(r.target)}</td></tr>`).join("");
+    <td>${r.tags.map(t => `<button class="tag" data-tag="${esc(t)}" title="Show only nodes with this tag">${esc(t)}</button>`).join("")}</td><td class="muted trunc" title="${esc(r.target)}">${esc(r.target)}</td></tr>`).join("");
+  $("n-rows").querySelectorAll("button[data-tag]").forEach(b => b.onclick = () => { $("n-tag").value = b.dataset.tag; nRender(); });
   $("n-rows").querySelectorAll("input[type=checkbox]").forEach(cb => cb.onchange = () => { cb.checked ? nSel.add(cb.dataset.n) : nSel.delete(cb.dataset.n); $("n-selinfo").textContent = nSel.size ? `${nSel.size} selected` : ""; });
   $("n-selinfo").textContent = nSel.size ? `${nSel.size} selected` : "";
 }
@@ -1002,6 +1009,13 @@ $("n-psave").onclick = async () => {
   if (r && r.exists && confirm(`Preset "${name}" exists. Overwrite?`)) await nAct({action: "preset_save", preset: name, overwrite: true, names: []}, "Save preset");
 };
 $("n-pdel").onclick = () => { const preset = $("n-preset").value; if (preset && confirm(`Delete preset "${preset}"?`)) nAct({action: "preset_delete", preset, names: []}, "Delete preset"); };
+$("n-tagsel").onclick = () => {
+  const tag = ($("n-tagname").value.trim() || $("n-tag").value).toLowerCase();
+  if (!tag) return alert("Type a tag in the field, or pick one in the tag filter.");
+  const hit = nodes.rows.filter(r => r.tags.some(t => t.toLowerCase() === tag));
+  hit.forEach(r => nSel.add(r.name)); nRender();
+  $("n-selinfo").textContent = `${nSel.size} selected (${hit.length} with tag "${tag}")`;
+};
 $("n-tagadd").onclick = () => needSel() && $("n-tagname").value.trim() && nAct({action: "tag_add", tag: $("n-tagname").value, names: nNames()}, "Tag nodes");
 $("n-tagdel").onclick = () => needSel() && $("n-tagname").value.trim() && nAct({action: "tag_remove", tag: $("n-tagname").value, names: nNames()}, "Untag nodes");
 $("n-selvis").onclick = () => { nVisible().forEach(r => nSel.add(r.name)); nRender(); };
@@ -1093,6 +1107,18 @@ $("c-all").onclick = () => document.querySelectorAll(".cv").forEach(c => c.check
 $("c-none").onclick = () => document.querySelectorAll(".cv").forEach(c => c.checked = false);
 $("c-runall").onclick = () => { $("c-all").onclick(); $("c-run").onclick(); };
 ["c-search", "c-diff", "c-fav"].forEach(id => $(id).oninput = cRender);
+// a click-to-clear "x" inside every text field
+document.querySelectorAll("input[type=text]").forEach(inp => {
+  const wrap = document.createElement("span"); wrap.className = "clr";
+  inp.parentNode.insertBefore(wrap, inp); wrap.appendChild(inp);
+  const x = document.createElement("button"); x.type = "button"; x.className = "x"; x.title = "Clear"; x.textContent = "×";
+  wrap.appendChild(x);
+  const sync = () => wrap.classList.toggle("has", !!inp.value);
+  inp.addEventListener("input", sync);
+  x.onclick = () => { inp.value = ""; sync(); inp.dispatchEvent(new Event("input", {bubbles: true})); inp.focus(); };
+  sync();
+});
+
 let firstTab = "build";
 try { firstTab = localStorage.getItem("tab") || firstTab; } catch (e) {}
 if (location.hash.length > 1) firstTab = location.hash.slice(1);  // e.g. http://127.0.0.1:8765/#audit
