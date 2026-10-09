@@ -18,12 +18,12 @@ Needs: Python with `requests` and `packaging` (any ComfyUI venv has them) and [`
 
 | Tab | What it is for |
 |---|---|
-| **Build venv** | Plan and build a fresh venv: picks the Python / CUDA / torch combination for which all your node requirements resolve and the most prebuilt wheels exist, then installs it with `uv`. |
-| **Repos** | Scan ComfyUI and all custom nodes (fetch, ahead / behind, local changes), read the incoming commits, update with a policy for local changes, add a node by URL, unlink or delete. |
-| **Pip audit** | Compare installed packages with the requirements of all nodes. States safe / safe +deps / risky, install preview with dependency changes, versions list, hold / pin, wheel updates. |
-| **Nodes** | Junction links between your node repo and `custom_nodes`: link / unlink, presets, tags, select by tag. |
-| **Workflows** | The same scan / update / add / delete for workflow sources, including partial (folder-only) sources. |
-| **Compare venvs** | Package versions side by side with colors; favorites (the key modules) are editable with undo. |
+| <img src="ico/build_venv_run.ico" width="16" height="16" alt=""> **Build venv** | Plan and build a fresh venv: picks the Python / CUDA / torch combination for which all your node requirements resolve and the most prebuilt wheels exist, then installs it with `uv`. |
+| <img src="ico/update_comfy_repos_run.ico" width="16" height="16" alt=""> **Repos** | Scan ComfyUI and all custom nodes (fetch, ahead / behind, local changes), read the incoming commits, update with a policy for local changes, add a node by URL, unlink or delete. |
+| <img src="ico/comfyui_pip_update_audit_run.ico" width="16" height="16" alt=""> **Pip audit** | Compare installed packages with the requirements of all nodes. States safe / safe +deps / risky, install preview with dependency changes, versions list, hold / pin, wheel updates. |
+| <img src="ico/custom_nodes_link_manager_run.ico" width="16" height="16" alt=""> **Nodes** | Junction links between your node repo and `custom_nodes`: link / unlink, presets, tags, select by tag. |
+| <img src="ico/update_workflow_repos_run.ico" width="16" height="16" alt=""> **Workflows** | The same scan / update / add / delete for workflow sources, including partial (folder-only) sources. |
+| <img src="ico/compare_venv_versions_run.ico" width="16" height="16" alt=""> **Compare venvs** | Package versions side by side with colors; favorites (the key modules) are editable with undo. |
 
 Common to all tabs: a log panel at the bottom (resizable, clearable, colored), long jobs can be cancelled, confirmations before anything destructive.
 
