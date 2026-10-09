@@ -149,7 +149,7 @@ const RANK = Object.fromEntries(STATES.map((s, i) => [s, i]));
 const LABEL = {"safe-deps": "safe +deps", "wheel-update": "wheel update", "wheel": "from wheel"};
 const sideTip = r => (r.side_changes || []).map(c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`).join("\n");
 let data = null, rules = {hold: new Set(), pins: {}}, selected = new Set(), activeStates = new Set(STATES);
-let sortKey = "state", sortDir = 1, pending = null, previewSeq = 0;
+let sortKey = "state", sortDir = 1, pending = null, previewSeq = 0, auditJob = null, previewJob = null;
 
 // what "Install selected" will put into the venv for a row
 function plan(r) {
@@ -193,14 +193,22 @@ function watch(jobId, onDone, sink) {
 }
 
 $("run").onclick = async () => {
+  if (auditJob) {  // running: this button cancels
+    $("run").disabled = true; $("run").textContent = "Cancelling…";
+    api("/api/cancel", {job: auditJob}).catch(e => logAdd([e.message]));
+    return;
+  }
   const venv = $("venv").value;
   localStorage.setItem("audit-ui", JSON.stringify({venv, repo: $("repo").checked, pip: $("pip").checked, remotewh: $("remotewh").checked}));
-  $("run").disabled = true; selected.clear();
+  selected.clear();
   showLog(`Audit: ${venv}`, "", "running");
+  const idle = () => { auditJob = null; $("run").disabled = false; $("run").textContent = "Run audit"; };
   try {
     const {job} = await api("/api/audit", {venv, include_repo: $("repo").checked, force_pip: $("pip").checked, remote_wheels: $("remotewh").checked});
+    auditJob = job; $("run").textContent = "Cancel audit";
     watch(job, j => {
-      $("run").disabled = false;
+      idle();
+      if (j.status === "cancelled") { logAdd(["Audit cancelled."]); setStatus("cancelled"); return; }
       if (j.status === "error") { logAdd(["Audit failed: " + j.error]); setStatus("failed"); return; }
       data = j.result; rules.hold = new Set(data.hold); rules.pins = {...data.pins};
       buildFilters(); render();
@@ -210,7 +218,7 @@ $("run").onclick = async () => {
       logAdd([`Audit done: ${data.rows.length} packages, ${todo} need attention, ${data.vcs.length} VCS/URL entries.`]);
       setStatus("done");
     }, logAdd);
-  } catch (e) { $("run").disabled = false; logAdd(["Audit failed: " + e.message]); setStatus("failed"); }
+  } catch (e) { idle(); logAdd(["Audit failed: " + e.message]); setStatus("failed"); }
 };
 
 const LOGRULES = [
@@ -244,7 +252,7 @@ function showLog(title, text, status) {
 }
 function setStatus(st) {
   const b = $("logstatus"); b.textContent = st;
-  b.className = "badge " + (st === "done" ? "s-safe" : st === "running" ? "s-unknown" : st === "idle" ? "s-ok" : "s-risky");
+  b.className = "badge " + (st === "done" ? "s-safe" : st === "running" || st === "cancelled" ? "s-unknown" : st === "idle" ? "s-ok" : "s-risky");
 }
 setStatus("idle");
 $("logmin").onclick = () => { const m = $("drawer").classList.toggle("min"); $("logmin").textContent = m ? "expand" : "minimize"; };
@@ -346,10 +354,13 @@ $("install").onclick = () => {
   $("dlg").showModal();
   preview();
 };
-$("dlgcancel").onclick = () => $("dlg").close();
+const stopPreview = () => { previewSeq++; if (previewJob) api("/api/cancel", {job: previewJob}).catch(() => {}); previewJob = null; };
+$("dlgcancel").onclick = () => { stopPreview(); $("dlg").close(); };
+$("dlg").addEventListener("cancel", stopPreview);
 document.querySelectorAll("input[name=protect]").forEach(r => r.onchange = () => pending && preview());
 
 async function preview() {
+  if (previewJob) api("/api/cancel", {job: previewJob}).catch(() => {});
   const seq = ++previewSeq;
   $("dlgok").disabled = true; $("dlgnote").textContent = "";
   if (!pypiItems().length) return showPreview({status: "done", result: {exit_code: 0, changes: []}}, []);
@@ -357,7 +368,8 @@ async function preview() {
   const buf = [];
   try {
     const {job} = await api("/api/install", {venv: data.venv, packages: pypiPkgs(), force_pip: $("pip").checked, protect: protectMode(), dry_run: true});
-    watch(job, j => { if (seq === previewSeq) showPreview(j, buf); }, lines => buf.push(...lines));
+    previewJob = job;
+    watch(job, j => { if (seq === previewSeq && j.status !== "cancelled") showPreview(j, buf); }, lines => buf.push(...lines));
   } catch (e) { $("dlgbody").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 }
 

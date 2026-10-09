@@ -41,8 +41,12 @@ CONFIG_LOCK = threading.Lock()
 JOBS: Dict[str, dict] = {}
 
 
+class JobCancelled(Exception):
+    pass
+
+
 def new_job(kind: str) -> dict:
-    job = {"id": secrets.token_hex(4), "kind": kind, "status": "running", "progress": None, "log": [], "result": None, "error": ""}
+    job = {"id": secrets.token_hex(4), "kind": kind, "status": "running", "progress": None, "log": [], "result": None, "error": "", "cancel": threading.Event()}
     JOBS[job["id"]] = job
     return job
 
@@ -52,6 +56,9 @@ def run_in_thread(job: dict, fn, *args) -> None:
         try:
             job["result"] = fn(job, *args)
             job["status"] = "done"
+        except JobCancelled:
+            job["log"].append("cancelled")
+            job["status"] = "cancelled"
         except BaseException as e:  # SystemExit from the shared helpers must not kill the server
             job["error"] = f"{type(e).__name__}: {e}"
             job["log"].append(traceback.format_exc())
@@ -94,6 +101,8 @@ def audit_job(job: dict, name: str, include_repo: bool, force_pip: bool, remote_
         paths = dedupe_dirs(paths + [repo])
 
     def progress(label: str, i: int, n: int, suffix: str = "") -> None:
+        if job["cancel"].is_set():
+            raise JobCancelled()
         job["progress"] = {"label": label, "i": i, "n": n, "suffix": suffix}
 
     res = run_audit(cfg, root, paths, hold_set, pin_map, force_pip=force_pip, progress=progress, remote_wheels=remote_wheels)
@@ -119,14 +128,18 @@ def installed_versions(py: str) -> Dict[str, str]:
     return {canonicalize_name(x["name"]): x["version"] for x in json.loads(listing)}
 
 
-def stream(job: dict, cmd: List[str]) -> tuple:
-    """Run a command, appending its output to the job log. Returns (exit code, output lines)."""
+def stream(job: dict, cmd: List[str], cancellable: bool = False) -> tuple:
+    """Run a command, appending its output to the job log. Returns (exit code, output lines).
+    A cancellable command is killed when the job is cancelled (only safe for dry runs)."""
     job["log"].append("> " + " ".join(cmd))
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     lines = []
     for line in p.stdout:
         lines.append(line.rstrip())
         job["log"].append(lines[-1])
+        if cancellable and job["cancel"].is_set():
+            p.kill()
+            raise JobCancelled()
     code = p.wait()
     job["log"].append(f"exit code {code}")
     return code, lines
@@ -170,7 +183,7 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
         con = LOG_DIR / f"{stamp}_{name}_constraints.txt"
         con.write_text("".join(f"{n}=={v}\n" for n, v in sorted(keep.items())), encoding="utf-8")
         cmd += ["-c", str(con)]
-    code, lines = stream(job, cmd + packages)
+    code, lines = stream(job, cmd + packages, cancellable=dry_run)
     if dry_run:
         return {"exit_code": code, "changes": parse_install_changes(lines) if code == 0 else []}
     return record_install(job, name, stamp, before, installed_versions(py), code)
@@ -278,6 +291,11 @@ class Handler(BaseHTTPRequestHandler):
                 job = new_job("install")
                 run_in_thread(job, wheel_install_job, body["venv"], names, bool(body.get("force_pip")))
                 self.send_json({"job": job["id"]})
+            elif self.path == "/api/cancel":
+                job = JOBS.get(str(body["job"]))
+                if job:
+                    job["cancel"].set()
+                self.send_json({"ok": bool(job)})
             elif self.path == "/api/rules":
                 save_rules(body["venv"], list(body.get("hold", [])), dict(body.get("pins", {})))
                 self.send_json({"ok": True})

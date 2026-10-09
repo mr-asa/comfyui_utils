@@ -1221,15 +1221,19 @@ def run_audit(
         max_workers = min(classify_workers, total)
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             fut_to_name = {ex.submit(_initial_classify, n, v): n for n, v in cand}
-            for fut in as_completed(fut_to_name):
-                n = fut_to_name[fut]
-                try:
-                    initial_results[n] = fut.result()
-                except Exception as e:
-                    cur_ver = next((vv for nn, vv in cand if nn == n), Version("0"))
-                    initial_results[n] = (cur_ver, [], False, str(e), "unknown", str(e))
-                done += 1
-                report("Classify", done, total, n)
+            try:
+                for fut in as_completed(fut_to_name):
+                    n = fut_to_name[fut]
+                    try:
+                        initial_results[n] = fut.result()
+                    except Exception as e:
+                        cur_ver = next((vv for nn, vv in cand if nn == n), Version("0"))
+                        initial_results[n] = (cur_ver, [], False, str(e), "unknown", str(e))
+                    done += 1
+                    report("Classify", done, total, n)
+            except BaseException:  # the progress callback aborts the run (cancel): drop the queued dry runs
+                ex.shutdown(wait=False, cancel_futures=True)
+                raise
     if total:
         report("Classify", total, total)
 
