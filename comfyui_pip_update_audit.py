@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
+import shutil
 import sys
 import subprocess
 from dataclasses import dataclass, field
@@ -1520,7 +1521,15 @@ def _find_safe_upgrade_fallback(
     return None
 
 
-def pip_cmd(cfg: dict) -> List[str]:
+def pip_cmd(cfg: dict, force_pip: bool = False) -> List[str]:
+    """Install command prefix: `uv pip install --python <py>` when uv is on PATH, else the env's `pip install`."""
+    uv = None if force_pip else shutil.which("uv")
+    if uv:
+        return [uv, "pip", "install", "--python", _python_cmd(cfg)[0]]
+    return _env_pip(cfg) + ["install"]
+
+
+def _env_pip(cfg: dict) -> List[str]:
     env_type = (cfg.get("env_type") or "").lower()
     if env_type == "venv":
         venv = cfg.get("venv_path") or ""
@@ -1548,7 +1557,7 @@ def dry_run(pip: List[str], pkgs: List[Tuple[str, Version]], timeout_s: int = 60
     """
     if not pkgs:
         return True, ""
-    args = pip + ["install", "--dry-run"] + [f"{n}=={v}" for n, v in pkgs]
+    args = pip + ["--dry-run"] + [f"{n}=={v}" for n, v in pkgs]
     try:
         p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout_s)
         out = p.stdout or ""
@@ -1568,6 +1577,8 @@ def classify_dry_run(ok: bool, out: str) -> Tuple[str, str]:
     lowered = (out or "").lower()
     conflict_markers = (
         "resolutionimpossible",
+        "no solution found",
+        "unsatisfiable",
         "conflicting dependencies",
         "cannot install",
         "is incompatible with",
@@ -1596,6 +1607,8 @@ def _is_no_matching_distribution(out: str) -> bool:
     return (
         "no matching distribution found for" in lowered
         or "could not find a version that satisfies the requirement" in lowered
+        or "there is no version of" in lowered
+        or "no wheels with a matching" in lowered
     )
 
 
@@ -1806,6 +1819,12 @@ def main() -> None:
         help="Max parallel workers for pip --dry-run candidate checks (default: auto)",
     )
     parser.add_argument(
+        "--pip",
+        dest="force_pip",
+        action="store_true",
+        help="Use pip instead of uv for --dry-run checks and printed install commands",
+    )
+    parser.add_argument(
         "-c",
         "--show-commented",
         dest="show_commented",
@@ -1827,7 +1846,7 @@ def main() -> None:
     if (cfg.get("env_type") or "").lower() == "venv":
         cfg = select_venv(cfg, cfg_path)
     comfy_root, custom_nodes_paths = guess_paths(cfg, comfy_root=str(comfy_root))
-    pip = pip_cmd(cfg)
+    pip = pip_cmd(cfg, force_pip=args.force_pip)
     installed_map = load_installed_dists(cfg)
 
     if args.hold_pkg or args.pin_pkg:
@@ -1876,17 +1895,27 @@ def main() -> None:
 
     script_path = str(Path(__file__).resolve())
     wheel_local_suffix = wheel_local_suffix_for_env(cfg)
-    print(Fore.MAGENTA + Style.BRIGHT + "--> Some useful commands <--" + Style.RESET_ALL + "\n" +
-          "wheel local suffix  - " + Fore.BLUE + wheel_local_suffix + "\n" + Style.RESET_ALL +
-          "check package info - " + Fore.BLUE + "pip show <PACKAGE>\n" + Style.RESET_ALL +
-          "get all available versions of package - " + Fore.BLUE + "pip index versions <PACKAGE>\n" + Style.RESET_ALL +
-          "try resolver without installing - " + Fore.BLUE + "pip install <PACKAGE> --dry-run\n" + Style.RESET_ALL +
-          "lock some packages - " + Fore.BLUE + "pip freeze > constraints.txt\n" + Style.RESET_ALL + "\tand then - " + Fore.BLUE + 
-            "pip install <PACKAGE> -c constraints.txt --upgrade-strategy only-if-needed\n" + Style.RESET_ALL +
-          "check all errors in venv - " + Fore.BLUE + "pip check\n" + Style.RESET_ALL +
-          "get all deep dependencies from a package (need pipdeptree) - " + Fore.BLUE + "pipdeptree -p <PACKAGE>\n" + Style.RESET_ALL +
-          "get all reverse dependencies from a package (need pipdeptree) - " + Fore.BLUE + "pipdeptree --reverse --packages <PACKAGE>\n" + Style.RESET_ALL +
-          "remove all items from the cache - " + Fore.BLUE + "pip cache purge\n" + Style.RESET_ALL)
+    print(Fore.MAGENTA + Style.BRIGHT + "--> Some useful commands <--" + Style.RESET_ALL)
+    print("wheel local suffix - " + Fore.BLUE + wheel_local_suffix + Style.RESET_ALL)
+    print("uv is preferred: target a venv with --python <path to python.exe>, or run inside an activated venv\n")
+    useful = [
+        ("check package info", "pip show <PACKAGE>", "uv pip show <PACKAGE>"),
+        ("list installed packages", "pip list", "uv pip list"),
+        ("get all available versions of package", "pip index versions <PACKAGE>", "(no uv equivalent, use pip)"),
+        ("try resolver without installing", "pip install <PACKAGE> --dry-run", "uv pip install <PACKAGE> --dry-run"),
+        ("lock the current set of packages", "pip freeze > constraints.txt", "uv pip freeze > constraints.txt"),
+        ("install without touching locked packages", "pip install <PACKAGE> -c constraints.txt --upgrade-strategy only-if-needed", "uv pip install <PACKAGE> -c constraints.txt"),
+        ("install a prebuilt wheel without dependencies", "pip install --no-deps <file.whl>", "uv pip install --no-deps <file.whl>"),
+        ("install torch for a CUDA version", "pip install torch --index-url https://download.pytorch.org/whl/cu130", "uv pip install torch --torch-backend cu130"),
+        ("resolve requirements into a lock without installing", "-", "uv pip compile requirements.txt -o lock.txt"),
+        ("check all errors in venv", "pip check", "uv pip check"),
+        ("deep dependencies of a package", "pipdeptree -p <PACKAGE>", "uv pip tree --package <PACKAGE>"),
+        ("reverse dependencies of a package", "pipdeptree --reverse --packages <PACKAGE>", "uv pip tree --invert --package <PACKAGE>"),
+        ("remove all items from the cache", "pip cache purge", "uv cache clean"),
+    ]
+    for label, pip_c, uv_c in useful:
+        print(f"{label}:\n  pip - " + Fore.BLUE + pip_c + Style.RESET_ALL + "\n  uv  - " + Fore.BLUE + uv_c + Style.RESET_ALL)
+    print()
     print(Fore.MAGENTA + Style.BRIGHT + "--> Hold / Risk logic <--" + Style.RESET_ALL)
     print("Hold: packages listed in config.json are excluded from updates for the current env.")
     print("Pin: packages listed in config.json are fixed to a specific version.")
@@ -1906,7 +1935,8 @@ def main() -> None:
             py = os.path.join(venv_folder, "Scripts", "python.exe")
             pip_call = f"& \"{py}\" -m pip"
             print("venv python:\n  " + Fore.BLUE + f"& \"{py}\"" + Style.RESET_ALL)
-            print("venv pip (via python):\n  " + Fore.BLUE + pip_call + Style.RESET_ALL + "\n")
+            print("venv pip (via python):\n  " + Fore.BLUE + pip_call + Style.RESET_ALL)
+            print("venv uv (no activation needed):\n  " + Fore.BLUE + f"uv pip install --python \"{py}\" <PACKAGE>" + Style.RESET_ALL + "\n")
     else:
         conda_path = cfg.get("conda_path") or "conda"
         conda_env_ref = cfg.get("conda_env") or cfg.get("conda_env_folder") or "<env_name_or_path>"
@@ -2325,17 +2355,18 @@ def main() -> None:
     risky = _dedupe_pkg_versions(risky)
     unknown = _dedupe_pkg_versions(unknown)
     extra_unique = sorted(set(v.raw for v in extra_reqs))
-    safe_cmd = " ".join(pip) + " install --upgrade " + cmdline(safe)
-    risky_cmd = " ".join(pip) + " install --upgrade " + cmdline(risky)
-    unknown_cmd = " ".join(pip) + " install --upgrade " + cmdline(unknown)
-    pinned_cmd = " ".join(pip) + " install " + " ".join(
+    pip_prefix = " ".join(_quote_cmd_part(p) for p in pip)
+    safe_cmd = pip_prefix + " --upgrade " + cmdline(safe)
+    risky_cmd = pip_prefix + " --upgrade " + cmdline(risky)
+    unknown_cmd = pip_prefix + " --upgrade " + cmdline(unknown)
+    pinned_cmd = pip_prefix + " " + " ".join(
         f"{n}=={v}" for n, v in pinned_mismatch
     ) if pinned_mismatch else ""
     missing_cmd_parts = [cmdline(missing)] if missing else []
     extra_to_install = sorted(set(v.raw for v in extra_reqs if need_vcs_install(v)))
     if extra_to_install:
         missing_cmd_parts.append(" ".join(extra_to_install))
-    missing_cmd = " ".join(pip) + " install " + " ".join([p for p in missing_cmd_parts if p])
+    missing_cmd = pip_prefix + " " + " ".join([p for p in missing_cmd_parts if p])
     if safe:
         print("Safe updates:\n  " + Fore.BLUE + safe_cmd + Style.RESET_ALL)
     if risky:
@@ -2381,7 +2412,7 @@ def main() -> None:
         print("  " + Fore.BLUE + _format_comfy_env_workspace_install_cmd(_python_cmd(cfg), comfy_root, rep.plugin_dir) + Style.RESET_ALL)
         print("  Triggers: " + ", ".join(trigger_names))
     if downgrades:
-        down_cmd = " ".join(pip) + " install " + cmdline(downgrades)
+        down_cmd = pip_prefix + " " + cmdline(downgrades)
         print("Downgrades:\n  " + Fore.BLUE + down_cmd + Style.RESET_ALL)
 
     if args.show_commented and commented_reqs:
