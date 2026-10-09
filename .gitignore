@@ -9,3 +9,5 @@ tmp_*
 *_tmp.*
 *.txt
 run_*/
+.dirac-cache/*
+*.json.bak
