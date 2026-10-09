@@ -166,7 +166,7 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 - Classifies updates as safe/risky/unknown and prints reasons for risky items.
 - Checks reverse dependencies of already installed packages to flag conflicts before install.
 - Treats inline comments in `requirements.txt` correctly (e.g. `pkg  # comment`).
-- Uses `uv pip install --dry-run` for checks and prints `uv pip install --python ...` commands when `uv` is on PATH (`--pip` forces pip); the header lists pip and uv equivalents.
+- Uses `uv pip install --dry-run` for checks and prints `uv pip install --python ...` commands when `uv` is on PATH (`--pip` forces pip); the header lists pip and uv equivalents. `--hide-unchanged` skips packages that need no action. The analysis lives in `pip_audit_core.py` (`run_audit()` returns data, no printing), the script only prompts and prints.
 
 ## Hold / pin usage (comfyui_pip_update_audit.py)
 

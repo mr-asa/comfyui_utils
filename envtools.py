@@ -44,6 +44,20 @@ def dedupe_dirs(paths: List[str]) -> List[str]:
     return out
 
 
+def unique_paths(paths: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for p in paths:
+        if not p:
+            continue
+        norm = os.path.normcase(os.path.normpath(p))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(os.path.normpath(p))
+    return out
+
+
 def quote_cmd_part(part: str) -> str:
     if not part:
         return '""'
