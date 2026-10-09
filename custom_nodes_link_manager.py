@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from config_schema import load_legacy_compat, save_legacy_compat
+from update_comfy_repos import to_web_url
 
 
 REPARSE_POINT = 0x0400
@@ -785,6 +786,17 @@ def _build_node_tag_map(tags: Dict[str, List[str]], node_names: List[str]) -> Di
     return out
 
 
+def _origin_web_url(folder: str) -> str:
+    """Web URL of a node's origin remote, read from .git/config (no git process per node)."""
+    cfg = os.path.join(folder, ".git", "config")
+    try:
+        text = open(cfg, encoding="utf-8", errors="ignore").read()
+    except OSError:
+        return ""
+    m = re.search(r'\[remote "origin"\][^\[]*?url\s*=\s*(\S+)', text)
+    return to_web_url(m[1]) if m else ""
+
+
 def node_inventory(repo_dir: str, custom_nodes_dir: str, tags: Dict[str, List[str]]) -> List[Dict[str, object]]:
     """One row per node folder. kind: linked / unlinked (in the repo), junk (junction to a missing folder),
     external (junction outside the repo), direct (a real folder in custom_nodes that is not in the repo)."""
@@ -805,7 +817,8 @@ def node_inventory(repo_dir: str, custom_nodes_dir: str, tags: Dict[str, List[st
             kind = "direct"
         else:
             kind = "unlinked"
-        rows.append({"name": name, "kind": kind, "in_repo": name in repo_nodes, "target": ln.target if ln else "", "tags": tag_map.get(name, [])})
+        folder = os.path.join(repo_dir, name) if name in repo_nodes else os.path.join(custom_nodes_dir, name)
+        rows.append({"name": name, "kind": kind, "in_repo": name in repo_nodes, "target": ln.target if ln else "", "tags": tag_map.get(name, []), "web_url": _origin_web_url(folder)})
     return rows
 
 
