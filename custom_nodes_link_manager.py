@@ -785,6 +785,39 @@ def _build_node_tag_map(tags: Dict[str, List[str]], node_names: List[str]) -> Di
     return out
 
 
+def node_inventory(repo_dir: str, custom_nodes_dir: str, tags: Dict[str, List[str]]) -> List[Dict[str, object]]:
+    """One row per node folder. kind: linked / unlinked (in the repo), junk (junction to a missing folder),
+    external (junction outside the repo), direct (a real folder in custom_nodes that is not in the repo)."""
+    repo_nodes = _scan_repo(repo_dir)
+    links = {ln.name: ln for ln in _scan_links(custom_nodes_dir, repo_dir)}
+    direct = {dn.name for dn in _scan_direct_nodes(custom_nodes_dir)}
+    tag_map = _build_node_tag_map(tags, sorted(set(repo_nodes) | set(links) | direct))
+    rows = []
+    for name in sorted(set(repo_nodes) | set(links) | direct, key=str.lower):
+        ln = links.get(name)
+        if ln and not ln.target_exists:
+            kind = "junk"
+        elif ln and ln.target_in_repo:
+            kind = "linked"
+        elif ln:
+            kind = "external"
+        elif name in direct:
+            kind = "direct"
+        else:
+            kind = "unlinked"
+        rows.append({"name": name, "kind": kind, "in_repo": name in repo_nodes, "target": ln.target if ln else "", "tags": tag_map.get(name, [])})
+    return rows
+
+
+def preset_plan(preset: Dict[str, object], repo_dir: str, custom_nodes_dir: str) -> Dict[str, object]:
+    """Which links applying a preset would add and remove."""
+    repo_nodes = _scan_repo(repo_dir)
+    links = _scan_links(custom_nodes_dir, repo_dir)
+    mode, selected = _resolve_preset_nodes(preset, repo_nodes)
+    linked = {ln.name for ln in links if ln.target_in_repo}
+    return {"mode": mode, "add": [n for n in selected if n not in linked], "remove": sorted(n for n in linked if n not in set(selected))}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage custom_nodes junction links.")
     parser.add_argument("--repo", help="Path to custom_nodes_repo")

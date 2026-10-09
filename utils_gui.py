@@ -12,6 +12,7 @@ POST requests need the per-run token embedded in the served page, so other sites
 from __future__ import annotations
 import argparse
 import json
+import os
 import re
 import secrets
 import shutil
@@ -33,6 +34,7 @@ import config_schema
 from comfyui_root import resolve_comfyui_root
 from envtools import custom_nodes_paths, dedupe_dirs, install_prefix, installed_pythons, run_uv
 from build_venv import CUDA_CANDIDATES, PY_CANDIDATES, Candidate, PlanCancelled, PlanOptions, build_venv, default_venv_name, describe_plan, make_plan
+import custom_nodes_link_manager as nodes_mgr
 from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, update_repo
 from wheels import download_wheel, load_catalog
 from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_install_changes, run_audit
@@ -40,6 +42,7 @@ from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_in
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = str(HERE / "config.json")
 LOG_DIR = HERE / "install_logs"
+PRESETS_PATH = str(HERE / "run_comfyui_presets_config.json")
 TOKEN = secrets.token_urlsafe(16)
 CONFIG_LOCK = threading.Lock()
 JOBS: Dict[str, dict] = {}
@@ -342,6 +345,106 @@ def repos_update_job(job: dict, paths: List[str], on_local: str, on_conflict: st
     return {"results": results, "dry_run": dry_run}
 
 
+def nodes_context() -> tuple:
+    with CONFIG_LOCK:
+        cfg, _ = config_schema.load_legacy_compat(CONFIG_PATH)
+    repo = str(cfg.get("custom_nodes_repo_path") or "").strip()
+    if not repo or not os.path.isdir(repo):
+        raise ValueError("custom_nodes_repo_path is not set or missing in config.json")
+    root = resolve_comfyui_root(CONFIG_PATH)
+    custom = next(iter(custom_nodes_paths(cfg, str(root))), "")
+    if not custom:
+        raise ValueError("custom_nodes folder not found")
+    return repo, custom, nodes_mgr._normalize_tags(cfg.get("junk_links_tags"))
+
+
+def save_tags(tags: Dict[str, List[str]]) -> None:
+    with CONFIG_LOCK:
+        v2, _ = config_schema.load_v2(CONFIG_PATH)
+        v2.setdefault("extras", {})["junk_links_tags"] = tags
+        config_schema.save_v2(CONFIG_PATH, v2)
+
+
+def nodes_state() -> dict:
+    repo, custom, tags = nodes_context()
+    presets = nodes_mgr._load_presets(PRESETS_PATH)
+    return {
+        "repo": repo, "custom": custom, "rows": nodes_mgr.node_inventory(repo, custom, tags), "tags": sorted(tags, key=str.lower),
+        "presets": {n: {"mode": v.get("mode", "whitelist"), "count": len(v.get("nodes", []))} for n, v in presets.items() if isinstance(v, dict) and n != "current"},
+    }
+
+
+def nodes_action(body: dict) -> dict:
+    """Link / unlink / preset / tag operations. Returns messages plus the fresh state."""
+    repo, custom, tags = nodes_context()
+    action = str(body["action"])
+    rows = {r["name"]: r for r in nodes_mgr.node_inventory(repo, custom, tags)}
+    names = [str(n) for n in body.get("names", [])]
+    bad = [n for n in names if n not in rows]
+    if bad:
+        raise ValueError("unknown node: " + bad[0])
+    links = nodes_mgr._scan_links(custom, repo)
+    link_map = {ln.name: ln for ln in links}
+    msgs: List[str] = []
+    if action == "link":
+        msgs = [nodes_mgr._add_link(repo, custom, n) for n in names if rows[n]["kind"] == "unlinked"]
+    elif action == "unlink":
+        msgs = [nodes_mgr._remove_link(custom, link_map[n]) for n in names if n in link_map]
+    elif action == "invert":
+        msgs = [nodes_mgr._remove_link(custom, link_map[n]) if n in link_map else nodes_mgr._add_link(repo, custom, n) for n in names if rows[n]["in_repo"]]
+    elif action == "remove_junk":
+        msgs = nodes_mgr._remove_junk_links(custom, links)
+    elif action == "move_direct":
+        direct = {dn.name: dn for dn in nodes_mgr._scan_direct_nodes(custom)}
+        msgs = [nodes_mgr._move_installed_to_repo(repo, custom, direct[n]) for n in names if n in direct]
+    elif action in ("preset_preview", "preset_apply"):
+        presets = nodes_mgr._load_presets(PRESETS_PATH)
+        name = str(body["preset"])
+        if name == "current" or not isinstance(presets.get(name), dict):
+            raise ValueError("unknown preset")
+        plan = nodes_mgr.preset_plan(presets[name], repo, custom)
+        if action == "preset_preview":
+            return {"plan": plan}
+        msgs = [nodes_mgr._remove_link(custom, link_map[n]) for n in plan["remove"] if n in link_map] + [nodes_mgr._add_link(repo, custom, n) for n in plan["add"]]
+    elif action == "preset_save":
+        name = str(body["preset"]).strip()
+        if not name or name.lower() == "current":
+            raise ValueError("invalid preset name")
+        presets = nodes_mgr._load_presets(PRESETS_PATH)
+        if name in presets and not body.get("overwrite"):
+            return {"exists": True}
+        linked = {r["name"] for r in rows.values() if r["kind"] == "linked"}
+        in_repo = [n for n in rows if rows[n]["in_repo"]]
+        enabled, disabled = [n for n in in_repo if n in linked], [n for n in in_repo if n not in linked]
+        presets[name] = {"mode": "blacklist", "nodes": disabled} if len(disabled) <= len(enabled) else {"mode": "whitelist", "nodes": enabled}
+        nodes_mgr._save_json(PRESETS_PATH, presets)
+        msgs = [f"Saved preset '{name}' ({presets[name]['mode']}, {len(presets[name]['nodes'])} nodes)"]
+    elif action == "preset_delete":
+        presets = nodes_mgr._load_presets(PRESETS_PATH)
+        name = str(body["preset"])
+        if name == "current" or name not in presets:
+            raise ValueError("unknown preset")
+        presets.pop(name)
+        nodes_mgr._save_json(PRESETS_PATH, presets)
+        msgs = [f"Deleted preset '{name}'"]
+    elif action in ("tag_add", "tag_remove"):
+        tag = str(body["tag"]).strip()
+        if not tag:
+            raise ValueError("empty tag")
+        cur = tags.setdefault(tag, [])
+        if action == "tag_add":
+            cur += [n for n in names if n.lower() not in {x.lower() for x in cur}]
+        else:
+            tags[tag] = [x for x in cur if x.lower() not in {n.lower() for n in names}]
+            if not tags[tag]:
+                tags.pop(tag)
+        save_tags(tags)
+        msgs = [f"Tag '{tag}': {len(names)} node(s) {'added' if action == 'tag_add' else 'removed'}"]
+    else:
+        raise ValueError("unknown action")
+    return {"messages": msgs, "state": nodes_state()}
+
+
 def save_rules(name: str, hold: List[str], pins: Dict[str, str]) -> None:
     venv_entry(name)
     hold = [canonicalize_name(h) for h in hold if h.strip()]
@@ -381,6 +484,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(html)))
             self.end_headers()
             self.wfile.write(html)
+        elif path == "/api/nodes_state":
+            try:
+                self.send_json(nodes_state())
+            except ValueError as e:
+                self.send_json({"error": str(e)}, 400)
         elif path == "/api/state":
             self.send_json(venv_rows())
         elif path.startswith("/api/job/"):
@@ -437,6 +545,8 @@ class Handler(BaseHTTPRequestHandler):
                 job = new_job("repos")
                 run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
                 self.send_json({"job": job["id"]})
+            elif self.path == "/api/nodes":
+                self.send_json(nodes_action(body))
             elif self.path == "/api/cancel":
                 job = JOBS.get(str(body["job"]))
                 if job:

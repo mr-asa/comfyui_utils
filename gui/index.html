@@ -94,13 +94,15 @@ nav button.on { color: var(--text); border-color: var(--accent); }
 #r-detail { flex: none; height: 150px; overflow: auto; border-top: 1px solid var(--line); padding: 8px 14px; font-size: 13px; }
 #r-detail .files { color: var(--muted); }
 tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.s-linked { color: var(--ok); } .s-unlinked { color: var(--muted); border-style: dashed; } .s-junk { color: var(--bad); } .s-external { color: var(--info); } .s-direct { color: var(--warn); }
+.tag { padding: 0 7px; border-radius: 999px; background: var(--chip); color: var(--muted); font-size: 12px; margin-right: 4px; }
 @media (max-width: 700px) { main { padding: 8px; } header { padding: 8px; } }
 </style>
 </head>
 <body>
 <header>
   <h1>ComfyUI Utils</h1>
-  <nav><button class="on" data-tab="audit">Pip audit</button><button data-tab="build">Build venv</button><button data-tab="repos">Repos</button></nav>
+  <nav><button class="on" data-tab="audit">Pip audit</button><button data-tab="build">Build venv</button><button data-tab="repos">Repos</button><button data-tab="nodes">Nodes</button></nav>
   <span class="ctl" id="auditctl">
   <label>venv <select id="venv"></select></label>
   <label title="Also scan requirements of the nodes in custom_nodes_repo_path (real clones, including ones not linked into custom_nodes)"><input type="checkbox" id="repo"> include custom_nodes_repo</label>
@@ -196,6 +198,37 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
       <tbody id="r-rows"></tbody>
     </table></div>
     <div id="r-detail"><span class="muted">Scan, then click a row to see the incoming commits.</span></div>
+  </div>
+</section>
+<section id="tab-nodes" class="tabsec" hidden>
+  <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+    <div class="filters">
+      <button class="primary" id="n-refresh">Refresh</button>
+      <input type="text" id="n-search" placeholder="Filter…" size="18">
+      <select id="n-tag"><option value="">all tags</option></select>
+      <label><input type="checkbox" id="n-hidelinked"> hide linked</label>
+      <span id="n-chips"></span>
+      <span class="muted" id="n-count"></span>
+      <span class="muted" id="n-paths"></span>
+    </div>
+    <div class="toolbar">
+      <button id="n-selvis">Select visible</button><button id="n-selnone">Clear</button>
+      <button id="n-link" title="Create junctions in custom_nodes">Link</button><button id="n-unlink" title="Remove the junctions (the repo folders stay)">Unlink</button><button id="n-invert">Invert</button>
+      <button id="n-junk" title="Junctions whose target folder is gone">Remove junk links</button>
+      <button id="n-move" title="Move real folders from custom_nodes into the repo and link them back">Move direct → repo</button>
+      <span class="muted" id="n-selinfo"></span>
+    </div>
+    <div class="toolbar">
+      <label>preset <select id="n-preset"></select></label>
+      <button id="n-papply">Apply…</button><button id="n-psave">Save current as…</button><button id="n-pdel">Delete</button>
+      <label>tag <input type="text" id="n-tagname" size="12" list="n-taglist"></label><datalist id="n-taglist"></datalist>
+      <button id="n-tagadd">Tag selected</button><button id="n-tagdel">Untag selected</button>
+      <span class="muted">Restart ComfyUI for link changes to take effect.</span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th></th><th data-nk="name">Node</th><th data-nk="kind">State</th><th>Tags</th><th>Target</th></tr></thead>
+      <tbody id="n-rows"></tbody>
+    </table></div>
   </div>
 </section>
 </main>
@@ -735,6 +768,81 @@ $("r-selvis").onclick = () => { rVisible().forEach(r => rSel.add(r.path)); rRend
 $("r-selnone").onclick = () => { rSel.clear(); rRender(); };
 ["r-search", "r-hide", "r-dirtyonly"].forEach(id => $(id).oninput = rRender);
 document.querySelectorAll("th[data-rk]").forEach(th => th.onclick = () => { rSortDir = rSortKey === th.dataset.rk ? -rSortDir : 1; rSortKey = th.dataset.rk; rRender(); });
+
+// ---- nodes (junction links, presets, tags)
+const NKINDS = ["junk", "direct", "external", "unlinked", "linked"];
+const NRANK = Object.fromEntries(NKINDS.map((x, i) => [x, i]));
+let nodes = null, nSel = new Set(), nActive = new Set(NKINDS), nSortKey = "kind", nSortDir = 1;
+
+async function nLoad() {
+  try { nodes = await api("/api/nodes_state"); } catch (e) { logAdd(["Nodes: " + e.message]); setStatus("failed"); return; }
+  nSel = new Set([...nSel].filter(n => nodes.rows.some(r => r.name === n)));
+  $("n-paths").textContent = `repo ${nodes.repo} → ${nodes.custom}`;
+  $("n-tag").innerHTML = '<option value="">all tags</option>' + nodes.tags.map(t => `<option>${esc(t)}</option>`).join("");
+  $("n-taglist").innerHTML = nodes.tags.map(t => `<option value="${esc(t)}">`).join("");
+  $("n-preset").innerHTML = Object.entries(nodes.presets).map(([n, v]) => `<option value="${esc(n)}">${esc(n)} (${v.mode}, ${v.count})</option>`).join("");
+  const counts = {}; nodes.rows.forEach(r => counts[r.kind] = (counts[r.kind] || 0) + 1);
+  $("n-chips").innerHTML = NKINDS.filter(x => counts[x]).map(x => `<span class="chip ${nActive.has(x) ? "on" : ""}" data-s="${x}">${x} ${counts[x]}</span>`).join(" ");
+  $("n-chips").querySelectorAll(".chip").forEach(c => c.onclick = () => { const x = c.dataset.s; nActive.has(x) ? nActive.delete(x) : nActive.add(x); c.classList.toggle("on"); nRender(); });
+  nRender();
+}
+
+function nVisible() {
+  const q = $("n-search").value.trim().toLowerCase(), tag = $("n-tag").value;
+  const rows = nodes.rows.filter(r => nActive.has(r.kind) && !($("n-hidelinked").checked && r.kind === "linked") && (!q || r.name.toLowerCase().includes(q)) && (!tag || r.tags.includes(tag)));
+  const key = r => nSortKey === "kind" ? NRANK[r.kind] : r.name.toLowerCase();
+  rows.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * nSortDir || a.name.localeCompare(b.name));
+  return rows;
+}
+
+function nRender() {
+  if (!nodes) return;
+  const rows = nVisible();
+  $("n-count").textContent = `${rows.length} of ${nodes.rows.length}`;
+  $("n-rows").innerHTML = rows.map(r => `<tr><td><input type="checkbox" data-n="${esc(r.name)}" ${nSel.has(r.name) ? "checked" : ""}></td>
+    <td class="mono">${esc(r.name)}${r.in_repo ? "" : ' <span class="muted">(not in repo)</span>'}</td><td><span class="badge s-${r.kind}">${r.kind}</span></td>
+    <td>${r.tags.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</td><td class="muted">${esc(r.target)}</td></tr>`).join("");
+  $("n-rows").querySelectorAll("input[type=checkbox]").forEach(cb => cb.onchange = () => { cb.checked ? nSel.add(cb.dataset.n) : nSel.delete(cb.dataset.n); $("n-selinfo").textContent = nSel.size ? `${nSel.size} selected` : ""; });
+  $("n-selinfo").textContent = nSel.size ? `${nSel.size} selected` : "";
+}
+
+async function nAct(body, title) {
+  try {
+    const r = await api("/api/nodes", body);
+    if (r.messages) { showLog(title || body.action, "", "done"); logAdd(r.messages.length ? r.messages : ["Nothing to do."]); }
+    if (r.state) { nodes = r.state; await nLoad(); }
+    return r;
+  } catch (e) { showLog(title || body.action, "", "failed"); logAdd([e.message]); }
+}
+const nNames = () => [...nSel];
+const needSel = () => nSel.size || (alert("Select nodes first."), false);
+
+$("n-refresh").onclick = nLoad;
+$("n-link").onclick = () => needSel() && nAct({action: "link", names: nNames()}, "Link nodes");
+$("n-unlink").onclick = () => needSel() && confirm(`Remove the junctions of ${nSel.size} node(s)? The repo folders stay.`) && nAct({action: "unlink", names: nNames()}, "Unlink nodes");
+$("n-invert").onclick = () => needSel() && nAct({action: "invert", names: nNames()}, "Invert links");
+$("n-junk").onclick = () => confirm("Remove all junctions whose target folder is gone?") && nAct({action: "remove_junk", names: []}, "Remove junk links");
+$("n-move").onclick = () => needSel() && confirm(`Move ${nSel.size} real folder(s) from custom_nodes into the repo and link them back?`) && nAct({action: "move_direct", names: nNames()}, "Move direct nodes");
+$("n-papply").onclick = async () => {
+  const preset = $("n-preset").value; if (!preset) return;
+  const r = await nAct({action: "preset_preview", preset, names: []}, "Preset preview"); if (!r || !r.plan) return;
+  const p = r.plan;
+  if (!confirm(`Apply preset "${preset}" (${p.mode})?\n\nAdd ${p.add.length} link(s), remove ${p.remove.length}.\n\n` + (p.add.length ? "+ " + p.add.slice(0, 15).join(", ") + (p.add.length > 15 ? " …" : "") + "\n" : "") + (p.remove.length ? "- " + p.remove.slice(0, 15).join(", ") + (p.remove.length > 15 ? " …" : "") : ""))) return;
+  await nAct({action: "preset_apply", preset, names: []}, `Apply preset ${preset}`);
+};
+$("n-psave").onclick = async () => {
+  const name = prompt("Preset name (the currently linked nodes are saved):"); if (!name) return;
+  let r = await nAct({action: "preset_save", preset: name, names: []}, "Save preset");
+  if (r && r.exists && confirm(`Preset "${name}" exists. Overwrite?`)) await nAct({action: "preset_save", preset: name, overwrite: true, names: []}, "Save preset");
+};
+$("n-pdel").onclick = () => { const preset = $("n-preset").value; if (preset && confirm(`Delete preset "${preset}"?`)) nAct({action: "preset_delete", preset, names: []}, "Delete preset"); };
+$("n-tagadd").onclick = () => needSel() && $("n-tagname").value.trim() && nAct({action: "tag_add", tag: $("n-tagname").value, names: nNames()}, "Tag nodes");
+$("n-tagdel").onclick = () => needSel() && $("n-tagname").value.trim() && nAct({action: "tag_remove", tag: $("n-tagname").value, names: nNames()}, "Untag nodes");
+$("n-selvis").onclick = () => { nVisible().forEach(r => nSel.add(r.name)); nRender(); };
+$("n-selnone").onclick = () => { nSel.clear(); nRender(); };
+["n-search", "n-tag", "n-hidelinked"].forEach(id => $(id).oninput = nRender);
+document.querySelectorAll("th[data-nk]").forEach(th => th.onclick = () => { nSortDir = nSortKey === th.dataset.nk ? -nSortDir : 1; nSortKey = th.dataset.nk; nRender(); });
+document.querySelector('nav button[data-tab="nodes"]').addEventListener("click", () => { if (!nodes) nLoad(); });
 init().catch(e => alert(e.message));
 </script>
 </body>
