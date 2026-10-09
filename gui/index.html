@@ -95,6 +95,7 @@ nav button.on { color: var(--text); border-color: var(--accent); }
 #r-detail .files { color: var(--muted); }
 tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .s-linked { color: var(--ok); } .s-unlinked { color: var(--muted); border-style: dashed; } .s-junk { color: var(--bad); } .s-external { color: var(--info); } .s-direct { color: var(--warn); }
+.cell-diff { color: var(--warn); font-weight: 600; } .cell-miss { color: var(--bad); }
 .tag { padding: 0 7px; border-radius: 999px; background: var(--chip); color: var(--muted); font-size: 12px; margin-right: 4px; }
 @media (max-width: 700px) { main { padding: 8px; } header { padding: 8px; } }
 </style>
@@ -102,7 +103,7 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 <body>
 <header>
   <h1>ComfyUI Utils</h1>
-  <nav><button class="on" data-tab="audit">Pip audit</button><button data-tab="build">Build venv</button><button data-tab="repos">Repos</button><button data-tab="nodes">Nodes</button></nav>
+  <nav><button class="on" data-tab="audit">Pip audit</button><button data-tab="build">Build venv</button><button data-tab="repos">Repos</button><button data-tab="nodes">Nodes</button><button data-tab="compare">Compare venvs</button></nav>
   <span class="ctl" id="auditctl">
   <label>venv <select id="venv"></select></label>
   <label title="Also scan requirements of the nodes in custom_nodes_repo_path (real clones, including ones not linked into custom_nodes)"><input type="checkbox" id="repo"> include custom_nodes_repo</label>
@@ -229,6 +230,22 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
     <div class="tablewrap"><table>
       <thead><tr><th></th><th data-nk="name">Node</th><th data-nk="kind">State</th><th>Tags</th><th>Target</th></tr></thead>
       <tbody id="n-rows"></tbody>
+    </table></div>
+  </div>
+</section>
+<section id="tab-compare" class="tabsec" hidden>
+  <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+    <div class="filters">
+      <span id="c-venvs"></span>
+      <label><input type="radio" name="cscope" value="key" checked> key modules</label>
+      <label><input type="radio" name="cscope" value="all"> all packages</label>
+      <button class="primary" id="c-run">Compare</button>
+      <input type="text" id="c-search" placeholder="Filter…" size="16">
+      <label><input type="checkbox" id="c-diff" checked> only differences</label>
+      <span class="muted" id="c-count"></span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead id="c-head"></thead><tbody id="c-rows"></tbody>
     </table></div>
   </div>
 </section>
@@ -857,6 +874,31 @@ $("n-selnone").onclick = () => { nSel.clear(); nRender(); };
 ["n-search", "n-tag", "n-hidelinked"].forEach(id => $(id).oninput = nRender);
 document.querySelectorAll("th[data-nk]").forEach(th => th.onclick = () => { nSortDir = nSortKey === th.dataset.nk ? -nSortDir : 1; nSortKey = th.dataset.nk; nRender(); });
 document.querySelector('nav button[data-tab="nodes"]').addEventListener("click", () => { if (!nodes) nLoad(); });
+
+// ---- compare venvs
+let cmp = null;
+function cFillVenvs() {
+  $("c-venvs").innerHTML = [...$("venv").options].map(o => `<label><input type="checkbox" class="cv" value="${esc(o.value)}"> ${esc(o.value)}</label>`).join(" ");
+}
+document.querySelector('nav button[data-tab="compare"]').addEventListener("click", cFillVenvs);
+$("c-run").onclick = async () => {
+  const venvs = [...document.querySelectorAll(".cv")].filter(c => c.checked).map(c => c.value);
+  if (venvs.length < 2) return alert("Tick at least two venvs.");
+  try {
+    cmp = await api("/api/compare", {venvs, scope: document.querySelector("input[name=cscope]:checked").value});
+    cRender();
+  } catch (e) { alert(e.message); }
+};
+function cRender() {
+  if (!cmp) return;
+  const q = $("c-search").value.trim().toLowerCase();
+  const rows = cmp.rows.filter(r => (!$("c-diff").checked || r.differs) && (!q || r.name.includes(q)));
+  $("c-count").textContent = `${rows.length} of ${cmp.rows.length}`;
+  $("c-head").innerHTML = `<tr><th>Package</th>${cmp.venvs.map(v => `<th>${esc(v)}</th>`).join("")}</tr>`;
+  $("c-rows").innerHTML = rows.map(r => `<tr><td class="mono">${esc(r.name)}${r.key ? ' <span class="muted">★</span>' : ""}</td>`
+    + cmp.venvs.map(v => { const x = r.versions[v]; return `<td class="mono ${!x ? "cell-miss" : r.differs ? "cell-diff" : ""}">${x ? esc(x) : "—"}</td>`; }).join("") + "</tr>").join("");
+}
+["c-search", "c-diff"].forEach(id => $(id).oninput = cRender);
 init().catch(e => alert(e.message));
 </script>
 </body>

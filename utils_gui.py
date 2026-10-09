@@ -476,6 +476,47 @@ def nodes_action(body: dict) -> dict:
     return {"messages": msgs, "state": nodes_state()}
 
 
+def venv_python_version(venv_path: str) -> str:
+    cfg = Path(venv_path) / "pyvenv.cfg"
+    if cfg.is_file():
+        m = re.search(r"^version(?:_info)?\s*=\s*([\d.]+)", cfg.read_text(encoding="utf-8", errors="ignore"), re.M)
+        if m:
+            return m[1]
+    return ""
+
+
+def compare_venvs(names: List[str], scope: str) -> dict:
+    """Package versions side by side. scope "key" keeps the modules listed in compare_venv_versions_config.json."""
+    if len(names) < 2:
+        raise ValueError("select at least two venvs")
+    per: Dict[str, Dict[str, str]] = {}
+    for n in names:
+        row = venv_entry(n)
+        versions = installed_versions(config_schema.venv_python_path(row["path"]))
+        versions["python"] = venv_python_version(row["path"])
+        torch = versions.get("torch", "")
+        versions["cuda (from torch)"] = (re.search(r"\+cu(\d+)", torch) or [None, ""])[1]
+        per[n] = versions
+    key_cfg = {}
+    cfg_file = HERE / "compare_venv_versions_config.json"
+    if cfg_file.is_file():
+        key_cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig"))
+    key_names = {"python", "cuda (from torch)"} | {canonicalize_name(m) for m in key_cfg.get("modules", [])}
+    for chk in key_cfg.get("custom_checks", []):
+        for cand in chk.get("candidates", []):
+            key_names.add(canonicalize_name(cand))
+    all_names = sorted(set().union(*(set(v) for v in per.values())), key=lambda x: (x not in ("python", "cuda (from torch)"), x))
+    rows = []
+    for pkg in all_names:
+        vals = {n: per[n].get(pkg, "") for n in names}
+        if scope == "key" and pkg not in key_names:
+            continue
+        if scope == "key" and not any(vals.values()):
+            continue
+        rows.append({"name": pkg, "versions": vals, "differs": len(set(vals.values())) > 1, "key": pkg in key_names})
+    return {"venvs": names, "rows": rows}
+
+
 def save_rules(name: str, hold: List[str], pins: Dict[str, str]) -> None:
     venv_entry(name)
     hold = [canonicalize_name(h) for h in hold if h.strip()]
@@ -576,6 +617,8 @@ class Handler(BaseHTTPRequestHandler):
                 job = new_job("repos")
                 run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
                 self.send_json({"job": job["id"]})
+            elif self.path == "/api/compare":
+                self.send_json(compare_venvs([str(n) for n in body["venvs"]], str(body.get("scope", "key"))))
             elif self.path == "/api/nodes":
                 self.send_json(nodes_action(body))
             elif self.path == "/api/cancel":
