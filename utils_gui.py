@@ -17,6 +17,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -38,13 +39,14 @@ import custom_nodes_link_manager as nodes_mgr
 import update_workflow_repos as wf
 from comfyui_root import default_workflows_dir
 from workflow_sources import METADATA_FILE, parse_workflow_url, sync_partial_source, write_metadata
-from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, update_repo
+from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, run_git, update_repo
 from wheels import download_wheel, load_catalog
 from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_install_changes, run_audit
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = str(HERE / "config.json")
 LOG_DIR = HERE / "install_logs"
+NO_PROMPT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}  # a clone of a missing / private repo must fail, not wait for a password
 PRESETS_PATH = str(HERE / "run_comfyui_presets_config.json")
 TOKEN = secrets.token_urlsafe(16)
 CONFIG_LOCK = threading.Lock()
@@ -142,11 +144,11 @@ def installed_versions(py: str) -> Dict[str, str]:
     return {canonicalize_name(x["name"]): x["version"] for x in json.loads(listing)}
 
 
-def stream(job: dict, cmd: List[str], cancellable: bool = False) -> tuple:
+def stream(job: dict, cmd: List[str], cancellable: bool = False, env: dict | None = None) -> tuple:
     """Run a command, appending its output to the job log. Returns (exit code, output lines).
     A cancellable command is killed when the job is cancelled (only safe for dry runs)."""
     job["log"].append("> " + " ".join(cmd))
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=env)
     lines = []
     for line in p.stdout:
         lines.append(line.rstrip())
@@ -515,6 +517,114 @@ def compare_venvs(names: List[str], scope: str) -> dict:
     return {"venvs": names, "rows": rows}
 
 
+REPO_URL_RE = re.compile(r"(https://[\w.\-]+/[\w.\-]+/[\w.\-]+|git@[\w.\-]+:[\w.\-]+/[\w.\-]+?)(\.git)?/?")
+
+
+def repo_add_job(job: dict, url: str, link: bool) -> dict:
+    """Clone a custom node. With custom_nodes_repo_path configured it goes there and (optionally) gets a junction in custom_nodes."""
+    url = url.strip()
+    m = REPO_URL_RE.fullmatch(url)
+    if not m:
+        raise ValueError("expected a repository URL like https://github.com/user/name or git@github.com:user/name")
+    name = re.sub(r"\.git$", "", re.split(r"[/:]", url.rstrip("/"))[-1])
+    with CONFIG_LOCK:
+        cfg, _ = config_schema.load_legacy_compat(CONFIG_PATH)
+    root = resolve_comfyui_root(CONFIG_PATH)
+    custom = next(iter(custom_nodes_paths(cfg, str(root))), "")
+    repo = str(cfg.get("custom_nodes_repo_path") or "").strip()
+    base = repo if repo and os.path.isdir(repo) else custom
+    if not base:
+        raise ValueError("custom_nodes folder not found")
+    dest = os.path.join(base, name)
+    if os.path.exists(dest) or os.path.exists(os.path.join(custom, name)):
+        raise ValueError(f"{name} already exists")
+    code, _ = stream(job, ["git", "clone", url, dest], env=NO_PROMPT_ENV)
+    if code:
+        raise RuntimeError(f"git clone failed (exit code {code})")
+    if link and base != custom:
+        job["log"].append(nodes_mgr._add_link(base, custom, name))
+    if os.path.isfile(os.path.join(dest, "requirements.txt")):
+        job["log"].append("This node has a requirements.txt: run the Pip audit to install what it needs.")
+    job["log"].append(f"Added: {dest}")
+    return {"path": dest, "name": name}
+
+
+def _rmtree(path: str) -> None:
+    """rmtree that also deletes read-only files (git objects on Windows)."""
+    def clear(func, p, _exc):
+        os.chmod(p, 0o700)
+        func(p)
+    shutil.rmtree(path, **({"onexc": clear} if sys.version_info >= (3, 12) else {"onerror": clear}))
+
+
+def delete_risk(real: str) -> str:
+    """What deleting a git folder would lose: changed, untracked and ignored files (models, configs...) and unpushed commits."""
+    if not os.path.isdir(os.path.join(real, ".git")):
+        return ""
+    ok, out, _ = run_git(["status", "--porcelain", "--ignored"], cwd=real)
+    lines = [l for l in out.splitlines() if l.strip() and "__pycache__" not in l and not l.rstrip("/").endswith(".pyc")] if ok else []
+    parts = []
+    if lines:
+        parts.append(f"{len(lines)} modified/untracked/ignored path(s), e.g. {lines[0][3:63]}")
+    st = repo_status(real, fetch=False)
+    if st["ahead"]:
+        parts.append(f"{st['ahead']} unpushed commit(s)")
+    if st["state"] == "no-upstream":
+        parts.append("no upstream, cannot tell whether its commits are pushed")
+    return "; ".join(parts)
+
+
+def repo_delete_job(job: dict, paths: List[str], mode: str, force: bool) -> dict:
+    """mode "unlink" removes only the junction in custom_nodes, "delete" removes the folder (and the junction) for good.
+    A repository with local changes or unpushed commits is kept unless `force`."""
+    unknown = [p for p in paths if p not in REPO_KIND]
+    if unknown:
+        raise ValueError("not a scanned repository: " + unknown[0])
+    with CONFIG_LOCK:
+        cfg, _ = config_schema.load_legacy_compat(CONFIG_PATH)
+    root = resolve_comfyui_root(CONFIG_PATH)
+    managed = [os.path.realpath(d) for d in custom_nodes_paths(cfg, str(root))]
+    repo = str(cfg.get("custom_nodes_repo_path") or "").strip()
+    if repo and os.path.isdir(repo):
+        managed.append(os.path.realpath(repo))
+    wdir = default_workflows_dir(root)
+    if wdir.is_dir():
+        managed.append(os.path.realpath(str(wdir)))
+    inside = lambda real: any(real.startswith(b + os.sep) for b in managed)
+    results = []
+    for p in paths:
+        name = os.path.basename(p.rstrip("\\/"))
+        real = os.path.realpath(p)
+        is_link = nodes_mgr._is_reparse_point(p)
+        problem = ""
+        if os.path.normcase(real) == os.path.normcase(os.path.realpath(str(root))):
+            problem = "this is the ComfyUI folder itself"
+        elif not inside(real) and not (is_link and mode == "unlink"):
+            problem = "outside the managed folders"
+        elif mode == "unlink" and not is_link:
+            problem = "not a junction (use delete)"
+        elif mode == "delete" and not force:
+            risk = delete_risk(real)
+            if risk:
+                problem = f"{risk}; tick 'even with local changes' to delete anyway"
+        if problem:
+            job["log"].append(f"{name}: kept, {problem}")
+            results.append({"path": p, "name": name, "ok": False, "message": problem})
+            continue
+        try:
+            if is_link and not nodes_mgr._remove_dir(p):
+                raise OSError("could not remove the junction")
+            if mode == "delete":
+                _rmtree(real if is_link else p)
+            job["log"].append(f"{name}: " + ("junction removed, repo folder kept" if mode == "unlink" else "deleted"))
+            results.append({"path": p, "name": name, "ok": True, "message": ""})
+            REPO_KIND.pop(p, None)
+        except OSError as e:
+            job["log"].append(f"{name}: failed, {e}")
+            results.append({"path": p, "name": name, "ok": False, "message": str(e)})
+    return {"results": results}
+
+
 def add_workflow_job(job: dict, url: str) -> dict:
     """Add a workflow source by URL: a whole repository is cloned, a folder URL becomes a partial (sparse) source."""
     source = parse_workflow_url(url.strip())
@@ -526,7 +636,7 @@ def add_workflow_job(job: dict, url: str) -> dict:
     if dest.exists():
         raise ValueError(f"{dest} already exists")
     if source.mode == "full":
-        code, _ = stream(job, ["git", "clone", source.repo_url, str(dest)])
+        code, _ = stream(job, ["git", "clone", source.repo_url, str(dest)], env=NO_PROMPT_ENV)
         if code:
             raise RuntimeError(f"git clone failed (exit code {code})")
     else:
@@ -640,6 +750,16 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/repos_scan":
                 job = new_job("repos")
                 run_in_thread(job, repos_scan_job, str(body.get("kind", "nodes")), bool(body.get("fetch", True)), bool(body.get("include_disabled")))
+                self.send_json({"job": job["id"]})
+            elif self.path == "/api/repo_add":
+                job = new_job("repos")
+                run_in_thread(job, repo_add_job, str(body["url"]), bool(body.get("link", True)))
+                self.send_json({"job": job["id"]})
+            elif self.path == "/api/repo_delete":
+                if str(body.get("mode")) not in ("unlink", "delete"):
+                    return self.send_json({"error": "bad mode"}, 400)
+                job = new_job("repos")
+                run_in_thread(job, repo_delete_job, [str(x) for x in body["paths"]], str(body["mode"]), bool(body.get("force")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/add_workflow":
                 job = new_job("repos")

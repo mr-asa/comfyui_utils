@@ -190,6 +190,7 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
       <label><input type="checkbox" id="r-hide" checked> hide up-to-date</label>
       <label><input type="checkbox" id="r-dirtyonly"> only with local changes</label>
       <span id="r-chips"></span>
+      <span id="r-addnode"><input type="text" id="r-newurl" size="38" placeholder="https://github.com/user/node (new custom node)"> <label><input type="checkbox" id="r-newlink" checked> link</label> <button id="r-addnodebtn">Add custom node</button></span>
       <span class="muted" id="r-count"></span>
     </div>
     <div class="toolbar">
@@ -198,6 +199,9 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
       <label><span id="r-conflict-label">conflicts</span> <select id="r-conflict"></select></label>
       <label><input type="checkbox" id="r-dry"> dry run</label>
       <button class="primary" id="r-update" disabled>Update selected…</button>
+      <label>remove <select id="r-rmmode"></select></label>
+      <label title="Delete even if the repository has local changes or unpushed commits"><input type="checkbox" id="r-rmforce"> even with local changes</label>
+      <button id="r-remove" disabled>Remove selected…</button>
       <span class="muted" id="r-selinfo"></span>
     </div>
     <div class="tablewrap"><table>
@@ -224,6 +228,9 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
       <label>local changes <select id="w-local"></select></label>
       <label><span id="w-conflict-label">conflicts</span> <select id="w-conflict"></select></label>
       <button class="primary" id="w-update" disabled>Update selected…</button>
+      <label>remove <select id="w-rmmode"></select></label>
+      <label title="Delete even if the repository has local changes or unpushed commits"><input type="checkbox" id="w-rmforce"> even with local changes</label>
+      <button id="w-remove" disabled>Remove selected…</button>
       <span class="muted" id="w-selinfo"></span>
     </div>
     <div class="tablewrap"><table>
@@ -722,6 +729,7 @@ function setRepoOptions() {
   $(p + "-local").innerHTML = o.local.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
   $(p + "-conflict").innerHTML = o.conflict.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
   $(p + "-conflict-label").textContent = o.conflictLabel;
+  $(p + "-rmmode").innerHTML = (kind === "nodes" ? [["unlink", "unlink (keep the repo folder)"], ["delete", "delete the folder for good"]] : [["delete", "delete the folder for good"]]).map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
 }
 setRepoOptions();
 let repos = [], rSel = new Set(), rActive = new Set(RSTATES), rJob = null, rSortKey = "state", rSortDir = 1, rPicked = "", rDetailSeq = 0;
@@ -779,7 +787,7 @@ function rRender() {
   $(p + "-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => rPick(tr.dataset.p));
   rUpdateSel();
 }
-function rUpdateSel() { $(p + "-selinfo").textContent = rSel.size ? `${rSel.size} selected` : ""; $(p + "-update").disabled = !rSel.size || $(p + "-update").dataset.busy === "1"; }
+function rUpdateSel() { $(p + "-selinfo").textContent = rSel.size ? `${rSel.size} selected` : ""; $(p + "-update").disabled = !rSel.size || $(p + "-update").dataset.busy === "1"; $(p + "-remove").disabled = !rSel.size; }
 
 async function rPick(path) {
   rPicked = path; const seq = ++rDetailSeq, r = repos.find(x => x.path === path);
@@ -839,6 +847,36 @@ if ($(p + "-addbtn")) $(p + "-addbtn").onclick = async () => {
     watch(job, j => {
       if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
       setStatus("done"); $(p + "-url").value = ""; $(p + "-scan").onclick();
+    }, logAdd);
+  } catch (e) { logAdd([e.message]); setStatus("failed"); }
+};
+$(p + "-remove").onclick = async () => {
+  const paths = [...rSel], mode = $(p + "-rmmode").value, force = $(p + "-rmforce").checked;
+  const names = paths.map(x => repos.find(r => r.path === x).name);
+  const verb = mode === "unlink" ? "Remove the junctions of" : "PERMANENTLY DELETE the folders of";
+  if (!confirm(`${verb} ${paths.length} item(s)?\n\n${names.slice(0, 12).join("\n")}${names.length > 12 ? "\n…" : ""}\n\n`
+    + (mode === "delete" ? (force ? "Local changes and unpushed commits will be lost too." : "Repositories with local changes or unpushed commits are kept.") : "The repository folders stay in the repo."))) return;
+  showLog(`${mode === "unlink" ? "Unlink" : "Delete"}: ${paths.length} item(s)`, "", "running");
+  try {
+    const {job} = await api("/api/repo_delete", {paths, mode, force});
+    watch(job, j => {
+      if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
+      const gone = new Set(j.result.results.filter(x => x.ok).map(x => x.path));
+      repos = repos.filter(r => !gone.has(r.path)); gone.forEach(x => rSel.delete(x));
+      const kept = j.result.results.length - gone.size;
+      setStatus(kept ? "failed" : "done"); $("logsummary").textContent = `${gone.size} removed` + (kept ? `, ${kept} kept` : "");
+      rBuildChips(); rRender();
+    }, logAdd);
+  } catch (e) { logAdd([e.message]); setStatus("failed"); }
+};
+if ($(p + "-addnodebtn")) $(p + "-addnodebtn").onclick = async () => {
+  const url = $(p + "-newurl").value.trim(); if (!url) return;
+  showLog("Add custom node", url, "running");
+  try {
+    const {job} = await api("/api/repo_add", {url, link: $(p + "-newlink").checked});
+    watch(job, j => {
+      if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
+      setStatus("done"); $(p + "-newurl").value = ""; $(p + "-scan").onclick();
     }, logAdd);
   } catch (e) { logAdd([e.message]); setStatus("failed"); }
 };
