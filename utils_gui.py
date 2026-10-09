@@ -596,7 +596,7 @@ def repo_delete_job(job: dict, paths: List[str], mode: str, force: bool) -> dict
         name = os.path.basename(p.rstrip("\\/"))
         real = os.path.realpath(p)
         is_link = nodes_mgr._is_reparse_point(p)
-        problem = ""
+        problem, risky = "", False
         if os.path.normcase(real) == os.path.normcase(os.path.realpath(str(root))):
             problem = "this is the ComfyUI folder itself"
         elif not inside(real) and not (is_link and mode == "unlink"):
@@ -606,10 +606,10 @@ def repo_delete_job(job: dict, paths: List[str], mode: str, force: bool) -> dict
         elif mode == "delete" and not force:
             risk = delete_risk(real)
             if risk:
-                problem = f"{risk}; tick 'even with local changes' to delete anyway"
+                problem, risky = risk, True
         if problem:
             job["log"].append(f"{name}: kept, {problem}")
-            results.append({"path": p, "name": name, "ok": False, "message": problem})
+            results.append({"path": p, "name": name, "ok": False, "message": problem, "risk": risky})
             continue
         try:
             if is_link and not nodes_mgr._remove_dir(p):

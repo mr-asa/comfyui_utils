@@ -850,11 +850,11 @@ if ($(p + "-addbtn")) $(p + "-addbtn").onclick = async () => {
     }, logAdd);
   } catch (e) { logAdd([e.message]); setStatus("failed"); }
 };
-$(p + "-remove").onclick = async () => {
+$(p + "-remove").onclick = async (confirmed) => {
   const paths = [...rSel], mode = $(p + "-rmmode").value, force = $(p + "-rmforce").checked;
   const names = paths.map(x => repos.find(r => r.path === x).name);
   const verb = mode === "unlink" ? "Remove the junctions of" : "PERMANENTLY DELETE the folders of";
-  if (!confirm(`${verb} ${paths.length} item(s)?\n\n${names.slice(0, 12).join("\n")}${names.length > 12 ? "\n…" : ""}\n\n`
+  if (confirmed !== true && !confirm(`${verb} ${paths.length} item(s)?\n\n${names.slice(0, 12).join("\n")}${names.length > 12 ? "\n…" : ""}\n\n`
     + (mode === "delete" ? (force ? "Local changes and unpushed commits will be lost too." : "Repositories with local changes or unpushed commits are kept.") : "The repository folders stay in the repo."))) return;
   showLog(`${mode === "unlink" ? "Unlink" : "Delete"}: ${paths.length} item(s)`, "", "running");
   try {
@@ -866,6 +866,13 @@ $(p + "-remove").onclick = async () => {
       const kept = j.result.results.length - gone.size;
       setStatus(kept ? "failed" : "done"); $("logsummary").textContent = `${gone.size} removed` + (kept ? `, ${kept} kept` : "");
       rBuildChips(); rRender();
+      const risky = j.result.results.filter(x => x.risk);
+      if (mode === "delete" && !force && risky.length && confirm(`${risky.length} folder(s) were kept because deleting them would lose work:\n\n`
+          + risky.slice(0, 8).map(x => `${x.name}: ${x.message}`).join("\n") + `\n\nDelete them anyway? This cannot be undone.`)) {
+        $(p + "-rmforce").checked = true;
+        rSel.clear(); risky.forEach(x => rSel.add(x.path)); rRender();
+        $(p + "-remove").onclick(true);
+      }
     }, logAdd);
   } catch (e) { logAdd([e.message]); setStatus("failed"); }
 };
