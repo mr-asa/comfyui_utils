@@ -259,32 +259,7 @@ def main() -> int:
     comfy_root = resolve_comfyui_root(config_path, cli_root=args.root, start_path=Path(here))
     plugins_dirs = _load_plugins_dirs(cfg, comfy_root, args.plugins_dir)
 
-    repos: List[str] = []
-
-    # 1) Add the main ComfyUI repo (root)
-    if os.path.isdir(os.path.join(str(comfy_root), ".git")):
-        repos.append(str(comfy_root))
-    else:
-        print("Warning: root path is not a git repository:", comfy_root)
-
-    # 2) Then scan plugins from plugins_dir (top-level directories only)
-    seen_repos: set[str] = set()
-    for plugins_dir in plugins_dirs:
-        if not os.path.isdir(plugins_dir):
-            continue
-        for name in sorted(os.listdir(plugins_dir)):
-            if name in IGNORED_DIRS:
-                continue
-            path = os.path.join(plugins_dir, name)
-            if not os.path.isdir(path):
-                continue
-            if not args.include_disabled and (name.lower().startswith("disabled") or name.lower().endswith(".disabled")):
-                continue
-            real = norm_real_path(path)
-            if real in seen_repos:
-                continue
-            seen_repos.add(real)
-            repos.append(path)
+    repos = collect_repos(comfy_root, plugins_dirs, args.include_disabled)
 
     repos = apply_filters(repos, only=args.only, skip=args.skip)
 
@@ -372,6 +347,33 @@ def main() -> int:
     return 1 if any_errors else 0
 
 
+def collect_repos(comfy_root: Path, plugins_dirs: List[str], include_disabled: bool) -> List[str]:
+    """The ComfyUI root first, then every top-level folder of the plugin directories (junctions deduplicated)."""
+    repos: List[str] = []
+    if os.path.isdir(os.path.join(str(comfy_root), ".git")):
+        repos.append(str(comfy_root))
+    else:
+        print("Warning: root path is not a git repository:", comfy_root)
+    seen_repos: set[str] = set()
+    for plugins_dir in plugins_dirs:
+        if not os.path.isdir(plugins_dir):
+            continue
+        for name in sorted(os.listdir(plugins_dir)):
+            if name in IGNORED_DIRS:
+                continue
+            path = os.path.join(plugins_dir, name)
+            if not os.path.isdir(path):
+                continue
+            if not include_disabled and (name.lower().startswith("disabled") or name.lower().endswith(".disabled")):
+                continue
+            real = norm_real_path(path)
+            if real in seen_repos:
+                continue
+            seen_repos.add(real)
+            repos.append(path)
+    return repos
+
+
 def apply_filters(paths: List[str], only: Optional[List[str]], skip: Optional[List[str]]) -> List[str]:
     def match_any(patterns: List[str], text: str) -> bool:
         for p in patterns:
@@ -395,7 +397,9 @@ def apply_filters(paths: List[str], only: Optional[List[str]], skip: Optional[Li
 
 # ------------------------- Repo update -------------------------
 
-def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
+def update_repo(path: str, dry_run: bool = False, on_local: Optional[str] = None, on_conflict: Optional[str] = None) -> UpdateResult:
+    """on_local answers the local-changes prompt ("1" replace from remote, "2" stash and re-apply, "3" skip, "4" re-clone),
+    on_conflict the conflict prompt ("reset" or "skip"); None asks on the console."""
     name = os.path.basename(path.rstrip(os.sep))
 
     web_url = to_web_url(get_remote_url(path) or "")
@@ -425,7 +429,7 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
             print_repo_header(name, path, web_url, branch)
         notes.append("Unresolved merge conflict (left over from a previous run):")
         notes.extend(["  " + ln for ln in remedy_unmerged_conflict(path, conflicted)])
-        resolution = prompt_conflict_resolution(name, path, web_url, branch, conflicted)
+        resolution = ("reset" if on_conflict == "reset" else None) if on_conflict else prompt_conflict_resolution(name, path, web_url, branch, conflicted)
         if resolution is None:
             skip_notes = notes + ["Skipped due to unresolved merge conflict."]
             abort_note = abort_in_progress_operation(path)
@@ -456,7 +460,9 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
         if local_lines:
             notes.append("Local changes (git status --porcelain):")
             notes.extend(["  " + ln for ln in local_lines])
-        if _should_auto_merge(path, name, status_out):
+        if on_local:
+            action = on_local
+        elif _should_auto_merge(path, name, status_out):
             action = "2"
             notes.append("Auto-merge local changes (matched configured patterns).")
         else:
@@ -560,7 +566,7 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
                     print_repo_header(name, path, web_url, branch)
                 notes.append("Pull hit a merge conflict:")
                 notes.extend(["  " + ln for ln in remedy_unmerged_conflict(path, conflicted2)])
-                resolution = prompt_conflict_resolution(name, path, web_url, branch, conflicted2)
+                resolution = ("reset" if on_conflict == "reset" else None) if on_conflict else prompt_conflict_resolution(name, path, web_url, branch, conflicted2)
                 if resolution is None:
                     skip_notes = notes + ["Skipped due to unresolved merge conflict."]
                     abort_note = abort_in_progress_operation(path)
@@ -640,6 +646,62 @@ def update_repo(path: str, dry_run: bool = False) -> UpdateResult:
         last_update_at=_fmt_dt(new_dt),
         delta_from_local=_human_gap(old_dt, new_dt),
     )
+
+
+def repo_status(path: str, fetch: bool = True) -> Dict[str, object]:
+    """One JSON-friendly row for a repository: branch, ahead/behind of the upstream, local changes, last commit."""
+    name = os.path.basename(path.rstrip(os.sep))
+    info: Dict[str, object] = {
+        "name": name, "path": path, "web_url": "", "branch": "", "state": "ok", "behind": 0, "ahead": 0,
+        "dirty": 0, "dirty_lines": [], "last_date": "", "last_subject": "", "error": "",
+        "disabled": name.lower().startswith("disabled") or name.lower().endswith(".disabled"),
+    }
+    if not os.path.isdir(os.path.join(path, ".git")):
+        info["state"] = "not-git"
+        return info
+    info["web_url"] = to_web_url(get_remote_url(path) or "")
+    info["branch"] = get_current_branch(path) or "DETACHED"
+    if fetch:
+        ok, out, err = run_git(["fetch", "--all", "--tags"], cwd=path)
+        if not ok:
+            info["error"] = (err or out).strip()[-300:]
+            info["state"] = "fetch-failed"
+    dirty, status_out, _ignored = repo_dirty(path)
+    if dirty:
+        info["dirty"] = len([l for l in status_out.splitlines() if l.strip()])
+        info["dirty_lines"] = summarize_porcelain(status_out, limit=30)
+    ok, out, _ = run_git(["log", "-1", "--format=%cI%x09%s"], cwd=path)
+    if ok and "\t" in out:
+        info["last_date"], info["last_subject"] = out.strip().split("\t", 1)
+    ok, out, _ = run_git(["rev-list", "--left-right", "--count", "HEAD...@{u}"], cwd=path)
+    if ok and len(out.split()) == 2:
+        info["ahead"], info["behind"] = (int(x) for x in out.split())
+        if info["state"] == "ok":
+            info["state"] = "diverged" if info["ahead"] and info["behind"] else "behind" if info["behind"] else "ahead" if info["ahead"] else "up-to-date"
+    elif info["state"] == "ok":
+        info["state"] = "no-upstream"
+    return info
+
+
+def incoming_changes(path: str, limit: int = 60) -> Dict[str, object]:
+    """Commits the upstream has that HEAD does not, and the files they touch."""
+    ok, out, err = run_git(["log", f"--max-count={limit}", "--format=%h %cs %s", "HEAD..@{u}"], cwd=path)
+    commits = [l for l in out.splitlines() if l.strip()] if ok else []
+    ok2, out2, _ = run_git(["diff", "--numstat", "HEAD...@{u}"], cwd=path)
+    files = []
+    for l in (out2.splitlines() if ok2 else [])[:200]:
+        parts = l.split("\t", 2)
+        if len(parts) == 3:
+            files.append({"added": parts[0], "deleted": parts[1], "path": parts[2]})
+    return {"commits": commits, "files": files, "error": "" if ok else (err or out).strip()[-300:]}
+
+
+def result_to_dict(res: UpdateResult) -> Dict[str, object]:
+    return {
+        "name": res.name, "path": res.path, "branch": res.branch, "changed": res.changed, "skipped": res.skipped or "", "error": res.error or "",
+        "commits": res.commit_messages, "files": [{"added": a, "deleted": d, "path": p} for a, d, p in res.numstat],
+        "notes": res.notes, "last_update_at": res.last_update_at or "",
+    }
 
 
 # ------------------------- Git helpers -------------------------

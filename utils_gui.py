@@ -21,6 +21,8 @@ import threading
 import time
 import traceback
 import webbrowser
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List
@@ -31,6 +33,7 @@ import config_schema
 from comfyui_root import resolve_comfyui_root
 from envtools import custom_nodes_paths, dedupe_dirs, install_prefix, installed_pythons, run_uv
 from build_venv import CUDA_CANDIDATES, PY_CANDIDATES, Candidate, PlanCancelled, PlanOptions, build_venv, default_venv_name, describe_plan, make_plan
+from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, update_repo
 from wheels import download_wheel, load_catalog
 from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_install_changes, run_audit
 
@@ -40,6 +43,7 @@ LOG_DIR = HERE / "install_logs"
 TOKEN = secrets.token_urlsafe(16)
 CONFIG_LOCK = threading.Lock()
 JOBS: Dict[str, dict] = {}
+REPO_PATHS: set = set()  # repositories found by the last scan; the only paths the update endpoints accept
 PLANS: Dict[str, tuple] = {}  # plan id -> (Plan, temp dir kept alive for the build that follows)
 
 
@@ -273,6 +277,71 @@ def build_job(job: dict, plan_id: str, index: int, name: str, select: bool) -> d
         (LOG_DIR / f"{stamp}_build_{name}.log").write_text("\n".join(job["log"]) + "\n", encoding="utf-8")
 
 
+def repos_scan_job(job: dict, fetch: bool, include_disabled: bool) -> dict:
+    with CONFIG_LOCK:
+        cfg, _ = config_schema.load_legacy_compat(CONFIG_PATH)
+    root = resolve_comfyui_root(CONFIG_PATH)
+    repos = collect_repos(root, custom_nodes_paths(cfg, str(root)), include_disabled)
+    REPO_PATHS.clear()
+    REPO_PATHS.update(repos)
+    rows, done = [], 0
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {ex.submit(repo_status, r, fetch): r for r in repos}
+        try:
+            for fut in as_completed(futs):
+                rows.append(fut.result())
+                done += 1
+                job["progress"] = {"label": "Repositories", "i": done, "n": len(repos), "suffix": rows[-1]["name"]}
+                if job["cancel"].is_set():
+                    raise JobCancelled()
+        except BaseException:
+            ex.shutdown(wait=False, cancel_futures=True)
+            raise
+    counts = Counter(r["state"] for r in rows)
+    job["log"].append(f"{len(rows)} repositories: " + ", ".join(f"{n} {s}" for s, n in sorted(counts.items())))
+    return {"rows": rows, "root": str(root)}
+
+
+def repos_update_job(job: dict, paths: List[str], on_local: str, on_conflict: str, dry_run: bool) -> dict:
+    unknown = [p for p in paths if p not in REPO_PATHS]
+    if unknown:
+        raise ValueError("not a scanned repository: " + unknown[0])
+    local = {"stash": "2", "replace": "1", "skip": "3"}[on_local]
+    resolve = {"skip": "skip", "reset": "reset"}[on_conflict]
+    results, done = [], 0
+
+    def one(path: str) -> dict:
+        res = result_to_dict(update_repo(path, dry_run=dry_run, on_local=local, on_conflict=resolve))
+        res["row"] = repo_status(path, fetch=False)
+        return res
+
+    root_first = [p for p in paths if p == str(resolve_comfyui_root(CONFIG_PATH))]
+    rest = [p for p in paths if p not in root_first]
+
+    def report(r: dict) -> None:
+        tag = "ERROR " + r["error"][:200] if r["error"] else "skipped: " + r["skipped"] if r["skipped"] else f"updated, {len(r['commits'])} commit(s)" if r["changed"] else "no changes"
+        job["log"].append(f"{r['name']}: {tag}")
+        job["log"] += [f"    {c}" for c in r["commits"][:8]]
+
+    for p in root_first:  # ComfyUI itself goes first and alone
+        results.append(one(p))
+        report(results[-1])
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = [ex.submit(one, p) for p in rest]
+        try:
+            for fut in as_completed(futs):
+                results.append(fut.result())
+                report(results[-1])
+                done += 1
+                job["progress"] = {"label": "Updating", "i": len(results), "n": len(paths), "suffix": results[-1]["name"]}
+                if job["cancel"].is_set():
+                    raise JobCancelled()
+        except BaseException:
+            ex.shutdown(wait=False, cancel_futures=True)
+            raise
+    return {"results": results, "dry_run": dry_run}
+
+
 def save_rules(name: str, hold: List[str], pins: Dict[str, str]) -> None:
     venv_entry(name)
     hold = [canonicalize_name(h) for h in hold if h.strip()]
@@ -355,6 +424,18 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/build":
                 job = new_job("build")
                 run_in_thread(job, build_job, str(body["plan_id"]), int(body["index"]), str(body["name"]).strip(), bool(body.get("select")))
+                self.send_json({"job": job["id"]})
+            elif self.path == "/api/repos_scan":
+                job = new_job("repos")
+                run_in_thread(job, repos_scan_job, bool(body.get("fetch", True)), bool(body.get("include_disabled")))
+                self.send_json({"job": job["id"]})
+            elif self.path == "/api/repo_detail":
+                if str(body["path"]) not in REPO_PATHS:
+                    return self.send_json({"error": "unknown repository"}, 400)
+                self.send_json(incoming_changes(str(body["path"])))
+            elif self.path == "/api/repos_update":
+                job = new_job("repos")
+                run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/cancel":
                 job = JOBS.get(str(body["job"]))

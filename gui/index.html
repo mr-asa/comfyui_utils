@@ -89,13 +89,18 @@ nav button.on { color: var(--text); border-color: var(--accent); }
 #b-detail { padding: 8px 14px; overflow: auto; flex: 1; min-height: 60px; font-size: 13px; }
 #b-detail ul { margin: 2px 0 8px; padding-left: 18px; }
 #b-foot { flex: none; border-top: 1px solid var(--line); }
+.s-behind { color: var(--info); } .s-diverged, .s-fetch-failed, .s-not-git { color: var(--bad); } .s-ahead { color: var(--warn); }
+.s-up-to-date { color: var(--muted); } .s-no-upstream { color: var(--muted); border-style: dashed; }
+#r-detail { flex: none; height: 150px; overflow: auto; border-top: 1px solid var(--line); padding: 8px 14px; font-size: 13px; }
+#r-detail .files { color: var(--muted); }
+tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 @media (max-width: 700px) { main { padding: 8px; } header { padding: 8px; } }
 </style>
 </head>
 <body>
 <header>
   <h1>ComfyUI Utils</h1>
-  <nav><button class="on" data-tab="audit">Pip audit</button><button data-tab="build">Build venv</button></nav>
+  <nav><button class="on" data-tab="audit">Pip audit</button><button data-tab="build">Build venv</button><button data-tab="repos">Repos</button></nav>
   <span class="ctl" id="auditctl">
   <label>venv <select id="venv"></select></label>
   <label title="Also scan requirements of the nodes in custom_nodes_repo_path (real clones, including ones not linked into custom_nodes)"><input type="checkbox" id="repo"> include custom_nodes_repo</label>
@@ -164,6 +169,33 @@ nav button.on { color: var(--text); border-color: var(--accent); }
       <button class="primary" id="b-build">Build venv…</button>
       <span class="muted" id="b-note"></span>
     </div>
+  </div>
+</section>
+<section id="tab-repos" class="tabsec" hidden>
+  <div class="panel" id="r-panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+    <div class="filters">
+      <button class="primary" id="r-scan">Scan</button>
+      <label title="git fetch every repository so ahead/behind is current (slower)"><input type="checkbox" id="r-fetch" checked> fetch from remotes</label>
+      <label><input type="checkbox" id="r-disabled"> include disabled folders</label>
+      <input type="text" id="r-search" placeholder="Filter…" size="18">
+      <label><input type="checkbox" id="r-hide" checked> hide up-to-date</label>
+      <label><input type="checkbox" id="r-dirtyonly"> only with local changes</label>
+      <span id="r-chips"></span>
+      <span class="muted" id="r-count"></span>
+    </div>
+    <div class="toolbar">
+      <button id="r-selbehind">Select behind</button><button id="r-selvis">Select visible</button><button id="r-selnone">Clear</button>
+      <label>local changes <select id="r-local"><option value="stash">stash and re-apply</option><option value="skip">skip the repository</option><option value="replace">discard (replace from remote)</option></select></label>
+      <label>conflicts <select id="r-conflict"><option value="skip">skip</option><option value="reset">hard reset to remote</option></select></label>
+      <label><input type="checkbox" id="r-dry"> dry run</label>
+      <button class="primary" id="r-update" disabled>Update selected…</button>
+      <span class="muted" id="r-selinfo"></span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th></th><th data-rk="name">Repository</th><th data-rk="branch">Branch</th><th data-rk="state">State</th><th>Behind / ahead</th><th>Local changes</th><th data-rk="last_date">Last commit</th></tr></thead>
+      <tbody id="r-rows"></tbody>
+    </table></div>
+    <div id="r-detail"><span class="muted">Scan, then click a row to see the incoming commits.</span></div>
   </div>
 </section>
 </main>
@@ -511,7 +543,7 @@ document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => { sortD
 // ---- tabs
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
-  $("tab-audit").hidden = b.dataset.tab !== "audit"; $("tab-build").hidden = b.dataset.tab !== "build";
+  document.querySelectorAll(".tabsec").forEach(sec => sec.hidden = sec.id !== "tab-" + b.dataset.tab);
   $("auditctl").style.display = b.dataset.tab === "audit" ? "contents" : "none";
 });
 
@@ -588,6 +620,121 @@ $("b-build").onclick = async () => {
     }, logAdd);
   } catch (e) { done(); logAdd([e.message]); setStatus("failed"); }
 };
+
+// ---- repos
+const RSTATES = ["behind", "diverged", "fetch-failed", "not-git", "ahead", "no-upstream", "up-to-date"];
+const RRANK = Object.fromEntries(RSTATES.map((x, i) => [x, i]));
+let repos = [], rSel = new Set(), rActive = new Set(RSTATES), rJob = null, rSortKey = "state", rSortDir = 1, rPicked = "", rDetailSeq = 0;
+
+$("r-scan").onclick = async () => {
+  if (rJob) {
+    $("r-scan").disabled = true; $("r-scan").textContent = "Cancelling…";
+    api("/api/cancel", {job: rJob}).catch(e => logAdd([e.message]));
+    return;
+  }
+  showLog("Scan repositories", "", "running");
+  const idle = () => { rJob = null; $("r-scan").disabled = false; $("r-scan").textContent = "Scan"; };
+  try {
+    const {job} = await api("/api/repos_scan", {fetch: $("r-fetch").checked, include_disabled: $("r-disabled").checked});
+    rJob = job; $("r-scan").textContent = "Cancel scan"; rSel.clear();
+    watch(job, j => {
+      idle();
+      if (j.status === "cancelled") { logAdd(["Scan cancelled."]); setStatus("cancelled"); return; }
+      if (j.status === "error") { logAdd(["Scan failed: " + j.error]); setStatus("failed"); return; }
+      repos = j.result.rows; setStatus("done"); rBuildChips(); rRender();
+    }, logAdd);
+  } catch (e) { idle(); logAdd(["Scan failed: " + e.message]); setStatus("failed"); }
+};
+
+function rBuildChips() {
+  const counts = {}; repos.forEach(r => counts[r.state] = (counts[r.state] || 0) + 1);
+  $("r-chips").innerHTML = RSTATES.filter(x => counts[x]).map(x => `<span class="chip ${rActive.has(x) ? "on" : ""}" data-s="${x}">${x} ${counts[x]}</span>`).join(" ");
+  $("r-chips").querySelectorAll(".chip").forEach(c => c.onclick = () => { const x = c.dataset.s; rActive.has(x) ? rActive.delete(x) : rActive.add(x); c.classList.toggle("on"); rRender(); });
+}
+
+function rVisible() {
+  const q = $("r-search").value.trim().toLowerCase();
+  const rows = repos.filter(r => rActive.has(r.state) && !($("r-hide").checked && r.state === "up-to-date" && !r.flash)
+    && (!$("r-dirtyonly").checked || r.dirty) && (!q || r.name.toLowerCase().includes(q)));
+  const key = r => rSortKey === "state" ? RRANK[r.state] : r[rSortKey];
+  rows.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * rSortDir || a.name.localeCompare(b.name));
+  return rows;
+}
+
+function rRender() {
+  const rows = rVisible();
+  $("r-count").textContent = `${rows.length} of ${repos.length}`;
+  $("r-rows").innerHTML = rows.map(r => {
+    const name = r.web_url ? `<a href="${esc(r.web_url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name);
+    const dirty = r.dirty ? `<span class="risk" title="${esc(r.dirty_lines.join("\n"))}">${r.dirty} file(s)</span>` : '<span class="muted">—</span>';
+    const date = r.last_date ? r.last_date.slice(0, 10) : "";
+    return `<tr data-p="${esc(r.path)}" class="${r.flash ? "flash" : rPicked === r.path ? "sel" : ""}"><td><input type="checkbox" data-p="${esc(r.path)}" ${rSel.has(r.path) ? "checked" : ""}></td>
+      <td class="mono">${name}${r.disabled ? ' <span class="muted">(disabled)</span>' : ""}</td><td class="mono">${esc(r.branch)}</td>
+      <td><span class="badge s-${r.state}" title="${esc(r.error)}">${r.state}</span></td>
+      <td class="mono">${r.behind ? "↓" + r.behind : ""} ${r.ahead ? "↑" + r.ahead : ""}</td><td>${dirty}</td>
+      <td><span class="mono">${esc(date)}</span> <span class="muted">${esc(r.last_subject.slice(0, 90))}</span></td></tr>`;
+  }).join("");
+  $("r-rows").querySelectorAll("input[type=checkbox]").forEach(cb => { cb.onclick = e => e.stopPropagation(); cb.onchange = () => { cb.checked ? rSel.add(cb.dataset.p) : rSel.delete(cb.dataset.p); rUpdateSel(); }; });
+  $("r-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => rPick(tr.dataset.p));
+  rUpdateSel();
+}
+function rUpdateSel() { $("r-selinfo").textContent = rSel.size ? `${rSel.size} selected` : ""; $("r-update").disabled = !rSel.size || $("r-update").dataset.busy === "1"; }
+
+async function rPick(path) {
+  rPicked = path; const seq = ++rDetailSeq, r = repos.find(x => x.path === path);
+  document.querySelectorAll("#r-rows tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.p === path && !tr.classList.contains("flash")));
+  if (r.updated) { $("r-detail").innerHTML = r.updated; return; }
+  $("r-detail").innerHTML = '<span class="muted">Loading…</span>';
+  try {
+    const d = await api("/api/repo_detail", {path});
+    if (seq !== rDetailSeq) return;
+    const head = `<b>${esc(r.name)}</b> <span class="muted">${esc(r.path)}</span>` + (r.dirty ? `<div class="risk">Local changes:<br>${r.dirty_lines.map(l => `<span class="mono">${esc(l)}</span>`).join("<br>")}</div>` : "");
+    $("r-detail").innerHTML = head + (d.commits.length ? `<div>Incoming (${d.commits.length}${d.commits.length >= 60 ? "+" : ""}):</div>` + d.commits.map(c => `<div class="mono">${esc(c)}</div>`).join("") + `<div class="files">${d.files.length} file(s): ` + d.files.slice(0, 40).map(f => `+${f.added} -${f.deleted} ${esc(f.path)}`).join(" · ") + "</div>" : '<div class="muted">Nothing incoming.</div>')
+      + (d.error ? `<div class="bad">${esc(d.error)}</div>` : "");
+  } catch (e) { if (seq === rDetailSeq) $("r-detail").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+}
+
+$("r-update").onclick = async () => {
+  const paths = [...rSel], local = $("r-local").value, conflict = $("r-conflict").value, dry = $("r-dry").checked;
+  const dirty = paths.map(p => repos.find(r => r.path === p)).filter(r => r.dirty);
+  if (!confirm(`${dry ? "Dry run for" : "Update"} ${paths.length} repositor${paths.length === 1 ? "y" : "ies"}?`
+    + (dirty.length ? `\n\n${dirty.length} have local changes → ${local === "stash" ? "stash and re-apply after the pull" : local === "skip" ? "they will be skipped" : "LOCAL CHANGES WILL BE DISCARDED"}.` : "")
+    + (conflict === "reset" ? "\nConflicts → hard reset to the remote (local commits are lost)." : ""))) return;
+  showLog(`${dry ? "Dry run" : "Update"}: ${paths.length} repositories`, "", "running");
+  $("r-update").dataset.busy = "1"; $("r-update").disabled = true; $("r-update").textContent = "Updating…";
+  const finish = () => { $("r-update").dataset.busy = "0"; $("r-update").textContent = "Update selected…"; rUpdateSel(); };
+  try {
+    const {job} = await api("/api/repos_update", {paths, on_local: local, on_conflict: conflict, dry_run: dry});
+    watch(job, j => {
+      finish();
+      if (j.status !== "done") { logAdd([j.error || "Update failed."]); setStatus(j.status === "cancelled" ? "cancelled" : "failed"); return; }
+      repos.forEach(r => delete r.flash);
+      let changed = 0, problems = 0;
+      j.result.results.forEach(res => {
+        const i = repos.findIndex(r => r.path === res.path); if (i < 0) return;
+        const row = res.row;
+        if (res.error) problems++;
+        if (res.changed && !j.result.dry_run) {
+          changed++; row.flash = true; rSel.delete(res.path);
+          row.updated = `<b>${esc(res.name)}</b> updated${res.last_update_at ? " (" + esc(res.last_update_at) + ")" : ""}` + res.commits.map(c => `<div class="mono">${esc(c)}</div>`).join("")
+            + `<div class="files">${res.files.length} file(s): ` + res.files.slice(0, 40).map(f => `+${f.added} -${f.deleted} ${esc(f.path)}`).join(" · ") + "</div>" + (res.notes.length ? `<div class="risk">${res.notes.map(esc).join("<br>")}</div>` : "");
+        } else if (res.error || res.skipped || res.notes.length) {
+          row.updated = `<b>${esc(res.name)}</b> ${res.skipped ? "skipped: " + esc(res.skipped) : ""}${res.error ? `<div class="bad">${esc(res.error)}</div>` : ""}` + (res.notes.length ? `<div class="risk">${res.notes.map(esc).join("<br>")}</div>` : "");
+        }
+        repos[i] = row;
+      });
+      setStatus(problems ? "failed" : "done");
+      $("logsummary").textContent = `${changed} updated` + (problems ? `, ${problems} with errors` : "") + (j.result.dry_run ? " (dry run)" : "");
+      rBuildChips(); rRender();
+    }, logAdd);
+  } catch (e) { finish(); setStatus("failed"); logAdd([e.message]); }
+};
+
+$("r-selbehind").onclick = () => { repos.filter(r => r.state === "behind").forEach(r => rSel.add(r.path)); rRender(); };
+$("r-selvis").onclick = () => { rVisible().forEach(r => rSel.add(r.path)); rRender(); };
+$("r-selnone").onclick = () => { rSel.clear(); rRender(); };
+["r-search", "r-hide", "r-dirtyonly"].forEach(id => $(id).oninput = rRender);
+document.querySelectorAll("th[data-rk]").forEach(th => th.onclick = () => { rSortDir = rSortKey === th.dataset.rk ? -rSortDir : 1; rSortKey = th.dataset.rk; rRender(); });
 init().catch(e => alert(e.message));
 </script>
 </body>
