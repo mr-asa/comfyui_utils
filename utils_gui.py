@@ -12,10 +12,12 @@ POST requests need the per-run token embedded in the served page, so other sites
 from __future__ import annotations
 import argparse
 import json
+import re
 import secrets
 import shutil
 import subprocess
 import threading
+import time
 import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +33,7 @@ from pip_audit_core import audit_rows, need_vcs_install, run_audit
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = str(HERE / "config.json")
+LOG_DIR = HERE / "install_logs"
 TOKEN = secrets.token_urlsafe(16)
 CONFIG_LOCK = threading.Lock()
 JOBS: Dict[str, dict] = {}
@@ -109,18 +112,76 @@ def audit_job(job: dict, name: str, include_repo: bool, force_pip: bool) -> dict
     }
 
 
-def install_job(job: dict, name: str, packages: List[str], force_pip: bool) -> dict:
+def installed_versions(py: str) -> Dict[str, str]:
+    listing = run_uv("pip", "list", "--python", py, "--format", "json", capture=True).stdout
+    return {canonicalize_name(x["name"]): x["version"] for x in json.loads(listing)}
+
+
+def diff_versions(before: Dict[str, str], after: Dict[str, str]) -> List[dict]:
+    return [
+        {"name": n, "from": before.get(n, ""), "to": after.get(n, "")}
+        for n in sorted(set(before) | set(after))
+        if before.get(n) != after.get(n)
+    ]
+
+
+def parse_uv_changes(lines: List[str]) -> List[dict]:
+    """` - name==1` / ` + name==2` lines of a uv install or dry run, merged per package."""
+    old: Dict[str, str] = {}
+    new: Dict[str, str] = {}
+    for line in lines:
+        m = re.match(r"^\s*([+-])\s+([A-Za-z0-9_.\-]+)==(\S+)", line)
+        if m:
+            (new if m[1] == "+" else old)[canonicalize_name(m[2])] = m[3]
+    return diff_versions(old, new)
+
+
+def install_job(job: dict, name: str, packages: List[str], force_pip: bool, protect: str, dry_run: bool) -> dict:
+    """Install (or only simulate) the packages.
+
+    protect: "all" keeps every other installed package at its version, "held" keeps the venv's held and pinned
+    packages, "none" lets the resolver change anything. Protection goes through a constraints file, so a
+    conflict fails loudly instead of silently changing numpy & co."""
     row = venv_entry(name)
-    cfg = {"env_type": "venv", "venv_path": row["path"]}
-    cmd = install_prefix(cfg, force_pip=force_pip) + ["--upgrade"] + packages
+    py = config_schema.venv_python_path(row["path"])
+    before = installed_versions(py)
+    cmd = install_prefix({"env_type": "venv", "venv_path": row["path"]}, force_pip=force_pip)  # no --upgrade: with uv it upgrades every dependency too
+    if dry_run:
+        cmd.append("--dry-run")
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    LOG_DIR.mkdir(exist_ok=True)
+    requested = {canonicalize_name(re.split(r"[=<>!~ ]", p, maxsplit=1)[0]) for p in packages}
+    keep: Dict[str, str] = {}
+    if protect == "all":
+        keep = {n: v for n, v in before.items() if n not in requested}
+    elif protect == "held":
+        with CONFIG_LOCK:
+            v2, _ = config_schema.load_v2(CONFIG_PATH, auto_migrate=False)
+        hold, pins = config_schema.get_pip_rules(v2, name)
+        keep = {n: before[n] for n in (canonicalize_name(h) for h in hold) if n in before and n not in requested}
+        keep.update({canonicalize_name(n): v for n, v in pins.items() if canonicalize_name(n) not in requested})
+    if keep:
+        con = LOG_DIR / f"{stamp}_{name}_constraints.txt"
+        con.write_text("".join(f"{n}=={v}\n" for n, v in sorted(keep.items())), encoding="utf-8")
+        cmd += ["-c", str(con)]
+    cmd += packages
     job["log"].append("> " + " ".join(cmd))
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    lines = []
     for line in p.stdout:
-        job["log"].append(line.rstrip())
+        lines.append(line.rstrip())
+        job["log"].append(lines[-1])
     code = p.wait()
     job["log"].append(f"exit code {code}")
-    listing = run_uv("pip", "list", "--python", config_schema.venv_python_path(row["path"]), "--format", "json", capture=True).stdout
-    return {"exit_code": code, "installed": {canonicalize_name(x["name"]): x["version"] for x in json.loads(listing)}}
+    if dry_run:
+        return {"exit_code": code, "changes": parse_uv_changes(lines) if code == 0 else []}
+    after = installed_versions(py)
+    changes = diff_versions(before, after)
+    # keep a record and the old state, so a bad update can be rolled back with `uv pip install -r <before>`
+    (LOG_DIR / f"{stamp}_{name}_before.txt").write_text("".join(f"{n}=={v}\n" for n, v in sorted(before.items())), encoding="utf-8")
+    (LOG_DIR / f"{stamp}_{name}.log").write_text("\n".join(job["log"]) + "\n\nchanges:\n" + "".join(f"  {c['name']} {c['from'] or '-'} -> {c['to'] or '-'}\n" for c in changes), encoding="utf-8")
+    job["log"].append(f"saved: {LOG_DIR / (stamp + '_' + name + '.log')}")
+    return {"exit_code": code, "installed": after, "changes": changes}
 
 
 def save_rules(name: str, hold: List[str], pins: Dict[str, str]) -> None:
@@ -191,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not packages:
                     return self.send_json({"error": "no packages"}, 400)
                 job = new_job("install")
-                run_in_thread(job, install_job, body["venv"], packages, bool(body.get("force_pip")))
+                run_in_thread(job, install_job, body["venv"], packages, bool(body.get("force_pip")), str(body.get("protect", "held")), bool(body.get("dry_run")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/rules":
                 save_rules(body["venv"], list(body.get("hold", [])), dict(body.get("pins", {})))

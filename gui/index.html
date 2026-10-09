@@ -17,10 +17,12 @@
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, "Segoe UI", sans-serif; }
-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, "Segoe UI", sans-serif; display: flex; flex-direction: column; overflow: hidden; }
+header { flex: none; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
 header h1 { font-size: 15px; margin: 0 8px 0 0; }
-main { padding: 16px; max-width: 1500px; margin: 0 auto; }
+main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 16px 8px; }
 select, input[type=text], button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; }
 button { cursor: pointer; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -29,33 +31,46 @@ label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted)
 .bar { height: 6px; background: var(--chip); border-radius: 3px; width: 220px; overflow: hidden; }
 .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
 .progress { display: none; align-items: center; gap: 8px; color: var(--muted); }
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 14px; }
-.filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; }
+#resultpanel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.filters { flex: none; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; }
+#resultpanel > .toolbar { flex: none; border-bottom: 1px solid var(--line); }
 .chip { padding: 2px 9px; border-radius: 999px; background: var(--chip); border: 1px solid transparent; cursor: pointer; color: var(--muted); user-select: none; }
 .chip.on { border-color: var(--accent); color: var(--text); }
-.tablewrap { overflow-x: auto; }
+.tablewrap { flex: 1; min-height: 0; overflow: auto; }
 table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 600; cursor: pointer; white-space: nowrap; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+th { position: sticky; top: 0; z-index: 2; background: var(--panel); color: var(--muted); font-weight: 600; cursor: pointer; box-shadow: 0 1px 0 var(--line); }
 tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+td.used { white-space: normal; max-width: 300px; }
+td.issue { white-space: pre-wrap; width: 100%; min-width: 360px; overflow-wrap: anywhere; color: var(--bad); font-size: 12px; }
+tr.flash td { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+tr.side td { background: color-mix(in srgb, var(--warn) 16%, transparent); }
 .badge { padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; white-space: nowrap; }
 .s-safe { color: var(--ok); } .s-ok { color: var(--muted); } .s-risky { color: var(--bad); } .s-unknown { color: var(--warn); }
 .s-missing { color: var(--info); } .s-downgrade { color: var(--warn); } .s-held, .s-pinned { color: var(--accent); } .s-pin-mismatch { color: var(--bad); }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 .muted { color: var(--muted); }
-td, th { white-space: nowrap; }
-td.used { white-space: normal; max-width: 300px; }
-td.issue { white-space: pre-wrap; width: 100%; min-width: 360px; overflow-wrap: anywhere; color: var(--bad); font-size: 12px; }
-tr.flash td { background: color-mix(in srgb, var(--ok) 14%, transparent); }
-#drawer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--panel); border-top: 2px solid var(--accent); box-shadow: 0 -4px 16px rgba(0,0,0,.2); }
-#drawer pre { max-height: 38vh; border-radius: 0; }
-#drawer.min pre { display: none; }
-body.drawer-open main { padding-bottom: 46vh; }
 .risk { color: var(--warn); }
-.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; }
-pre { margin: 0; padding: 12px; max-height: 320px; overflow: auto; background: var(--bg); border-radius: 0 0 8px 8px; font-size: 12px; white-space: pre-wrap; }
+.bad { color: var(--bad); }
+pre { margin: 0; padding: 12px; overflow: auto; background: var(--bg); font-size: 12px; white-space: pre-wrap; }
+#drawer { flex: none; background: var(--panel); border-top: 2px solid var(--accent); }
+#drawer pre { max-height: 34vh; }
+#drawer.min pre { display: none; }
+#extrapanel { flex: none; max-height: 26vh; overflow: auto; }
 details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
 .link { background: none; border: none; color: var(--accent); padding: 0 4px; }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0; width: min(860px, 94vw); max-height: 88vh; }
+dialog::backdrop { background: rgba(0,0,0,.45); }
+dialog form { display: flex; flex-direction: column; max-height: 88vh; }
+#dlgbody { padding: 12px 16px; overflow: auto; flex: 1; }
+#dlghead, #dlgfoot { padding: 12px 16px; display: flex; gap: 10px; align-items: center; }
+#dlghead { border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+#dlgfoot { border-top: 1px solid var(--line); justify-content: flex-end; }
+.chg { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 2px 0; }
+.chg .mono { overflow-wrap: anywhere; }
+h3 { margin: 12px 0 4px; font-size: 13px; }
 @media (max-width: 700px) { main { padding: 8px; } header { padding: 8px; } }
 </style>
 </head>
@@ -82,7 +97,7 @@ details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
       <button id="selsafe">Select safe</button>
       <button id="selvis">Select visible</button>
       <button id="selnone">Clear</button>
-      <button class="primary" id="install">Install selected</button>
+      <button class="primary" id="install">Install selected…</button>
       <span class="muted" id="selinfo"></span>
     </div>
     <div class="tablewrap"><table>
@@ -100,6 +115,18 @@ details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
     <span style="flex:1"></span><button id="logmin">minimize</button><button id="logclose">close</button></div>
   <pre id="log"></pre>
 </div>
+<dialog id="dlg">
+  <form method="dialog" onsubmit="return false">
+    <div id="dlghead">
+      <b>Install preview</b>
+      <label title="Other packages stay exactly as they are; the install fails if a dependency would have to change"><input type="radio" name="protect" value="all"> keep all other packages</label>
+      <label title="Packages on this venv's hold list and pins stay as they are"><input type="radio" name="protect" value="held" checked> keep held / pinned</label>
+      <label><input type="radio" name="protect" value="none"> no protection</label>
+    </div>
+    <div id="dlgbody"></div>
+    <div id="dlgfoot"><span class="muted" id="dlgnote" style="flex:1"></span><button type="button" id="dlgcancel">Cancel</button><button type="button" class="primary" id="dlgok" disabled>Install</button></div>
+  </form>
+</dialog>
 <script>
 const TOKEN = "__TOKEN__";
 const $ = id => document.getElementById(id);
@@ -107,7 +134,7 @@ const $ = id => document.getElementById(id);
 const STATES = ["missing", "safe", "pin-mismatch", "downgrade", "risky", "unknown", "held", "pinned", "ok"];
 const RANK = Object.fromEntries(STATES.map((s, i) => [s, i]));
 let data = null, rules = {hold: new Set(), pins: {}}, selected = new Set(), activeStates = new Set(STATES);
-let sortKey = "state", sortDir = 1;
+let sortKey = "state", sortDir = 1, pending = null, previewSeq = 0;
 
 // what "Install selected" will put into the venv for a row
 function plan(r) {
@@ -125,6 +152,8 @@ async function api(path, body) {
   return j;
 }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const verParts = v => String(v).split(/[^0-9]+/).filter(Boolean).map(Number);
+function cmpVer(a, b) { const x = verParts(a), y = verParts(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; }
 
 async function init() {
   const st = await api("/api/state");
@@ -155,7 +184,7 @@ $("run").onclick = async () => {
     const {job} = await api("/api/audit", {venv, include_repo: $("repo").checked, force_pip: $("pip").checked});
     watch(job, j => {
       $("run").disabled = false;
-      if (j.status === "error") { showLog("Audit failed", j.error); return; }
+      if (j.status === "error") { showLog("Audit failed", j.error, "failed"); return; }
       data = j.result; rules.hold = new Set(data.hold); rules.pins = {...data.pins};
       buildFilters(); render();
       $("resultpanel").hidden = false;
@@ -165,13 +194,13 @@ $("run").onclick = async () => {
 };
 
 function showLog(title, text, status) {
-  $("drawer").hidden = false; $("drawer").classList.remove("min"); document.body.classList.add("drawer-open");
+  $("drawer").hidden = false; $("drawer").classList.remove("min"); $("logmin").textContent = "minimize";
   $("logtitle").textContent = title; $("log").textContent = text || ""; $("logsummary").textContent = "";
   setStatus(status || "running");
 }
 function setStatus(st) { const b = $("logstatus"); b.textContent = st; b.className = "badge " + (st === "done" ? "s-safe" : st === "running" ? "s-unknown" : "s-risky"); }
 $("logmin").onclick = () => { const m = $("drawer").classList.toggle("min"); $("logmin").textContent = m ? "expand" : "minimize"; };
-$("logclose").onclick = () => { $("drawer").hidden = true; document.body.classList.remove("drawer-open"); };
+$("logclose").onclick = () => { $("drawer").hidden = true; };
 
 function buildFilters() {
   const nodes = [...new Set(data.rows.flatMap(r => r.used_in.map(u => u.repo)))].sort((a, b) => a.localeCompare(b));
@@ -186,7 +215,7 @@ function isUnchanged(r) { return r.unchanged ?? (r.state === "ok" && !r.issue); 
 function visibleRows() {
   const q = $("search").value.trim().toLowerCase(), node = $("node").value, hide = $("hide").checked;
   const rows = data.rows.filter(r => activeStates.has(r.state)
-    && !(hide && isUnchanged(r))
+    && !(hide && isUnchanged(r) && !r.flash && !r.side)
     && (!q || r.name.includes(q))
     && (!node || r.used_in.some(u => u.repo === node)));
   const key = r => sortKey === "state" ? RANK[r.state] : sortKey === "install" ? plan(r).ver : r[sortKey];
@@ -203,8 +232,9 @@ function render() {
     const used = r.used_in.map(u => `<span title="${esc(u.spec || "no specifier")}">${esc(u.repo)}</span>`).join(", ");
     const p = plan(r);
     const inst = p.ver ? (p.risky ? `<span class="risk" title="No safe version found; this one conflicts with something">${esc(p.ver)} (risky)</span>` : esc(p.ver)) : "—";
-    return `<tr class="${r.flash ? "flash" : ""}"><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
-      <td class="mono">${esc(r.name)}</td><td class="mono">${esc(r.installed) || "—"}</td><td class="mono">${inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
+    const was = r.was ? ` <span class="${r.side ? "risk" : "muted"}" title="${r.side ? "changed as a side effect of an install" : "updated"}">(was ${esc(r.was)})</span>` : "";
+    return `<tr class="${r.flash ? "flash" : r.side ? "side" : ""}"><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
+      <td class="mono">${esc(r.name)}</td><td class="mono">${esc(r.installed) || "—"}${was}</td><td class="mono">${inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
       <td><span class="badge s-${r.state}">${r.state}</span></td><td class="used">${used}</td><td class="issue">${esc(r.issue)}</td>
       <td>${held ? `<button class="link" data-a="unhold" data-n="${esc(r.name)}">unhold</button>` : `<button class="link" data-a="hold" data-n="${esc(r.name)}">hold</button>`}
           ${pin ? `<button class="link" data-a="unpin" data-n="${esc(r.name)}">unpin ${esc(pin)}</button>` : r.installed ? `<button class="link" data-a="pin" data-n="${esc(r.name)}">pin ${esc(r.installed)}</button>` : ""}</td></tr>`;
@@ -214,7 +244,7 @@ function render() {
   updateSel();
 }
 
-function updateSel() { $("selinfo").textContent = selected.size ? `${selected.size} selected` : ""; $("install").disabled = !selected.size; }
+function updateSel() { $("selinfo").textContent = selected.size ? `${selected.size} selected` : ""; $("install").disabled = !selected.size || $("install").dataset.busy === "1"; }
 
 async function rule(action, name) {
   const row = data.rows.find(r => r.name === name);
@@ -223,6 +253,7 @@ async function rule(action, name) {
   if (action === "pin") rules.pins[name] = row.installed;
   if (action === "unpin") delete rules.pins[name];
   await api("/api/rules", {venv: data.venv, hold: [...rules.hold], pins: rules.pins});
+  if (!row) return;  // a dependency that no requirements.txt lists has no table row
   row.state = rules.pins[name] ? (rules.pins[name] === row.installed ? "pinned" : "pin-mismatch") : rules.hold.has(name) ? "held" : (row.action ? "upgrade" : "ok");
   row.unchanged = !(row.action || row.issue) && row.state !== "pin-mismatch";
   render();
@@ -236,44 +267,93 @@ function renderExtra() {
   $("extrapanel").hidden = false;
 }
 
-$("install").onclick = async () => {
-  const items = [...selected].map(n => { const r = data.rows.find(x => x.name === n); return {name: n, ver: plan(r).ver}; }).filter(i => i.ver);
+// ---- install: preview (dry run) -> confirm -> real install
+const protectMode = () => document.querySelector("input[name=protect]:checked").value;
+
+$("install").onclick = () => {
+  const items = [...selected].map(n => { const r = data.rows.find(x => x.name === n); return {name: n, ver: plan(r).ver, state: r.state}; }).filter(i => i.ver);
   if (!items.length) return alert("Nothing to install for the selected rows.");
-  const pkgs = items.map(i => `${i.name}==${i.ver}`);
-  const risky = [...selected].filter(n => data.rows.find(x => x.name === n).state === "risky");
-  if (!confirm(`Install ${pkgs.length} package(s) into ${data.venv}?` + (risky.length ? `\n\nRisky: ${risky.join(", ")}` : "") + "\n\n" + pkgs.join("\n"))) return;
-  showLog(`Installing ${pkgs.length} package(s) into ${data.venv}`, "", "running");
-  $("install").disabled = true; $("install").textContent = "Installing…";
-  const finish = () => { $("install").textContent = "Install selected"; updateSel(); };
+  pending = {items, pkgs: items.map(i => `${i.name}==${i.ver}`)};
+  $("dlg").showModal();
+  preview();
+};
+$("dlgcancel").onclick = () => $("dlg").close();
+document.querySelectorAll("input[name=protect]").forEach(r => r.onchange = () => pending && preview());
+
+async function preview() {
+  const seq = ++previewSeq;
+  $("dlgok").disabled = true; $("dlgnote").textContent = "";
+  $("dlgbody").innerHTML = '<span class="muted">Checking what would change…</span>';
+  const logEl = document.createElement("pre"); logEl.textContent = "";
   try {
-    const {job} = await api("/api/install", {venv: data.venv, packages: pkgs, force_pip: $("pip").checked});
+    const {job} = await api("/api/install", {venv: data.venv, packages: pending.pkgs, force_pip: $("pip").checked, protect: protectMode(), dry_run: true});
+    watch(job, j => { if (seq === previewSeq) showPreview(j, logEl); }, logEl);
+  } catch (e) { $("dlgbody").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+}
+
+function chgRow(c, extra) {
+  const down = c.from && c.to && cmpVer(c.to, c.from) < 0;
+  const what = !c.from ? "added" : !c.to ? "removed" : down ? "DOWNGRADE" : "";
+  const hold = extra && c.from && !rules.hold.has(c.name) ? ` <button type="button" class="link" data-hold="${esc(c.name)}" title="Add to the hold list and check again">hold</button>` : "";
+  return `<div class="chg"><span class="mono">${esc(c.name)}${hold}</span><span class="mono ${down ? "bad" : extra ? "risk" : ""}">${esc(c.from || "—")} → ${esc(c.to || "—")} ${what ? `<b>${what}</b>` : ""}</span></div>`;
+}
+
+function showPreview(j, logEl) {
+  if (j.status === "error" || j.result.exit_code !== 0) {
+    $("dlgbody").innerHTML = '<div class="bad"><b>This cannot be installed with the chosen protection.</b> Pick a weaker option, or hold/pin differently.</div>';
+    const pre = document.createElement("pre"); pre.textContent = (j.error ? j.error + "\n" : "") + logEl.textContent.split("\n").slice(-14).join("\n");
+    $("dlgbody").appendChild(pre); $("dlgok").disabled = true; return;
+  }
+  const want = new Set(pending.items.map(i => i.name));
+  const main = j.result.changes.filter(c => want.has(c.name)), extra = j.result.changes.filter(c => !want.has(c.name));
+  $("dlgbody").innerHTML = `<h3>Selected (${main.length})</h3>${main.map(c => chgRow(c, false)).join("") || '<span class="muted">already installed</span>'}`
+    + `<h3 class="${extra.length ? "risk" : ""}">Also changed by dependencies (${extra.length})</h3>`
+    + (extra.map(c => chgRow(c, true)).join("") || '<span class="muted">nothing else changes</span>');
+  $("dlgbody").querySelectorAll("button[data-hold]").forEach(b => b.onclick = async () => { await rule("hold", b.dataset.hold); preview(); });
+  $("dlgnote").textContent = `${j.result.changes.length} package(s) will change`;
+  $("dlgok").disabled = !j.result.changes.length;
+}
+
+$("dlgok").onclick = () => { $("dlg").close(); doInstall(protectMode()); };
+
+async function doInstall(protect) {
+  const {items, pkgs} = pending;
+  showLog(`Installing ${pkgs.length} package(s) into ${data.venv}`, "", "running");
+  $("install").dataset.busy = "1"; $("install").disabled = true; $("install").textContent = "Installing…";
+  const finish = () => { $("install").dataset.busy = "0"; $("install").textContent = "Install selected…"; updateSel(); };
+  try {
+    const {job} = await api("/api/install", {venv: data.venv, packages: pkgs, force_pip: $("pip").checked, protect, dry_run: false});
     watch(job, j => {
       finish();
       if (j.status === "error" || j.result.exit_code !== 0) {
         setStatus("failed"); if (j.error) $("log").textContent += "\n" + j.error;
         $("logsummary").textContent = "the table was not changed, check the output"; return;
       }
-      const done = [], differ = [];
-      data.rows.forEach(r => delete r.flash);
-      items.forEach(i => {
-        const row = data.rows.find(x => x.name === i.name), now = j.result.installed[i.name];
-        if (!row || !now) return;
-        const before = row.installed;
-        row.installed = now;
-        if (now === i.ver) {
+      const want = Object.fromEntries(items.map(i => [i.name, i.ver]));
+      data.rows.forEach(r => { delete r.flash; delete r.side; });
+      const done = [], side = [], other = [];
+      j.result.changes.forEach(c => {
+        const row = data.rows.find(x => x.name === c.name);
+        if (!row) { other.push(c); return; }
+        row.was = c.from; row.installed = c.to;
+        if (want[c.name] && c.to === want[c.name]) {
           row.action = ""; row.safe_update = ""; row.risky_update = ""; row.issue = ""; row.unchanged = true; row.flash = true;
-          row.state = rules.pins[i.name] ? "pinned" : rules.hold.has(i.name) ? "held" : "ok";
-          selected.delete(i.name); done.push(`${i.name} ${before || "-"} -> ${now}`);
-        } else differ.push(`${i.name}: wanted ${i.ver}, installed ${now}`);
+          row.state = rules.pins[c.name] ? "pinned" : rules.hold.has(c.name) ? "held" : "ok";
+          selected.delete(c.name); done.push(c);
+        } else { row.side = true; side.push(c); }
       });
+      const fmt = c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`;
       setStatus("done");
-      $("log").textContent += `\nUpdated in the table: ${done.length}` + (done.length ? "\n  " + done.join("\n  ") : "") + (differ.length ? "\nDifferent version installed:\n  " + differ.join("\n  ") : "");
-      $("logsummary").textContent = `${done.length} updated` + (differ.length ? `, ${differ.length} differ` : "");
+      $("log").textContent += `\n\nUpdated as requested: ${done.length}` + (done.length ? "\n  " + done.map(fmt).join("\n  ") : "")
+        + (side.length ? `\nChanged as a side effect (in the table, highlighted): ${side.length}\n  ` + side.map(fmt).join("\n  ") : "")
+        + (other.length ? `\nChanged, not in the table: ${other.length}\n  ` + other.map(fmt).join("\n  ") : "")
+        + (side.length + other.length ? "\nRe-run the audit to re-check the packages that changed as side effects." : "");
+      $("logsummary").textContent = `${done.length} updated` + (side.length + other.length ? `, ${side.length + other.length} changed by dependencies` : "");
       $("log").scrollTop = $("log").scrollHeight;
       buildFilters(); render();
     }, $("log"));
   } catch (e) { finish(); setStatus("failed"); $("log").textContent += "\n" + e.message; }
-};
+}
 
 $("selsafe").onclick = () => { data.rows.filter(r => r.state === "safe").forEach(r => selected.add(r.name)); render(); };
 $("selvis").onclick = () => { visibleRows().forEach(r => selected.add(r.name)); render(); };

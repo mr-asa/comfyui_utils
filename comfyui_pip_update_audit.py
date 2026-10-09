@@ -936,6 +936,7 @@ def main() -> None:
         ("try resolver without installing", "pip install <PACKAGE> --dry-run", "uv pip install <PACKAGE> --dry-run"),
         ("lock the current set of packages", "pip freeze > constraints.txt", "uv pip freeze > constraints.txt"),
         ("install without touching locked packages", "pip install <PACKAGE> -c constraints.txt --upgrade-strategy only-if-needed", "uv pip install <PACKAGE> -c constraints.txt"),
+        ("update one package, dependencies untouched unless required (uv --upgrade would upgrade them all)", "pip install <PACKAGE>==<VERSION>", "uv pip install <PACKAGE>==<VERSION>"),
         ("install a prebuilt wheel without dependencies", "pip install --no-deps <file.whl>", "uv pip install --no-deps <file.whl>"),
         ("install torch for a CUDA version", "pip install torch --index-url https://download.pytorch.org/whl/cu130", "uv pip install torch --torch-backend cu130"),
         ("resolve requirements into a lock without installing", "-", "uv pip compile requirements.txt -o lock.txt"),
@@ -1155,9 +1156,9 @@ def main() -> None:
     unknown = dedupe_pkg_versions(unknown)
     extra_unique = sorted(set(v.raw for v in extra_reqs))
     pip_prefix = " ".join(quote_cmd_part(p) for p in pip)
-    safe_cmd = pip_prefix + " --upgrade " + cmdline(safe)
-    risky_cmd = pip_prefix + " --upgrade " + cmdline(risky)
-    unknown_cmd = pip_prefix + " --upgrade " + cmdline(unknown)
+    safe_cmd = pip_prefix + " " + cmdline(safe)
+    risky_cmd = pip_prefix + " " + cmdline(risky)
+    unknown_cmd = pip_prefix + " " + cmdline(unknown)
     pinned_cmd = pip_prefix + " " + " ".join(
         f"{n}=={v}" for n, v in pinned_mismatch
     ) if pinned_mismatch else ""
