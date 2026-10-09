@@ -128,6 +128,7 @@ class PackageReport:
     reverse_conflicts: List[str] = field(default_factory=list)
     safe_update: Optional[Version] = None
     risky_update: Optional[Version] = None
+    side_changes: List[dict] = field(default_factory=list)  # other packages the safe update would also change
 
 
 @dataclass
@@ -577,7 +578,7 @@ def _find_safe_upgrade_fallback(
     pkg_name: str,
     rpt: PackageReport,
     reverse_map: Dict[str, List[Tuple[str, SpecifierSet]]],
-    pip: List[str],
+    evaluate: Callable,
     upper_exclusive: Optional[Version] = None,
     max_dry_run_checks: int = 12,
 ) -> Optional[Version]:
@@ -587,7 +588,7 @@ def _find_safe_upgrade_fallback(
     - below upper_exclusive (if set)
     - satisfies direct requirement constraints
     - satisfies reverse dependency constraints
-    - passes pip --dry-run as safe
+    - passes the dry run and its side effects as safe
     """
     if not rpt.installed:
         return None
@@ -607,8 +608,7 @@ def _find_safe_upgrade_fallback(
             continue
         if find_reverse_conflicts(reverse_map, pkg_name, cand):
             continue
-        ok, out = dry_run(pip, [(pkg_name, cand)])
-        cls, _err = classify_dry_run(ok, out)
+        cls = evaluate(pkg_name, cand)[2]
         checks += 1
         if cls == "safe":
             return cand
@@ -617,14 +617,76 @@ def _find_safe_upgrade_fallback(
     return None
 
 
+def diff_versions(before: Dict[str, str], after: Dict[str, str]) -> List[dict]:
+    return [
+        {"name": n, "from": before.get(n, ""), "to": after.get(n, "")}
+        for n in sorted(set(before) | set(after))
+        if before.get(n) != after.get(n)
+    ]
+
+
+def parse_install_changes(lines: List[str]) -> List[dict]:
+    """` - name==1` / ` + name==2` lines of a uv install or dry run, merged per package."""
+    old: Dict[str, str] = {}
+    new: Dict[str, str] = {}
+    for line in lines:
+        m = re.match(r"^\s*([+-])\s+([A-Za-z0-9_.\-]+)==(\S+)", line)
+        if m:
+            (new if m[1] == "+" else old)[canonicalize_name(m[2])] = m[3]
+    return diff_versions(old, new)
+
+
+# Changing these as a side effect of an unrelated update is never acceptable (shared by most nodes / tied to the CUDA build)
+SIDE_EFFECT_PROTECTED = {"torch", "torchvision", "torchaudio", "triton", "triton-windows", "numpy"}
+
+
+def side_effect_issues(
+    pkg: str,
+    changes: List[dict],
+    specs_by_name: Dict[str, List[SpecifierSet]],
+    reverse_map: Dict[str, List[Tuple[str, SpecifierSet]]],
+    hold_set: set,
+    pin_map: Dict[str, str],
+) -> Tuple[List[dict], List[str]]:
+    """Packages other than `pkg` that an install would change, and why some of those changes are not acceptable."""
+    extras = [c for c in changes if c["name"] != pkg]
+    changing = {c["name"] for c in changes}
+    issues: List[str] = []
+    for c in extras:
+        n, old, new = c["name"], c["from"], c["to"]
+        if not new:
+            issues.append(f"{n} would be removed")
+            continue
+        try:
+            new_v = Version(new)
+            if old and new_v < Version(old):
+                issues.append(f"{n} would be downgraded {old} -> {new}")
+        except Exception:
+            continue
+        if old and (n in hold_set or n in pin_map or n in SIDE_EFFECT_PROTECTED):
+            issues.append(f"{n} is held/pinned/protected but would change {old} -> {new}")
+        for spec in specs_by_name.get(n, []):
+            if new_v not in spec:
+                issues.append(f"{n} {new} breaks requirements.txt {spec}")
+        for dist, spec in reverse_map.get(n, []):
+            if canonicalize_name(dist) not in changing and new_v not in spec:
+                issues.append(f"{n} {new} breaks {dist} ({spec})")
+    return extras, issues
+
+
+def clean_output(out: str) -> str:
+    """Drop uv's progress/banner lines so an error shows just the reason."""
+    keep = [l for l in (out or "").splitlines() if not re.match(r"^(Using (CPython|Python)|Resolved |Prepared |Checked |Would |Downloading|Building)", l)]
+    return "\n".join(keep).strip()
+
+
 def dry_run(pip: List[str], pkgs: List[Tuple[str, Version]], timeout_s: int = 60) -> Tuple[bool, str]:
     """Run a resolver simulation. Returns (ok, output).
     If --dry-run is unsupported on this pip, consider it ok to avoid losing items.
     """
     if not pkgs:
         return True, ""
-    quiet = ["-q"] if pip[0] == "uv" else []  # uv prints an environment banner otherwise
-    args = pip + quiet + ["--dry-run"] + [f"{n}=={v}" for n, v in pkgs]
+    args = pip + ["--dry-run"] + [f"{n}=={v}" for n, v in pkgs]
     try:
         p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout_s)
         out = p.stdout or ""
@@ -663,10 +725,10 @@ def classify_dry_run(ok: bool, out: str) -> Tuple[str, str]:
         "proxy",
     )
     if any(m in lowered for m in conflict_markers):
-        return "risky", out
+        return "risky", clean_output(out)
     if any(m in lowered for m in net_markers):
-        return "unknown", out
-    return "unknown", out
+        return "unknown", clean_output(out)
+    return "unknown", clean_output(out)
 
 
 def _is_no_matching_distribution(out: str) -> bool:
@@ -884,7 +946,7 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
         elif action == "downgrade":
             state = "downgrade"
         elif action == "upgrade":
-            state = "safe" if n in safe else "risky" if n in risky else "unknown" if n in unknown else "upgrade"
+            state = ("safe-deps" if r.side_changes else "safe") if n in safe else "risky" if n in risky else "unknown" if n in unknown else "upgrade"
         else:
             state = "ok"
         rows.append({
@@ -896,6 +958,7 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
             "action": action or "",
             "state": state,
             "unchanged": package_unchanged(r, pin_off),
+            "side_changes": r.side_changes,
             "issue": r.update_error or r.availability_issue or "",
             "pin": pin_map.get(n, ""),
             "used_in": [{"repo": c.repo, "spec": str(c.spec)} for c in r.constraints],
@@ -1040,7 +1103,20 @@ def run_audit(
         elif r.installed > tgt:
             downgrades.append((n, tgt))
 
-    reverse_map = build_reverse_constraints([n for n, _ in cand], installed_map)
+    reverse_map = build_reverse_constraints(list(installed_map), installed_map)
+    specs_by_name = {n: [c.spec for c in allc[n] if str(c.spec)] for n in allc}
+    side_changes: Dict[Tuple[str, str], List[dict]] = {}
+
+    def evaluate(name: str, ver: Version) -> Tuple[bool, str, str, str]:
+        """Dry-run one install and judge the other packages it would change."""
+        ok_e, out_e = dry_run(pip, [(name, ver)])
+        cls_e, err_e = classify_dry_run(ok_e, out_e)
+        if ok_e:
+            extras, issues = side_effect_issues(name, parse_install_changes(out_e.splitlines()), specs_by_name, reverse_map, hold_set, pin_map)
+            side_changes[(name, str(ver))] = extras
+            if issues:
+                cls_e, err_e = "risky", "Side effects: " + "; ".join(issues)
+        return ok_e, out_e, cls_e, err_e
 
     # Classify candidates individually via pip --dry-run
     safe: List[Tuple[str, Version]] = []
@@ -1069,8 +1145,7 @@ def run_audit(
                 "risky",
                 "Reverse dependency conflict: " + "; ".join(conflicts_local),
             )
-        ok_local, out_local = dry_run(pip, [(name, ver)])
-        cls_local, err_local = classify_dry_run(ok_local, out_local)
+        ok_local, out_local, cls_local, err_local = evaluate(name, ver)
         return ver, [], ok_local, out_local, cls_local, err_local or ""
 
     if total <= 1 or classify_workers == 1:
@@ -1121,8 +1196,7 @@ def run_audit(
                     err = "Reverse dependency conflict: " + "; ".join(conflicts2)
                     conflicts = conflicts2
                 else:
-                    ok, out = dry_run(pip, [(n, v)])
-                    cls, err = classify_dry_run(ok, out)
+                    ok, out, cls, err = evaluate(n, v)
             else:
                 rpt.installable_max = rpt.installed
                 rpt.availability_issue = f"{n}=={v} not available for this Python/platform"
@@ -1136,6 +1210,7 @@ def run_audit(
             rpt.reverse_conflicts = conflicts
             if cls == "safe":
                 rpt.safe_update = v
+                rpt.side_changes = side_changes.get((n, str(v)), [])
             elif cls == "risky":
                 rpt.risky_update = v
         if cls == "safe":
@@ -1151,12 +1226,13 @@ def run_audit(
                 n,
                 rpt,
                 reverse_map,
-                pip,
+                evaluate,
                 upper_exclusive=v,
             )
             if fallback:
                 safe.append((n, fallback))
                 rpt.safe_update = fallback
+                rpt.side_changes = side_changes.get((n, str(fallback)), [])
                 rpt.update_ok = True
 
     return AuditResult(

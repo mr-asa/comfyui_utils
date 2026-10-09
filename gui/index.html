@@ -48,7 +48,7 @@ td.issue { white-space: pre-wrap; width: 100%; min-width: 360px; overflow-wrap: 
 tr.flash td { background: color-mix(in srgb, var(--ok) 14%, transparent); }
 tr.side td { background: color-mix(in srgb, var(--warn) 16%, transparent); }
 .badge { padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; white-space: nowrap; }
-.s-safe { color: var(--ok); } .s-ok { color: var(--muted); } .s-risky { color: var(--bad); } .s-unknown { color: var(--warn); }
+.s-safe { color: var(--ok); } .s-safe-deps { color: var(--ok); border-style: dashed; } .s-ok { color: var(--muted); } .s-risky { color: var(--bad); } .s-unknown { color: var(--warn); }
 .s-missing { color: var(--info); } .s-downgrade { color: var(--warn); } .s-held, .s-pinned { color: var(--accent); } .s-pin-mismatch { color: var(--bad); }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 .muted { color: var(--muted); }
@@ -94,7 +94,8 @@ h3 { margin: 12px 0 4px; font-size: 13px; }
       <span class="muted" id="count"></span>
     </div>
     <div class="toolbar">
-      <button id="selsafe">Select safe</button>
+      <button id="selsafe" title="Only the package itself changes">Select safe</button>
+      <button id="selsafed" title="Safe, but other packages change too (see the badge tooltip); no requirement is broken">Select safe +deps</button>
       <button id="selvis">Select visible</button>
       <button id="selnone">Clear</button>
       <button class="primary" id="install">Install selected…</button>
@@ -131,8 +132,10 @@ h3 { margin: 12px 0 4px; font-size: 13px; }
 const TOKEN = "__TOKEN__";
 const $ = id => document.getElementById(id);
 // order = what needs installing first, what needs nothing last
-const STATES = ["missing", "safe", "pin-mismatch", "downgrade", "risky", "unknown", "held", "pinned", "ok"];
+const STATES = ["missing", "safe", "safe-deps", "pin-mismatch", "downgrade", "risky", "unknown", "held", "pinned", "ok"];
 const RANK = Object.fromEntries(STATES.map((s, i) => [s, i]));
+const LABEL = {"safe-deps": "safe +deps"};
+const sideTip = r => (r.side_changes || []).map(c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`).join("\n");
 let data = null, rules = {hold: new Set(), pins: {}}, selected = new Set(), activeStates = new Set(STATES);
 let sortKey = "state", sortDir = 1, pending = null, previewSeq = 0;
 
@@ -206,7 +209,7 @@ function buildFilters() {
   const nodes = [...new Set(data.rows.flatMap(r => r.used_in.map(u => u.repo)))].sort((a, b) => a.localeCompare(b));
   $("node").innerHTML = '<option value="">all nodes</option>' + nodes.map(n => `<option>${esc(n)}</option>`).join("");
   const counts = {}; data.rows.forEach(r => counts[r.state] = (counts[r.state] || 0) + 1);
-  $("chips").innerHTML = STATES.filter(s => counts[s]).map(s => `<span class="chip ${activeStates.has(s) ? "on" : ""}" data-s="${s}">${s} ${counts[s]}</span>`).join(" ");
+  $("chips").innerHTML = STATES.filter(s => counts[s]).map(s => `<span class="chip ${activeStates.has(s) ? "on" : ""}" data-s="${s}">${LABEL[s] || s} ${counts[s]}</span>`).join(" ");
   $("chips").querySelectorAll(".chip").forEach(c => c.onclick = () => { const s = c.dataset.s; activeStates.has(s) ? activeStates.delete(s) : activeStates.add(s); c.classList.toggle("on"); render(); });
 }
 
@@ -235,7 +238,7 @@ function render() {
     const was = r.was ? ` <span class="${r.side ? "risk" : "muted"}" title="${r.side ? "changed as a side effect of an install" : "updated"}">(was ${esc(r.was)})</span>` : "";
     return `<tr class="${r.flash ? "flash" : r.side ? "side" : ""}"><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
       <td class="mono">${esc(r.name)}</td><td class="mono">${esc(r.installed) || "—"}${was}</td><td class="mono">${inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
-      <td><span class="badge s-${r.state}">${r.state}</span></td><td class="used">${used}</td><td class="issue">${esc(r.issue)}</td>
+      <td><span class="badge s-${r.state}" title="${esc(sideTip(r))}">${LABEL[r.state] || r.state}</span></td><td class="used">${used}</td><td class="issue">${esc(r.issue)}</td>
       <td>${held ? `<button class="link" data-a="unhold" data-n="${esc(r.name)}">unhold</button>` : `<button class="link" data-a="hold" data-n="${esc(r.name)}">hold</button>`}
           ${pin ? `<button class="link" data-a="unpin" data-n="${esc(r.name)}">unpin ${esc(pin)}</button>` : r.installed ? `<button class="link" data-a="pin" data-n="${esc(r.name)}">pin ${esc(r.installed)}</button>` : ""}</td></tr>`;
   }).join("");
@@ -356,6 +359,7 @@ async function doInstall(protect) {
 }
 
 $("selsafe").onclick = () => { data.rows.filter(r => r.state === "safe").forEach(r => selected.add(r.name)); render(); };
+$("selsafed").onclick = () => { data.rows.filter(r => r.state === "safe-deps").forEach(r => selected.add(r.name)); render(); };
 $("selvis").onclick = () => { visibleRows().forEach(r => selected.add(r.name)); render(); };
 $("selnone").onclick = () => { selected.clear(); render(); };
 ["search", "hide", "node"].forEach(id => $(id).oninput = render);

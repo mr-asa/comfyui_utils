@@ -29,7 +29,7 @@ from packaging.utils import canonicalize_name
 import config_schema
 from comfyui_root import resolve_comfyui_root
 from envtools import custom_nodes_paths, dedupe_dirs, install_prefix, run_uv
-from pip_audit_core import audit_rows, need_vcs_install, run_audit
+from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_install_changes, run_audit
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = str(HERE / "config.json")
@@ -117,25 +117,6 @@ def installed_versions(py: str) -> Dict[str, str]:
     return {canonicalize_name(x["name"]): x["version"] for x in json.loads(listing)}
 
 
-def diff_versions(before: Dict[str, str], after: Dict[str, str]) -> List[dict]:
-    return [
-        {"name": n, "from": before.get(n, ""), "to": after.get(n, "")}
-        for n in sorted(set(before) | set(after))
-        if before.get(n) != after.get(n)
-    ]
-
-
-def parse_uv_changes(lines: List[str]) -> List[dict]:
-    """` - name==1` / ` + name==2` lines of a uv install or dry run, merged per package."""
-    old: Dict[str, str] = {}
-    new: Dict[str, str] = {}
-    for line in lines:
-        m = re.match(r"^\s*([+-])\s+([A-Za-z0-9_.\-]+)==(\S+)", line)
-        if m:
-            (new if m[1] == "+" else old)[canonicalize_name(m[2])] = m[3]
-    return diff_versions(old, new)
-
-
 def install_job(job: dict, name: str, packages: List[str], force_pip: bool, protect: str, dry_run: bool) -> dict:
     """Install (or only simulate) the packages.
 
@@ -174,7 +155,7 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
     code = p.wait()
     job["log"].append(f"exit code {code}")
     if dry_run:
-        return {"exit_code": code, "changes": parse_uv_changes(lines) if code == 0 else []}
+        return {"exit_code": code, "changes": parse_install_changes(lines) if code == 0 else []}
     after = installed_versions(py)
     changes = diff_versions(before, after)
     # keep a record and the old state, so a bad update can be rolled back with `uv pip install -r <before>`

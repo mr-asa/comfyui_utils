@@ -1069,6 +1069,8 @@ def main() -> None:
                 print(" - Update: " + Fore.GREEN + f"Upgrade to {tgt} suggested" + Style.RESET_ALL)
         elif action == "downgrade":
             print(" - Update: " + Fore.YELLOW + f"Installed {r.installed} ABOVE allowed {tgt}; consider downgrade" + Style.RESET_ALL)
+        if r.side_changes and r.safe_update:
+            print(" - Also changes: " + ", ".join(f"{c['name']} {c['from'] or '-'} -> {c['to'] or '-'}" for c in r.side_changes))
         print()
 
     if vcs_reports:
