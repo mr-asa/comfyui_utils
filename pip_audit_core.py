@@ -623,7 +623,8 @@ def dry_run(pip: List[str], pkgs: List[Tuple[str, Version]], timeout_s: int = 60
     """
     if not pkgs:
         return True, ""
-    args = pip + ["--dry-run"] + [f"{n}=={v}" for n, v in pkgs]
+    quiet = ["-q"] if pip[0] == "uv" else []  # uv prints an environment banner otherwise
+    args = pip + quiet + ["--dry-run"] + [f"{n}=={v}" for n, v in pkgs]
     try:
         p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout_s)
         out = p.stdout or ""

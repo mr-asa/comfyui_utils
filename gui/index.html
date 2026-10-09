@@ -43,8 +43,14 @@ tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .s-missing { color: var(--info); } .s-downgrade { color: var(--warn); } .s-held, .s-pinned { color: var(--accent); } .s-pin-mismatch { color: var(--bad); }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 .muted { color: var(--muted); }
-.issue { color: var(--bad); min-width: 340px; width: 38%; overflow-wrap: anywhere; font-size: 12px; white-space: pre-wrap; }
-.issue.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: zoom-in; }
+td, th { white-space: nowrap; }
+td.used { white-space: normal; max-width: 300px; }
+td.issue { white-space: pre-wrap; width: 100%; min-width: 360px; overflow-wrap: anywhere; color: var(--bad); font-size: 12px; }
+tr.flash td { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+#drawer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--panel); border-top: 2px solid var(--accent); box-shadow: 0 -4px 16px rgba(0,0,0,.2); }
+#drawer pre { max-height: 38vh; border-radius: 0; }
+#drawer.min pre { display: none; }
+body.drawer-open main { padding-bottom: 46vh; }
 .risk { color: var(--warn); }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; }
 pre { margin: 0; padding: 12px; max-height: 320px; overflow: auto; background: var(--bg); border-radius: 0 0 8px 8px; font-size: 12px; white-space: pre-wrap; }
@@ -84,15 +90,16 @@ details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
       <tbody id="rows"></tbody>
     </table></div>
   </div>
-  <div class="panel" id="logpanel" hidden>
-    <div class="toolbar"><b id="logtitle">Output</b></div>
-    <pre id="log"></pre>
-  </div>
   <div class="panel" id="extrapanel" hidden>
     <details id="vcsd"><summary>VCS / URL requirements</summary><div id="vcs"></div></details>
     <details id="envd"><summary>comfy-env isolation</summary><div id="env"></div></details>
   </div>
 </main>
+<div id="drawer" hidden>
+  <div class="toolbar"><b id="logtitle">Output</b><span class="badge" id="logstatus"></span><span class="muted" id="logsummary"></span>
+    <span style="flex:1"></span><button id="logmin">minimize</button><button id="logclose">close</button></div>
+  <pre id="log"></pre>
+</div>
 <script>
 const TOKEN = "__TOKEN__";
 const $ = id => document.getElementById(id);
@@ -157,7 +164,14 @@ $("run").onclick = async () => {
   } catch (e) { $("run").disabled = false; alert(e.message); }
 };
 
-function showLog(title, text) { $("logpanel").hidden = false; $("logtitle").textContent = title; $("log").textContent = text || ""; }
+function showLog(title, text, status) {
+  $("drawer").hidden = false; $("drawer").classList.remove("min"); document.body.classList.add("drawer-open");
+  $("logtitle").textContent = title; $("log").textContent = text || ""; $("logsummary").textContent = "";
+  setStatus(status || "running");
+}
+function setStatus(st) { const b = $("logstatus"); b.textContent = st; b.className = "badge " + (st === "done" ? "s-safe" : st === "running" ? "s-unknown" : "s-risky"); }
+$("logmin").onclick = () => { const m = $("drawer").classList.toggle("min"); $("logmin").textContent = m ? "expand" : "minimize"; };
+$("logclose").onclick = () => { $("drawer").hidden = true; document.body.classList.remove("drawer-open"); };
 
 function buildFilters() {
   const nodes = [...new Set(data.rows.flatMap(r => r.used_in.map(u => u.repo)))].sort((a, b) => a.localeCompare(b));
@@ -167,10 +181,12 @@ function buildFilters() {
   $("chips").querySelectorAll(".chip").forEach(c => c.onclick = () => { const s = c.dataset.s; activeStates.has(s) ? activeStates.delete(s) : activeStates.add(s); c.classList.toggle("on"); render(); });
 }
 
+function isUnchanged(r) { return r.unchanged ?? (r.state === "ok" && !r.issue); }
+
 function visibleRows() {
   const q = $("search").value.trim().toLowerCase(), node = $("node").value, hide = $("hide").checked;
   const rows = data.rows.filter(r => activeStates.has(r.state)
-    && !(hide && r.unchanged)
+    && !(hide && isUnchanged(r))
     && (!q || r.name.includes(q))
     && (!node || r.used_in.some(u => u.repo === node)));
   const key = r => sortKey === "state" ? RANK[r.state] : sortKey === "install" ? plan(r).ver : r[sortKey];
@@ -187,14 +203,13 @@ function render() {
     const used = r.used_in.map(u => `<span title="${esc(u.spec || "no specifier")}">${esc(u.repo)}</span>`).join(", ");
     const p = plan(r);
     const inst = p.ver ? (p.risky ? `<span class="risk" title="No safe version found; this one conflicts with something">${esc(p.ver)} (risky)</span>` : esc(p.ver)) : "—";
-    return `<tr><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
+    return `<tr class="${r.flash ? "flash" : ""}"><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
       <td class="mono">${esc(r.name)}</td><td class="mono">${esc(r.installed) || "—"}</td><td class="mono">${inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
-      <td><span class="badge s-${r.state}">${r.state}</span></td><td>${used}</td><td class="issue ${r.issue.length > 160 ? "clamp" : ""}">${esc(r.issue)}</td>
+      <td><span class="badge s-${r.state}">${r.state}</span></td><td class="used">${used}</td><td class="issue">${esc(r.issue)}</td>
       <td>${held ? `<button class="link" data-a="unhold" data-n="${esc(r.name)}">unhold</button>` : `<button class="link" data-a="hold" data-n="${esc(r.name)}">hold</button>`}
           ${pin ? `<button class="link" data-a="unpin" data-n="${esc(r.name)}">unpin ${esc(pin)}</button>` : r.installed ? `<button class="link" data-a="pin" data-n="${esc(r.name)}">pin ${esc(r.installed)}</button>` : ""}</td></tr>`;
   }).join("");
   $("rows").querySelectorAll("input[type=checkbox]").forEach(cb => cb.onchange = () => { cb.checked ? selected.add(cb.dataset.n) : selected.delete(cb.dataset.n); updateSel(); });
-  $("rows").querySelectorAll(".issue.clamp").forEach(td => td.onclick = () => td.classList.toggle("clamp"));
   $("rows").querySelectorAll("button[data-a]").forEach(b => b.onclick = () => rule(b.dataset.a, b.dataset.n));
   updateSel();
 }
@@ -222,13 +237,42 @@ function renderExtra() {
 }
 
 $("install").onclick = async () => {
-  const pkgs = [...selected].map(n => { const r = data.rows.find(x => x.name === n); const v = plan(r).ver; return v ? `${n}==${v}` : null; }).filter(Boolean);
-  if (!pkgs.length) return alert("Nothing to install for the selected rows.");
+  const items = [...selected].map(n => { const r = data.rows.find(x => x.name === n); return {name: n, ver: plan(r).ver}; }).filter(i => i.ver);
+  if (!items.length) return alert("Nothing to install for the selected rows.");
+  const pkgs = items.map(i => `${i.name}==${i.ver}`);
   const risky = [...selected].filter(n => data.rows.find(x => x.name === n).state === "risky");
   if (!confirm(`Install ${pkgs.length} package(s) into ${data.venv}?` + (risky.length ? `\n\nRisky: ${risky.join(", ")}` : "") + "\n\n" + pkgs.join("\n"))) return;
-  showLog("Install", "");
-  const {job} = await api("/api/install", {venv: data.venv, packages: pkgs, force_pip: $("pip").checked});
-  watch(job, j => { $("log").textContent += j.status === "error" ? "\n" + j.error : "\nDone. Run the audit again to refresh."; });
+  showLog(`Installing ${pkgs.length} package(s) into ${data.venv}`, "", "running");
+  $("install").disabled = true; $("install").textContent = "Installing…";
+  const finish = () => { $("install").textContent = "Install selected"; updateSel(); };
+  try {
+    const {job} = await api("/api/install", {venv: data.venv, packages: pkgs, force_pip: $("pip").checked});
+    watch(job, j => {
+      finish();
+      if (j.status === "error" || j.result.exit_code !== 0) {
+        setStatus("failed"); if (j.error) $("log").textContent += "\n" + j.error;
+        $("logsummary").textContent = "the table was not changed, check the output"; return;
+      }
+      const done = [], differ = [];
+      data.rows.forEach(r => delete r.flash);
+      items.forEach(i => {
+        const row = data.rows.find(x => x.name === i.name), now = j.result.installed[i.name];
+        if (!row || !now) return;
+        const before = row.installed;
+        row.installed = now;
+        if (now === i.ver) {
+          row.action = ""; row.safe_update = ""; row.risky_update = ""; row.issue = ""; row.unchanged = true; row.flash = true;
+          row.state = rules.pins[i.name] ? "pinned" : rules.hold.has(i.name) ? "held" : "ok";
+          selected.delete(i.name); done.push(`${i.name} ${before || "-"} -> ${now}`);
+        } else differ.push(`${i.name}: wanted ${i.ver}, installed ${now}`);
+      });
+      setStatus("done");
+      $("log").textContent += `\nUpdated in the table: ${done.length}` + (done.length ? "\n  " + done.join("\n  ") : "") + (differ.length ? "\nDifferent version installed:\n  " + differ.join("\n  ") : "");
+      $("logsummary").textContent = `${done.length} updated` + (differ.length ? `, ${differ.length} differ` : "");
+      $("log").scrollTop = $("log").scrollHeight;
+      buildFilters(); render();
+    }, $("log"));
+  } catch (e) { finish(); setStatus("failed"); $("log").textContent += "\n" + e.message; }
 };
 
 $("selsafe").onclick = () => { data.rows.filter(r => r.state === "safe").forEach(r => selected.add(r.name)); render(); };

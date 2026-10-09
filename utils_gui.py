@@ -26,7 +26,7 @@ from packaging.utils import canonicalize_name
 
 import config_schema
 from comfyui_root import resolve_comfyui_root
-from envtools import custom_nodes_paths, dedupe_dirs, install_prefix
+from envtools import custom_nodes_paths, dedupe_dirs, install_prefix, run_uv
 from pip_audit_core import audit_rows, need_vcs_install, run_audit
 
 HERE = Path(__file__).resolve().parent
@@ -119,7 +119,8 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool) -> d
         job["log"].append(line.rstrip())
     code = p.wait()
     job["log"].append(f"exit code {code}")
-    return {"exit_code": code}
+    listing = run_uv("pip", "list", "--python", config_schema.venv_python_path(row["path"]), "--format", "json", capture=True).stdout
+    return {"exit_code": code, "installed": {canonicalize_name(x["name"]): x["version"] for x in json.loads(listing)}}
 
 
 def save_rules(name: str, hold: List[str], pins: Dict[str, str]) -> None:
@@ -157,6 +158,7 @@ class Handler(BaseHTTPRequestHandler):
             html = (HERE / "gui" / "index.html").read_text(encoding="utf-8").replace("__TOKEN__", TOKEN).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(html)))
             self.end_headers()
             self.wfile.write(html)
