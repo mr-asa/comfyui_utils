@@ -16,6 +16,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import traceback
@@ -29,6 +30,7 @@ from packaging.utils import canonicalize_name
 import config_schema
 from comfyui_root import resolve_comfyui_root
 from envtools import custom_nodes_paths, dedupe_dirs, install_prefix, run_uv
+from wheels import download_wheel, load_catalog
 from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_install_changes, run_audit
 
 HERE = Path(__file__).resolve().parent
@@ -117,6 +119,29 @@ def installed_versions(py: str) -> Dict[str, str]:
     return {canonicalize_name(x["name"]): x["version"] for x in json.loads(listing)}
 
 
+def stream(job: dict, cmd: List[str]) -> tuple:
+    """Run a command, appending its output to the job log. Returns (exit code, output lines)."""
+    job["log"].append("> " + " ".join(cmd))
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    lines = []
+    for line in p.stdout:
+        lines.append(line.rstrip())
+        job["log"].append(lines[-1])
+    code = p.wait()
+    job["log"].append(f"exit code {code}")
+    return code, lines
+
+
+def record_install(job: dict, name: str, stamp: str, before: Dict[str, str], after: Dict[str, str], code: int) -> dict:
+    """Keep the old state next to the log, so a bad update can be rolled back with `uv pip install -r <before>`."""
+    changes = diff_versions(before, after)
+    LOG_DIR.mkdir(exist_ok=True)
+    (LOG_DIR / f"{stamp}_{name}_before.txt").write_text("".join(f"{n}=={v}\n" for n, v in sorted(before.items())), encoding="utf-8")
+    (LOG_DIR / f"{stamp}_{name}.log").write_text("\n".join(job["log"]) + "\n\nchanges:\n" + "".join(f"  {c['name']} {c['from'] or '-'} -> {c['to'] or '-'}\n" for c in changes), encoding="utf-8")
+    job["log"].append(f"saved: {LOG_DIR / (stamp + '_' + name + '.log')}")
+    return {"exit_code": code, "installed": after, "changes": changes}
+
+
 def install_job(job: dict, name: str, packages: List[str], force_pip: bool, protect: str, dry_run: bool) -> dict:
     """Install (or only simulate) the packages.
 
@@ -145,24 +170,37 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
         con = LOG_DIR / f"{stamp}_{name}_constraints.txt"
         con.write_text("".join(f"{n}=={v}\n" for n, v in sorted(keep.items())), encoding="utf-8")
         cmd += ["-c", str(con)]
-    cmd += packages
-    job["log"].append("> " + " ".join(cmd))
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
-    lines = []
-    for line in p.stdout:
-        lines.append(line.rstrip())
-        job["log"].append(lines[-1])
-    code = p.wait()
-    job["log"].append(f"exit code {code}")
+    code, lines = stream(job, cmd + packages)
     if dry_run:
         return {"exit_code": code, "changes": parse_install_changes(lines) if code == 0 else []}
-    after = installed_versions(py)
-    changes = diff_versions(before, after)
-    # keep a record and the old state, so a bad update can be rolled back with `uv pip install -r <before>`
-    (LOG_DIR / f"{stamp}_{name}_before.txt").write_text("".join(f"{n}=={v}\n" for n, v in sorted(before.items())), encoding="utf-8")
-    (LOG_DIR / f"{stamp}_{name}.log").write_text("\n".join(job["log"]) + "\n\nchanges:\n" + "".join(f"  {c['name']} {c['from'] or '-'} -> {c['to'] or '-'}\n" for c in changes), encoding="utf-8")
-    job["log"].append(f"saved: {LOG_DIR / (stamp + '_' + name + '.log')}")
-    return {"exit_code": code, "installed": after, "changes": changes}
+    return record_install(job, name, stamp, before, installed_versions(py), code)
+
+
+def wheel_install_job(job: dict, name: str, filenames: List[str], force_pip: bool) -> dict:
+    """Download (if needed) and install prebuilt wheels with --no-deps. Only files listed in the wheel sources are accepted."""
+    row = venv_entry(name)
+    py = config_schema.venv_python_path(row["path"])
+    catalog, wheel_dir, _wanted = load_catalog(True)
+    by_name = {w.filename: w for w in catalog}
+    before = installed_versions(py)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    code = 0
+    for fn in filenames:
+        w = by_name.get(fn)
+        if not w:
+            raise ValueError(f"{fn} is not in the wheel sources")
+        path = w.path or download_wheel(w, wheel_dir, job["log"].append)
+        with tempfile.TemporaryDirectory() as tmp:
+            if path.name != w.filename:  # uv rejects url-quoted names such as %2B
+                path = Path(shutil.copy(path, Path(tmp) / w.filename))
+            code, _ = stream(job, install_prefix({"env_type": "venv", "venv_path": row["path"]}, force_pip=force_pip) + ["--no-deps", str(path)])
+        if code:
+            break
+    if not code:
+        job["log"].append("checking dependencies of the venv:")
+        check = run_uv("pip", "check", "--python", py, check=False, capture=True)
+        job["log"] += [l for l in (check.stdout + check.stderr).splitlines() if l.strip()]
+    return record_install(job, name, stamp, before, installed_versions(py), code)
 
 
 def save_rules(name: str, hold: List[str], pins: Dict[str, str]) -> None:
@@ -234,6 +272,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "no packages"}, 400)
                 job = new_job("install")
                 run_in_thread(job, install_job, body["venv"], packages, bool(body.get("force_pip")), str(body.get("protect", "held")), bool(body.get("dry_run")))
+                self.send_json({"job": job["id"]})
+            elif self.path == "/api/install_wheels":
+                names = [str(w["filename"]) for w in body["wheels"]]
+                job = new_job("install")
+                run_in_thread(job, wheel_install_job, body["venv"], names, bool(body.get("force_pip")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/rules":
                 save_rules(body["venv"], list(body.get("hold", [])), dict(body.get("pins", {})))

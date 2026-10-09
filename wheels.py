@@ -7,7 +7,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 import requests
@@ -142,3 +142,23 @@ def best_wheels(catalog: List[Wheel], wanted: List[str], py: str, torch_mm: Tupl
         if cur is None or key > (cur[1], cur[0].pep_version(), cur[0].path is not None):
             best[w.name] = (w, q)
     return best
+
+
+def download_wheel(w: Wheel, wheel_dir: Path, log: Callable[[str], None] = print) -> Path:
+    """Download into the wheel folder (written as .part first, so a broken download never looks like a wheel)."""
+    wheel_dir.mkdir(parents=True, exist_ok=True)
+    dest = wheel_dir / w.filename
+    part = dest.with_name(dest.name + ".part")
+    log(f"downloading {w.filename} from {w.url}")
+    with requests.get(w.url, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        total, done, shown = int(r.headers.get("content-length") or 0), 0, 0
+        with open(part, "wb") as f:
+            for chunk in r.iter_content(1 << 20):
+                f.write(chunk)
+                done += len(chunk)
+                if total and done * 10 // total > shown:
+                    shown = done * 10 // total
+                    log(f"  {shown * 10}% of {total >> 20} MB")
+    part.replace(dest)
+    return dest

@@ -106,6 +106,7 @@ h3 { margin: 12px 0 4px; font-size: 13px; }
     <div class="toolbar">
       <button id="selsafe" title="Only the package itself changes">Select safe</button>
       <button id="selsafed" title="Safe, but other packages change too (see the badge tooltip); no requirement is broken">Select safe +deps</button>
+      <button id="selwheel" title="Newer prebuilt wheels found in the wheel sources">Select wheel updates</button>
       <button id="selvis">Select visible</button>
       <button id="selnone">Clear</button>
       <button class="primary" id="install">Install selected…</button>
@@ -152,6 +153,7 @@ let sortKey = "state", sortDir = 1, pending = null, previewSeq = 0;
 
 // what "Install selected" will put into the venv for a row
 function plan(r) {
+  if (r.wheel_update) return {ver: r.wheel_update.version, risky: false, wheel: true};
   if (r.safe_update) return {ver: r.safe_update, risky: false};
   if (r.state === "missing" || r.state === "downgrade") return {ver: r.target, risky: false};
   if (r.risky_update) return {ver: r.risky_update, risky: true};
@@ -330,11 +332,17 @@ function renderExtra() {
 
 // ---- install: preview (dry run) -> confirm -> real install
 const protectMode = () => document.querySelector("input[name=protect]:checked").value;
+const pypiItems = () => pending.items.filter(i => !i.wheel);
+const wheelItems = () => pending.items.filter(i => i.wheel);
+const pypiPkgs = () => pypiItems().map(i => `${i.name}==${i.ver}`);
 
 $("install").onclick = () => {
-  const items = [...selected].map(n => { const r = data.rows.find(x => x.name === n); return {name: n, ver: plan(r).ver, state: r.state}; }).filter(i => i.ver);
+  const items = [...selected].map(n => {
+    const r = data.rows.find(x => x.name === n), p = plan(r);
+    return {name: n, ver: p.ver, state: r.state, from: r.installed, wheel: p.wheel ? r.wheel_update : null};
+  }).filter(i => i.ver);
   if (!items.length) return alert("Nothing to install for the selected rows.");
-  pending = {items, pkgs: items.map(i => `${i.name}==${i.ver}`)};
+  pending = {items};
   $("dlg").showModal();
   preview();
 };
@@ -344,10 +352,11 @@ document.querySelectorAll("input[name=protect]").forEach(r => r.onchange = () =>
 async function preview() {
   const seq = ++previewSeq;
   $("dlgok").disabled = true; $("dlgnote").textContent = "";
+  if (!pypiItems().length) return showPreview({status: "done", result: {exit_code: 0, changes: []}}, []);
   $("dlgbody").innerHTML = '<span class="muted">Checking what would change…</span>';
   const buf = [];
   try {
-    const {job} = await api("/api/install", {venv: data.venv, packages: pending.pkgs, force_pip: $("pip").checked, protect: protectMode(), dry_run: true});
+    const {job} = await api("/api/install", {venv: data.venv, packages: pypiPkgs(), force_pip: $("pip").checked, protect: protectMode(), dry_run: true});
     watch(job, j => { if (seq === previewSeq) showPreview(j, buf); }, lines => buf.push(...lines));
   } catch (e) { $("dlgbody").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 }
@@ -360,63 +369,75 @@ function chgRow(c, extra) {
 }
 
 function showPreview(j, buf) {
+  const wheels = wheelItems();
+  const wheelHtml = wheels.length ? `<h3>Wheels (${wheels.length}) — installed with --no-deps, their dependencies are not touched</h3>`
+    + wheels.map(i => `<div class="chg"><span class="mono">${esc(i.name)}</span><span class="mono">${esc(i.from || "—")} → ${esc(i.ver)} <span class="muted">${esc(i.wheel.filename)}${i.wheel.path ? "" : " — will be downloaded to the wheel folder"}</span></span></div>`).join("") : "";
   if (j.status === "error" || j.result.exit_code !== 0) {
-    $("dlgbody").innerHTML = '<div class="bad"><b>This cannot be installed with the chosen protection.</b> Pick a weaker option, or hold/pin differently.</div>';
+    $("dlgbody").innerHTML = wheelHtml + '<div class="bad"><b>This cannot be installed with the chosen protection.</b> Pick a weaker option, or hold/pin differently.</div>';
     const pre = document.createElement("pre"); pre.textContent = (j.error ? j.error + "\n" : "") + buf.slice(-14).join("\n");
     $("dlgbody").appendChild(pre); $("dlgok").disabled = true; return;
   }
-  const want = new Set(pending.items.map(i => i.name));
+  const want = new Set(pypiItems().map(i => i.name));
   const main = j.result.changes.filter(c => want.has(c.name)), extra = j.result.changes.filter(c => !want.has(c.name));
-  $("dlgbody").innerHTML = `<h3>Selected (${main.length})</h3>${main.map(c => chgRow(c, false)).join("") || '<span class="muted">already installed</span>'}`
+  $("dlgbody").innerHTML = wheelHtml + (want.size ? `<h3>Selected (${main.length})</h3>${main.map(c => chgRow(c, false)).join("") || '<span class="muted">already installed</span>'}`
     + `<h3 class="${extra.length ? "risk" : ""}">Also changed by dependencies (${extra.length})</h3>`
-    + (extra.map(c => chgRow(c, true)).join("") || '<span class="muted">nothing else changes</span>');
+    + (extra.map(c => chgRow(c, true)).join("") || '<span class="muted">nothing else changes</span>') : "");
   $("dlgbody").querySelectorAll("button[data-hold]").forEach(b => b.onclick = async () => { await rule("hold", b.dataset.hold); preview(); });
-  $("dlgnote").textContent = `${j.result.changes.length} package(s) will change`;
-  $("dlgok").disabled = !j.result.changes.length;
+  $("dlgnote").textContent = `${j.result.changes.length + wheels.length} package(s) will change`;
+  $("dlgok").disabled = !(j.result.changes.length + wheels.length);
 }
 
 $("dlgok").onclick = () => { $("dlg").close(); doInstall(protectMode()); };
 
+const runJob = (path, body) => new Promise((resolve, reject) => api(path, body).then(({job}) => watch(job, resolve, logAdd)).catch(reject));
+const jobFailed = j => j.status === "error" || j.result.exit_code !== 0;
+
 async function doInstall(protect) {
-  const {items, pkgs} = pending;
-  showLog(`Installing ${pkgs.length} package(s) into ${data.venv}`, "", "running");
+  const {items} = pending, pk = pypiPkgs(), wheels = wheelItems();
+  showLog(`Installing ${items.length} package(s) into ${data.venv}`, "", "running");
   $("install").dataset.busy = "1"; $("install").disabled = true; $("install").textContent = "Installing…";
   const finish = () => { $("install").dataset.busy = "0"; $("install").textContent = "Install selected…"; updateSel(); };
+  const results = [];
   try {
-    const {job} = await api("/api/install", {venv: data.venv, packages: pkgs, force_pip: $("pip").checked, protect, dry_run: false});
-    watch(job, j => {
-      finish();
-      if (j.status === "error" || j.result.exit_code !== 0) {
-        setStatus("failed"); if (j.error) logAdd([j.error]);
-        $("logsummary").textContent = "the table was not changed, check the output"; return;
-      }
-      const want = Object.fromEntries(items.map(i => [i.name, i.ver]));
-      data.rows.forEach(r => { delete r.flash; delete r.side; });
-      const done = [], side = [], other = [];
-      j.result.changes.forEach(c => {
-        const row = data.rows.find(x => x.name === c.name);
-        if (!row) { other.push(c); return; }
-        row.was = c.from; row.installed = c.to;
-        if (want[c.name] && c.to === want[c.name]) {
-          row.action = ""; row.safe_update = ""; row.risky_update = ""; row.issue = ""; row.unchanged = true; row.flash = true;
-          row.state = rules.pins[c.name] ? "pinned" : rules.hold.has(c.name) ? "held" : "ok";
-          selected.delete(c.name); done.push(c);
-        } else { row.side = true; side.push(c); }
-      });
-      const fmt = c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`;
-      setStatus("done");
-      logAdd([`\nUpdated as requested: ${done.length}` + (done.length ? "\n  " + done.map(fmt).join("\n  ") : "")
-        + (side.length ? `\nChanged as a side effect (in the table, highlighted): ${side.length}\n  ` + side.map(fmt).join("\n  ") : "")
-        + (other.length ? `\nChanged, not in the table: ${other.length}\n  ` + other.map(fmt).join("\n  ") : "")
-        + (side.length + other.length ? "\nRe-run the audit to re-check the packages that changed as side effects." : "")]);
-      $("logsummary").textContent = `${done.length} updated` + (side.length + other.length ? `, ${side.length + other.length} changed by dependencies` : "");
-      buildFilters(); render();
-    }, logAdd);
-  } catch (e) { finish(); setStatus("failed"); logAdd([e.message]); }
+    if (pk.length) results.push(await runJob("/api/install", {venv: data.venv, packages: pk, force_pip: $("pip").checked, protect, dry_run: false}));
+    if (wheels.length && !results.some(jobFailed)) results.push(await runJob("/api/install_wheels", {venv: data.venv, wheels: wheels.map(i => ({filename: i.wheel.filename})), force_pip: $("pip").checked}));
+  } catch (e) { finish(); setStatus("failed"); logAdd([e.message]); return; }
+  finish();
+  const failed = results.some(jobFailed);
+  results.filter(jobFailed).forEach(j => { if (j.error) logAdd([j.error]); });
+  const changes = results.filter(j => !jobFailed(j)).flatMap(j => j.result.changes);
+  if (!changes.length) {
+    setStatus(failed ? "failed" : "done");
+    $("logsummary").textContent = failed ? "the table was not changed, check the output" : "nothing changed";
+    return;
+  }
+  const want = Object.fromEntries(items.map(i => [i.name, i]));
+  data.rows.forEach(r => { delete r.flash; delete r.side; });
+  const done = [], side = [], other = [];
+  changes.forEach(c => {
+    const row = data.rows.find(x => x.name === c.name), item = want[c.name];
+    if (!row) { other.push(c); return; }
+    row.was = c.from; row.installed = c.to;
+    if (item && c.to === item.ver) {
+      row.action = ""; row.safe_update = ""; row.risky_update = ""; row.issue = ""; row.issue_kind = ""; row.unchanged = true; row.flash = true;
+      if (item.wheel) { row.wheel_update = null; row.source = `wheel ${item.wheel.filename}`; }
+      row.state = rules.pins[c.name] ? "pinned" : rules.hold.has(c.name) ? "held" : item.wheel ? "wheel" : "ok";
+      selected.delete(c.name); done.push(c);
+    } else { row.side = true; side.push(c); }
+  });
+  const fmt = c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`;
+  setStatus(failed ? "failed" : "done");
+  logAdd([`\nUpdated as requested: ${done.length}` + (done.length ? "\n  " + done.map(fmt).join("\n  ") : "")
+    + (side.length ? `\nChanged as a side effect (in the table, highlighted): ${side.length}\n  ` + side.map(fmt).join("\n  ") : "")
+    + (other.length ? `\nChanged, not in the table: ${other.length}\n  ` + other.map(fmt).join("\n  ") : "")
+    + (side.length + other.length ? "\nRe-run the audit to re-check the packages that changed as side effects." : "")]);
+  $("logsummary").textContent = `${done.length} updated` + (side.length + other.length ? `, ${side.length + other.length} changed by dependencies` : "") + (failed ? ", some steps failed" : "");
+  buildFilters(); render();
 }
 
 $("selsafe").onclick = () => { data.rows.filter(r => r.state === "safe").forEach(r => selected.add(r.name)); render(); };
 $("selsafed").onclick = () => { data.rows.filter(r => r.state === "safe-deps").forEach(r => selected.add(r.name)); render(); };
+$("selwheel").onclick = () => { data.rows.filter(r => r.state === "wheel-update").forEach(r => selected.add(r.name)); render(); };
 $("selvis").onclick = () => { visibleRows().forEach(r => selected.add(r.name)); render(); };
 $("selnone").onclick = () => { selected.clear(); render(); };
 ["search", "hide", "node"].forEach(id => $(id).oninput = render);

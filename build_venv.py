@@ -26,13 +26,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import requests
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 import config_schema
 from comfyui_root import resolve_comfyui_root
-from wheels import Wheel, best_wheels, load_catalog, tup
+from wheels import Wheel, best_wheels, download_wheel, load_catalog, tup
 from envtools import enabled_node_dirs, find_requirements_files, installed_pythons, parse_requirements_file, run_uv as uv
 
 HERE = Path(__file__).resolve().parent
@@ -282,18 +281,6 @@ def run_plan(args, tmp: Path):
 
 # ---------------------------------------------------------------- build
 
-def download(w: Wheel, wheel_dir: Path) -> Path:
-    wheel_dir.mkdir(parents=True, exist_ok=True)
-    dest = wheel_dir / w.filename
-    print(f"  downloading {w.filename}")
-    with requests.get(w.url, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(1 << 20):
-                f.write(chunk)
-    return dest
-
-
 def run_build(args, tmp: Path):
     plan = run_plan(args, tmp)
     if not plan:
@@ -330,7 +317,7 @@ def run_build(args, tmp: Path):
 
     wheel_paths = []
     for w, _ in best.wheels.values():
-        src = w.path or download(w, wheel_dir)
+        src = w.path or download_wheel(w, wheel_dir, lambda m: print("  " + m))
         if src.name != w.filename:  # uv rejects url-quoted names such as %2B
             src = Path(shutil.copy(src, d / w.filename))
         wheel_paths.append(str(src))
