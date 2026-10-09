@@ -38,7 +38,8 @@ from build_venv import CUDA_CANDIDATES, PY_CANDIDATES, Candidate, PlanCancelled,
 import custom_nodes_link_manager as nodes_mgr
 import update_workflow_repos as wf
 from comfyui_root import default_workflows_dir
-from workflow_sources import METADATA_FILE, parse_workflow_url, sync_partial_source, write_metadata
+from workflow_sources import parse_workflow_url, partial_changes, partial_remote_status, read_metadata, sync_partial_source, write_metadata
+from workflow_sources import _cache_key as _partial_cache_key
 from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, run_git, update_repo
 from wheels import download_wheel, load_catalog
 from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_install_changes, run_audit
@@ -46,6 +47,7 @@ from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_in
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = str(HERE / "config.json")
 LOG_DIR = HERE / "install_logs"
+PARTIAL_CACHE = (HERE / ".partial_repo_cache").resolve()
 NO_PROMPT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}  # a clone of a missing / private repo must fail, not wait for a password
 PRESETS_PATH = str(HERE / "run_comfyui_presets_config.json")
 TOKEN = secrets.token_urlsafe(16)
@@ -285,11 +287,33 @@ def build_job(job: dict, plan_id: str, index: int, name: str, select: bool) -> d
         (LOG_DIR / f"{stamp}_build_{name}.log").write_text("\n".join(job["log"]) + "\n", encoding="utf-8")
 
 
+def partial_incoming(path: str) -> dict:
+    source = read_metadata(Path(path))
+    if source is None or not source.synced_commit:
+        return {"commits": [], "files": [], "error": "no sync record yet: update once, later checks can show what changed"}
+    ok, out = run_git(["rev-parse", f"origin/{source.branch or 'main'}"], cwd=str(PARTIAL_CACHE / _partial_cache_key(source)))
+    if not ok:
+        return {"commits": [], "files": [], "error": "run a scan with fetch first"}
+    commits, stat = partial_changes(source, PARTIAL_CACHE, source.synced_commit, out.strip().splitlines()[0])
+    return {"commits": commits, "files": [{"added": a, "deleted": d, "path": p} for a, d, p in stat], "error": ""}
+
+
 def source_status(path: str, fetch: bool) -> dict:
     """repo_status, plus the workflow sources that are not git repos (partial syncs or plain folders)."""
     if REPO_KIND.get(path) == "workflows" and not os.path.isdir(os.path.join(path, ".git")):
         row = repo_status(path, fetch=False)
-        row["state"] = "partial" if os.path.isfile(os.path.join(path, METADATA_FILE)) else "not-git"
+        source = read_metadata(Path(path))
+        if source is None or source.mode != "partial":
+            row["state"] = "not-git"
+            return row
+        row["web_url"] = source.source_url or source.repo_url
+        row["branch"] = source.branch or ""
+        row["partial"] = True
+        row["last_subject"] = f"partial: {', '.join(source.paths or [])}" + (f" (synced {source.synced_commit[:8]})" if source.synced_commit else " (no sync record yet)")
+        status = partial_remote_status(source, PARTIAL_CACHE) if fetch else {"state": "up-to-date" if source.synced_commit else "untracked"}
+        row["state"] = status["state"]
+        row["behind"] = status.get("files", 0)
+        row["error"] = status.get("error", "")
         return row
     return repo_status(path, fetch)
 
@@ -332,7 +356,7 @@ def repos_update_job(job: dict, paths: List[str], on_local: str, on_conflict: st
         raise ValueError("not a scanned repository: " + unknown[0])
     local = {"stash": "2", "replace": "1", "skip": "3", "fetch": "5", "move_json": "6"}[on_local]
     resolve = {"skip": "skip", "reset": "reset", "sparse": "sparse"}[on_conflict]
-    cache_root = (HERE / ".partial_repo_cache").resolve()
+    cache_root = PARTIAL_CACHE
     results, done = [], 0
 
     def one(path: str) -> dict:
@@ -666,7 +690,7 @@ def add_workflow_job(job: dict, url: str) -> dict:
         if code:
             raise RuntimeError(f"git clone failed (exit code {code})")
     else:
-        cache_root = (HERE / ".partial_repo_cache").resolve()
+        cache_root = PARTIAL_CACHE
         cache_root.mkdir(exist_ok=True)
         ok, messages = sync_partial_source(source, dest, cache_root)
         job["log"] += list(messages)
@@ -794,7 +818,8 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/repo_detail":
                 if str(body["path"]) not in REPO_KIND:
                     return self.send_json({"error": "unknown repository"}, 400)
-                self.send_json(incoming_changes(str(body["path"])))
+                path = str(body["path"])
+                self.send_json(incoming_changes(path) if os.path.isdir(os.path.join(path, ".git")) else partial_incoming(path))
             elif self.path == "/api/repos_update":
                 job = new_job("repos")
                 run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))

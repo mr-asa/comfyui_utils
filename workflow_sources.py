@@ -28,6 +28,7 @@ class WorkflowSource:
     branch: Optional[str] = None
     paths: Optional[List[str]] = None
     repo_type: Optional[str] = None
+    synced_commit: Optional[str] = None  # commit of the branch the files were last copied from
 
 
 def run_git(args: List[str], cwd: Optional[Path] = None) -> Tuple[bool, str]:
@@ -198,6 +199,7 @@ def read_metadata(target_dir: Path) -> Optional[WorkflowSource]:
             branch=str(data.get("branch") or "") or None,
             paths=[str(p) for p in data.get("paths", []) if isinstance(p, str)],
             repo_type=str(data.get("repo_type") or "") or None,
+            synced_commit=str(data.get("synced_commit") or "") or None,
         )
     except Exception:
         return None
@@ -332,7 +334,52 @@ def sync_partial_source(
         src = cache_dir / Path(rel)
         dst = target_dir / Path(rel)
         messages.append(_copy_managed_path(src, dst, dry_run))
+    if not dry_run:
+        ok, head = run_git(["rev-parse", "HEAD"], cwd=cache_dir)
+        if ok and head.strip():
+            source.synced_commit = head.strip().splitlines()[0]
     return True, messages
+
+
+def partial_remote_status(source: WorkflowSource, cache_root: Path) -> Dict[str, Any]:
+    """up-to-date / behind / untracked (never synced with a recorded commit) / fetch-failed for a partial source.
+    A moved branch only counts as behind when the tracked paths really differ (checked in the sparse cache)."""
+    branch = source.branch or detect_default_branch(source.repo_url)
+    ok, out = run_git(["ls-remote", source.repo_url, f"refs/heads/{branch}"])
+    if not ok or not out.strip():
+        return {"state": "fetch-failed", "error": (out or "branch not found")[-200:], "branch": branch}
+    remote = out.split()[0]
+    synced = source.synced_commit
+    if not synced:
+        return {"state": "untracked", "remote": remote, "branch": branch}
+    if remote == synced:
+        return {"state": "up-to-date", "remote": remote, "branch": branch}
+    cache_dir = cache_root / _cache_key(source)
+    paths = [_to_posix(p) for p in (source.paths or []) if _to_posix(p)]
+    if (cache_dir / ".git").exists():
+        run_git(["fetch", "origin", branch], cwd=cache_dir)
+        ok, diff = run_git(["diff", "--name-only", synced, f"origin/{branch}", "--", *paths], cwd=cache_dir)
+        if ok:
+            files = [l for l in diff.splitlines() if l.strip()]
+            return {"state": "behind" if files else "up-to-date", "remote": remote, "branch": branch, "files": len(files)}
+    return {"state": "behind", "remote": remote, "branch": branch, "files": 0}
+
+
+def partial_changes(source: WorkflowSource, cache_root: Path, old: str, new: str, limit: int = 60) -> Tuple[List[str], List[Tuple[int, int, str]]]:
+    """Commit lines and numstat of the tracked paths between two synced commits (empty when unknown)."""
+    cache_dir = cache_root / _cache_key(source)
+    paths = [_to_posix(p) for p in (source.paths or []) if _to_posix(p)]
+    if not old or not new or old == new or not (cache_dir / ".git").exists():
+        return [], []
+    ok, out = run_git(["log", f"--max-count={limit}", "--format=%h %cs %s", f"{old}..{new}", "--", *paths], cwd=cache_dir)
+    commits = [l for l in out.splitlines() if l.strip()] if ok else []
+    ok, out = run_git(["diff", "--numstat", old, new, "--", *paths], cwd=cache_dir)
+    stat: List[Tuple[int, int, str]] = []
+    for line in (out.splitlines() if ok else []):
+        parts = line.split("\t", 2)
+        if len(parts) == 3:
+            stat.append((int(parts[0]) if parts[0].isdigit() else 0, int(parts[1]) if parts[1].isdigit() else 0, parts[2]))
+    return commits, stat
 
 
 def source_from_partial_job(job: Dict[str, Any], target_dir: Path) -> Optional[WorkflowSource]:

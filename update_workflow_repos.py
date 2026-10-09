@@ -37,6 +37,7 @@ from workflow_sources import (
     METADATA_FILE,
     read_metadata,
     source_from_partial_job,
+    partial_changes,
     sync_partial_source,
     write_metadata,
 )
@@ -867,18 +868,21 @@ def update_partial_repo(path: Path, cache_root: Path) -> RepoReport:
             error=f"Invalid {METADATA_FILE}",
         )
 
+    old_commit = source.synced_commit or ""
     ok, messages = sync_partial_source(source, path, cache_root)
     if ok:
         write_metadata(path, source)
+        commits, stat = partial_changes(source, cache_root, old_commit, source.synced_commit or "")
+        notes = ["Partial workflow source." if old_commit else "Partial workflow source; the synced commit is now recorded, later runs can tell what changed.", *messages]
         return RepoReport(
             path.name,
             path,
             source.repo_url,
             source.branch or "",
-            True,
-            [],
-            [],
-            ["Partial workflow source.", *messages],
+            bool(stat),
+            commits,
+            stat,
+            notes,
         )
 
     return RepoReport(

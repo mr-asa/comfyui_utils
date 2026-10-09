@@ -96,7 +96,7 @@ nav button.on { color: var(--text); border-color: var(--accent); }
 #b-detail ul { margin: 2px 0 8px; padding-left: 18px; }
 #b-foot { flex: none; border-top: 1px solid var(--line); }
 .s-behind { color: var(--info); } .s-diverged, .s-fetch-failed, .s-not-git { color: var(--bad); } .s-ahead { color: var(--warn); }
-.s-partial { color: var(--info); border-style: dashed; } .s-up-to-date { color: var(--muted); } .s-no-upstream { color: var(--muted); border-style: dashed; }
+.s-partial { color: var(--info); border-style: dashed; } .s-untracked { color: var(--warn); border-style: dashed; } .s-up-to-date { color: var(--muted); } .s-no-upstream { color: var(--muted); border-style: dashed; }
 #r-detail { flex: none; height: 150px; overflow: auto; border-top: 1px solid var(--line); padding: 8px 14px; font-size: 13px; }
 #r-detail .files { color: var(--muted); }
 tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
@@ -718,7 +718,8 @@ $("b-build").onclick = async () => {
 
 // ---- repos and workflow sources (one UI, two instances)
 function repoTab(p, kind, tabId) {
-const RSTATES = ["behind", "diverged", "fetch-failed", "not-git", "ahead", "partial", "no-upstream", "up-to-date"];
+const RSTATES = ["behind", "diverged", "fetch-failed", "not-git", "ahead", "untracked", "partial", "no-upstream", "up-to-date"];
+const RLABEL = {untracked: "no sync record"};
 const RRANK = Object.fromEntries(RSTATES.map((x, i) => [x, i]));
 const R_OPTS = {
   nodes: {local: [["stash", "stash and re-apply"], ["skip", "skip the repository"], ["replace", "discard (replace from remote)"]], conflictLabel: "conflicts", conflict: [["skip", "skip"], ["reset", "hard reset to remote"]]},
@@ -757,7 +758,7 @@ $(p + "-scan").onclick = async () => {
 
 function rBuildChips() {
   const counts = {}; repos.forEach(r => counts[r.state] = (counts[r.state] || 0) + 1);
-  $(p + "-chips").innerHTML = RSTATES.filter(x => counts[x]).map(x => `<span class="chip ${rActive.has(x) ? "on" : ""}" data-s="${x}">${x} ${counts[x]}</span>`).join(" ");
+  $(p + "-chips").innerHTML = RSTATES.filter(x => counts[x]).map(x => `<span class="chip ${rActive.has(x) ? "on" : ""}" data-s="${x}">${RLABEL[x] || x} ${counts[x]}</span>`).join(" ");
   $(p + "-chips").querySelectorAll(".chip").forEach(c => c.onclick = () => { const x = c.dataset.s; rActive.has(x) ? rActive.delete(x) : rActive.add(x); c.classList.toggle("on"); rRender(); });
 }
 
@@ -780,7 +781,7 @@ function rRender() {
     const date = r.last_date ? r.last_date.slice(0, 10) : "";
     return `<tr data-p="${esc(r.path)}" class="${r.flash ? "flash" : rPicked === r.path ? "sel" : ""}"><td><input type="checkbox" data-p="${esc(r.path)}" ${rSel.has(r.path) ? "checked" : ""}></td>
       <td class="mono">${name}${r.disabled ? ' <span class="muted">(disabled)</span>' : ""}</td><td class="mono">${esc(r.branch)}</td>
-      <td><span class="badge s-${r.state}" title="${esc(r.error)}">${r.state}</span></td>
+      <td><span class="badge s-${r.state}" title="${esc(r.error)}">${RLABEL[r.state] || r.state}</span></td>
       <td class="mono">${r.behind ? "↓" + r.behind : ""} ${r.ahead ? "↑" + r.ahead : ""}</td><td>${dirty}</td>
       <td><span class="mono">${esc(date)}</span> <span class="muted">${esc(r.last_subject.slice(0, 90))}</span></td></tr>`;
   }).join("");
