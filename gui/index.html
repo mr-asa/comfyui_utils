@@ -101,6 +101,7 @@ nav button.on { color: var(--text); border-color: var(--accent); }
 #r-detail .files { color: var(--muted); }
 tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .s-linked { color: var(--ok); } .s-unlinked { color: var(--muted); border-style: dashed; } .s-junk { color: var(--bad); } .s-external { color: var(--info); } .s-direct { color: var(--warn); }
+.star { font-size: 15px; padding: 0 2px; } .star.on { color: var(--warn); }
 .cell-up { color: var(--ok); font-weight: 600; } .cell-down { color: var(--bad); font-weight: 600; } .cell-mid { color: var(--warn); font-weight: 600; } .cell-miss { color: var(--warn); }
 .tag { padding: 0 7px; border-radius: 999px; background: var(--chip); color: var(--muted); font-size: 12px; margin-right: 4px; }
 @media (max-width: 700px) { main { padding: 8px; } header { padding: 8px; } }
@@ -1015,9 +1016,16 @@ function cRender() {
   $("c-head").innerHTML = `<tr><th>Package</th>${cmp.venvs.map(v => `<th>${esc(v)}</th>`).join("")}</tr>`;
   $("c-rows").innerHTML = rows.map(r => {
     const cls = cellClasses(cmp.venvs.map(v => r.versions[v]));
-    return `<tr><td class="mono ${r.differs ? "cell-mid" : ""}">${esc(r.name)}${r.key ? ' <span class="muted">★</span>' : ""}</td>`
+    return `<tr><td class="mono ${r.differs ? "cell-mid" : ""}"><button class="link star ${r.key ? "on" : ""}" data-star="${esc(r.name)}" title="${r.key ? "Remove from" : "Add to"} the favorite (key) modules">${r.key ? "★" : "☆"}</button> ${esc(r.name)}</td>`
       + cmp.venvs.map((v, i) => { const x = r.versions[v]; return `<td class="mono ${cls[i]}">${x ? esc(x) : "—"}</td>`; }).join("") + "</tr>";
   }).join("");
+  $("c-rows").querySelectorAll("button[data-star]").forEach(b => b.onclick = async () => {
+    const row = cmp.rows.find(r => r.name === b.dataset.star), on = !row.key;
+    try { await api("/api/compare_key", {name: row.name, on}); } catch (e) { return alert(e.message); }
+    row.key = on;
+    if (!on && document.querySelector("input[name=cscope]:checked").value === "key") cmp.rows = cmp.rows.filter(r => r !== row);
+    cRender();
+  });
 }
 $("c-all").onclick = () => document.querySelectorAll(".cv").forEach(c => c.checked = true);
 $("c-none").onclick = () => document.querySelectorAll(".cv").forEach(c => c.checked = false);

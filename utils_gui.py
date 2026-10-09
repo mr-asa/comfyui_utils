@@ -485,6 +485,31 @@ def venv_python_version(venv_path: str) -> str:
     return ""
 
 
+KEY_CONFIG = HERE / "compare_venv_versions_config.json"
+
+
+def load_key_config() -> dict:
+    return json.loads(KEY_CONFIG.read_text(encoding="utf-8-sig")) if KEY_CONFIG.is_file() else {}
+
+
+def set_key_module(name: str, on: bool) -> None:
+    """Add or remove a package in the favorites list that compare_venv_versions.ps1 and the Compare tab share."""
+    cfg = load_key_config()
+    cfg.setdefault("modules", [])
+    canon = canonicalize_name(name)
+    if canon == "python":
+        cfg["include_python"] = on
+    elif canon == "cuda-from-torch":
+        cfg["include_cuda_from_torch"] = on
+    elif on:
+        if canon not in {canonicalize_name(m) for m in cfg["modules"]} and not any(canon in {canonicalize_name(c) for c in chk.get("candidates", [])} for chk in cfg.get("custom_checks", [])):
+            cfg["modules"].append(name)
+    else:
+        cfg["modules"] = [m for m in cfg["modules"] if canonicalize_name(m) != canon]
+        cfg["custom_checks"] = [chk for chk in cfg.get("custom_checks", []) if canon not in {canonicalize_name(c) for c in chk.get("candidates", [])}]
+    KEY_CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False).replace("\n", "\r\n") + "\r\n", encoding="utf-8")
+
+
 def compare_venvs(names: List[str], scope: str) -> dict:
     """Package versions side by side. scope "key" keeps the modules listed in compare_venv_versions_config.json."""
     if len(names) < 2:
@@ -497,11 +522,12 @@ def compare_venvs(names: List[str], scope: str) -> dict:
         torch = versions.get("torch", "")
         versions["cuda (from torch)"] = (re.search(r"\+cu(\d+)", torch) or [None, ""])[1]
         per[n] = versions
-    key_cfg = {}
-    cfg_file = HERE / "compare_venv_versions_config.json"
-    if cfg_file.is_file():
-        key_cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig"))
-    key_names = {"python", "cuda (from torch)"} | {canonicalize_name(m) for m in key_cfg.get("modules", [])}
+    key_cfg = load_key_config()
+    key_names = {canonicalize_name(m) for m in key_cfg.get("modules", [])}
+    if key_cfg.get("include_python", True):
+        key_names.add("python")
+    if key_cfg.get("include_cuda_from_torch", True):
+        key_names.add("cuda (from torch)")
     for chk in key_cfg.get("custom_checks", []):
         for cand in chk.get("candidates", []):
             key_names.add(canonicalize_name(cand))
@@ -773,6 +799,9 @@ class Handler(BaseHTTPRequestHandler):
                 job = new_job("repos")
                 run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
                 self.send_json({"job": job["id"]})
+            elif self.path == "/api/compare_key":
+                set_key_module(str(body["name"]), bool(body["on"]))
+                self.send_json({"ok": True})
             elif self.path == "/api/compare":
                 self.send_json(compare_venvs([str(n) for n in body["venvs"]], str(body.get("scope", "key"))))
             elif self.path == "/api/nodes":
