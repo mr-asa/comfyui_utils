@@ -40,7 +40,9 @@ label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted)
 .chip { padding: 2px 9px; border-radius: 999px; background: var(--chip); border: 1px solid transparent; cursor: pointer; color: var(--muted); user-select: none; }
 .chip.on { border-color: var(--accent); color: var(--text); }
 .tablewrap { flex: 1; min-height: 0; overflow: auto; }
-table { width: 100%; border-collapse: collapse; }
+table { border-collapse: collapse; }
+#tab-audit table { width: 100%; }  /* the Issue column uses the free width */
+td.trunc { max-width: 520px; overflow: hidden; text-overflow: ellipsis; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
 th[data-dir=asc]::after { content: " ▲"; font-size: 10px; } th[data-dir=desc]::after { content: " ▼"; font-size: 10px; }
 th.sorted { color: var(--text); }
@@ -783,7 +785,7 @@ function rRender() {
       <td class="mono">${name}${r.disabled ? ' <span class="muted">(disabled)</span>' : ""}</td><td class="mono">${esc(r.branch)}</td>
       <td><span class="badge s-${r.state}" title="${esc(r.error)}">${RLABEL[r.state] || r.state}</span></td>
       <td class="mono">${r.behind ? "↓" + r.behind : ""} ${r.ahead ? "↑" + r.ahead : ""}</td><td>${dirty}</td>
-      <td><span class="mono">${esc(date)}</span> <span class="muted">${esc(r.last_subject.slice(0, 90))}</span></td></tr>`;
+      <td class="trunc" title="${esc(r.last_subject)}"><span class="mono">${esc(date)}</span> <span class="muted">${esc(r.last_subject)}</span></td></tr>`;
   }).join("");
   $(p + "-rows").querySelectorAll("input[type=checkbox]").forEach(cb => { cb.onclick = e => e.stopPropagation(); cb.onchange = () => { cb.checked ? rSel.add(cb.dataset.p) : rSel.delete(cb.dataset.p); rUpdateSel(); }; });
   $(p + "-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => rPick(tr.dataset.p));
@@ -931,7 +933,7 @@ function nRender() {
   $("n-count").textContent = `${rows.length} of ${nodes.rows.length}`;
   $("n-rows").innerHTML = rows.map(r => `<tr><td><input type="checkbox" data-n="${esc(r.name)}" ${nSel.has(r.name) ? "checked" : ""}></td>
     <td class="mono">${r.web_url ? `<a href="${esc(r.web_url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name)}${r.in_repo ? "" : ' <span class="muted">(not in repo)</span>'}</td><td><span class="badge s-${r.kind}">${r.kind}</span></td>
-    <td>${r.tags.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</td><td class="muted">${esc(r.target)}</td></tr>`).join("");
+    <td>${r.tags.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</td><td class="muted trunc" title="${esc(r.target)}">${esc(r.target)}</td></tr>`).join("");
   $("n-rows").querySelectorAll("input[type=checkbox]").forEach(cb => cb.onchange = () => { cb.checked ? nSel.add(cb.dataset.n) : nSel.delete(cb.dataset.n); $("n-selinfo").textContent = nSel.size ? `${nSel.size} selected` : ""; });
   $("n-selinfo").textContent = nSel.size ? `${nSel.size} selected` : "";
 }
