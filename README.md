@@ -31,7 +31,8 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
   Commands: `plan` (rank only), `build`, `wheels` (catalog). Wheel folder and remote sources live in `wheel_sources.json`.
   Conflicting pins are loosened, packages from your other venvs are carried over (`--seed-from`, `--no-seed`), the new venv is selected only with `--select`.
 - <img src="ico/utils_gui_run.ico" width="16" height="16" alt=""> `utils_gui.py` starts a local browser GUI (stdlib only, `127.0.0.1`): pip audit table with filters
-  (hide unchanged, state chips, per-node), hold/pin buttons and "install selected" through uv. More tabs will follow.
+  (hide unchanged, state chips, per-node), hold/pin buttons, install preview with dependency changes, wheel updates, a live log,
+  and a "Build venv" tab (plan the Python/CUDA/torch combination, pick a candidate, build). More tabs will follow.
 - `comfyui_root.py` resolves the ComfyUI root using config, validation, and upward search.
 
 ## Path handling

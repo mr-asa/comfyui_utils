@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 from packaging.markers import Marker
 from packaging.requirements import Requirement
@@ -217,10 +217,21 @@ def install_prefix(cfg: dict, force_pip: bool = False) -> List[str]:
     return _env_pip(cfg) + ["install"]
 
 
-def run_uv(*args: str, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+def uv_command() -> List[str]:
     exe = shutil.which("uv")
-    cmd = [exe] if exe else [sys.executable, "-m", "uv"]
-    return subprocess.run(cmd + list(args), check=check, text=True, capture_output=capture)
+    return [exe] if exe else [sys.executable, "-m", "uv"]
+
+
+def run_uv(*args: str, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+    return subprocess.run(uv_command() + list(args), check=check, text=True, capture_output=capture)
+
+
+def run_logged(cmd: List[str], log: Callable[[str], None]) -> int:
+    """Run a command and send its output line by line to `log`. Returns the exit code."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    for line in p.stdout:
+        log(line.rstrip())
+    return p.wait()
 
 
 def installed_pythons(candidates: List[str]) -> List[str]:

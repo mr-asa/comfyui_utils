@@ -80,21 +80,34 @@ dialog form { display: flex; flex-direction: column; max-height: 88vh; }
 .chg { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 2px 0; }
 .chg .mono { overflow-wrap: anywhere; }
 h3 { margin: 12px 0 4px; font-size: 13px; }
+.tabsec { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ctl { display: contents; }
+nav { display: flex; gap: 4px; }
+nav button { border-color: transparent; background: transparent; color: var(--muted); }
+nav button.on { color: var(--text); border-color: var(--accent); }
+#b-result { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+#b-detail { padding: 8px 14px; overflow: auto; flex: 1; min-height: 60px; font-size: 13px; }
+#b-detail ul { margin: 2px 0 8px; padding-left: 18px; }
+#b-foot { flex: none; border-top: 1px solid var(--line); }
 @media (max-width: 700px) { main { padding: 8px; } header { padding: 8px; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>ComfyUI Utils · pip audit</h1>
+  <h1>ComfyUI Utils</h1>
+  <nav><button class="on" data-tab="audit">Pip audit</button><button data-tab="build">Build venv</button></nav>
+  <span class="ctl" id="auditctl">
   <label>venv <select id="venv"></select></label>
   <label title="Also scan requirements of the nodes in custom_nodes_repo_path (real clones, including ones not linked into custom_nodes)"><input type="checkbox" id="repo"> include custom_nodes_repo</label>
   <label><input type="checkbox" id="pip"> use pip instead of uv</label>
   <label title="Also list the GitHub / Hugging Face sources from wheel_sources.json to find newer prebuilt wheels (a few seconds)"><input type="checkbox" id="remotewh"> check wheel sources online</label>
   <button class="primary" id="run">Run audit</button>
+  </span>
   <div class="progress" id="progress"><span id="plabel"></span><div class="bar"><div id="pbar"></div></div></div>
   <span class="muted" id="info"></span>
 </header>
 <main>
+<section id="tab-audit" class="tabsec">
   <div class="panel" id="resultpanel" hidden>
     <div class="filters">
       <input type="text" id="search" placeholder="Filter packages…" size="22">
@@ -121,6 +134,38 @@ h3 { margin: 12px 0 4px; font-size: 13px; }
     <details id="vcsd"><summary>VCS / URL requirements</summary><div id="vcs"></div></details>
     <details id="envd"><summary>comfy-env isolation</summary><div id="env"></div></details>
   </div>
+</section>
+<section id="tab-build" class="tabsec" hidden>
+  <div class="panel">
+    <div class="toolbar">
+      <label>Python <select id="b-py"><option value="">all installed</option></select></label>
+      <label>CUDA <select id="b-cuda"><option value="">all</option></select></label>
+      <label title="Optional, major.minor">torch <input type="text" id="b-torch" size="5" placeholder="2.11"></label>
+      <label title="How many Python/CUDA/torch combinations are fully resolved">candidates <input type="text" id="b-top" size="2" value="6"></label>
+      <label title="Add packages found in your other venvs that no requirements.txt lists"><input type="checkbox" id="b-seed" checked> carry over packages from other venvs</label>
+      <label><input type="checkbox" id="b-remote"> check wheel sources online</label>
+    </div>
+    <div class="toolbar">
+      <label>exclude packages <input type="text" id="b-exclude" size="22" placeholder="pkg1 pkg2"></label>
+      <label title="Custom node folders whose requirements win conflicts">prefer nodes <input type="text" id="b-prefer" size="22"></label>
+      <label title="Custom node folders to leave out">skip nodes <input type="text" id="b-skip" size="22"></label>
+      <button class="primary" id="b-plan">Plan</button>
+      <span class="muted" id="b-info"></span>
+    </div>
+  </div>
+  <div class="panel" id="b-result" hidden>
+    <div class="tablewrap" style="flex:none;max-height:40%">
+      <table><thead><tr><th></th><th>Candidate</th><th>Status</th><th>Loosened</th><th>Dropped</th><th>Wheels</th></tr></thead><tbody id="b-rows"></tbody></table>
+    </div>
+    <div id="b-detail"></div>
+    <div class="toolbar" id="b-foot">
+      <label>venv name <input type="text" id="b-name" size="32"></label>
+      <label><input type="checkbox" id="b-select"> make it the selected venv</label>
+      <button class="primary" id="b-build">Build venv…</button>
+      <span class="muted" id="b-note"></span>
+    </div>
+  </div>
+</section>
 </main>
 <div id="drawer">
   <div id="grip" title="Drag to resize"></div>
@@ -171,10 +216,18 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", 
 const verParts = v => String(v).split(/[^0-9]+/).filter(Boolean).map(Number);
 function cmpVer(a, b) { const x = verParts(a), y = verParts(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; }
 
-async function init() {
+async function loadVenvs() {
   const st = await api("/api/state");
+  const keep = $("venv").value;
   $("venv").innerHTML = st.venvs.filter(v => v.exists === "1").map(v => `<option value="${esc(v.name)}" ${v.selected === "1" ? "selected" : ""}>${esc(v.name)}${v.comment ? " — " + esc(v.comment) : ""}</option>`).join("");
+  if (keep && [...$("venv").options].some(o => o.value === keep)) $("venv").value = keep;
   $("info").textContent = st.uv ? "uv found" : "uv not found, pip will be used";
+  $("b-py").innerHTML = '<option value="">all installed</option>' + st.pythons.map(v => `<option>${v}</option>`).join("");
+  $("b-cuda").innerHTML = '<option value="">all</option>' + st.cuda.map(v => `<option>${v}</option>`).join("");
+  return st;
+}
+async function init() {
+  await loadVenvs();
   try { const s = JSON.parse(localStorage.getItem("audit-ui") || "{}"); if (s.venv && [...$("venv").options].some(o => o.value === s.venv)) $("venv").value = s.venv; $("repo").checked = !!s.repo; $("pip").checked = !!s.pip; $("remotewh").checked = !!s.remotewh; } catch (e) {}
 }
 
@@ -454,6 +507,87 @@ $("selvis").onclick = () => { visibleRows().forEach(r => selected.add(r.name)); 
 $("selnone").onclick = () => { selected.clear(); render(); };
 ["search", "hide", "node"].forEach(id => $(id).oninput = render);
 document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => { sortDir = sortKey === th.dataset.k ? -sortDir : 1; sortKey = th.dataset.k; render(); });
+
+// ---- tabs
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  $("tab-audit").hidden = b.dataset.tab !== "audit"; $("tab-build").hidden = b.dataset.tab !== "build";
+  $("auditctl").style.display = b.dataset.tab === "audit" ? "contents" : "none";
+});
+
+// ---- build venv
+let bplan = null, planJob = null, chosen = -1;
+$("b-plan").onclick = async () => {
+  if (planJob) {
+    $("b-plan").disabled = true; $("b-plan").textContent = "Cancelling…";
+    api("/api/cancel", {job: planJob}).catch(e => logAdd([e.message]));
+    return;
+  }
+  const opts = {python: $("b-py").value, cuda: $("b-cuda").value, torch: $("b-torch").value.trim(), top: $("b-top").value, seed: $("b-seed").checked,
+    remote: $("b-remote").checked, exclude: $("b-exclude").value, prefer: $("b-prefer").value, skip_nodes: $("b-skip").value};
+  showLog("Plan a new venv", "", "running");
+  const idle = () => { planJob = null; $("b-plan").disabled = false; $("b-plan").textContent = "Plan"; };
+  try {
+    const {job} = await api("/api/plan", opts);
+    planJob = job; $("b-plan").textContent = "Cancel bplan";
+    watch(job, j => {
+      idle();
+      if (j.status === "cancelled") { logAdd(["Plan cancelled."]); setStatus("cancelled"); return; }
+      if (j.status === "error") { logAdd(["Plan failed: " + j.error]); setStatus("failed"); return; }
+      bplan = j.result; setStatus("done");
+      $("b-info").textContent = `${bplan.info.nodes} nodes with requirements, ${bplan.info.seeds} carried-over packages, ${bplan.info.catalog} wheels in the catalog`;
+      renderPlan();
+    }, logAdd);
+  } catch (e) { idle(); logAdd(["Plan failed: " + e.message]); setStatus("failed"); }
+};
+
+function renderPlan() {
+  $("b-result").hidden = false;
+  chosen = bplan.best;
+  $("b-rows").innerHTML = bplan.candidates.map(c => {
+    const w = c.wheels.map(x => `<span class="badge ${x.quality === 3 ? "s-safe" : x.quality === 2 ? "s-unknown" : "s-ok"}" title="${esc(x.filename)}${x.local ? "" : " (online)"}${x.quality === 2 ? " — other CUDA minor, same major" : x.quality === 1 ? " — untagged, unverified" : ""}">${esc(x.name)}</span>`).join(" ");
+    return `<tr data-i="${c.index}"><td><input type="radio" name="cand" value="${c.index}" ${c.resolved ? "" : "disabled"} ${c.index === chosen ? "checked" : ""}></td>
+      <td class="mono">${esc(c.label)}${c.index === bplan.best ? ' <span class="badge s-safe">best</span>' : ""}</td>
+      <td><span class="badge ${c.resolved ? "s-safe" : "s-risky"}">${c.resolved ? "resolves" : "failed"}</span></td>
+      <td>${c.loosened.length}</td><td>${c.dropped.length}</td><td>${w || '<span class="muted">none</span>'}${c.missing_wheels.length ? ` <span class="muted">missing: ${esc(c.missing_wheels.join(", "))}</span>` : ""}</td></tr>`;
+  }).join("");
+  $("b-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => {
+    const c = bplan.candidates[+tr.dataset.i]; if (!c.resolved) return;
+    chosen = c.index; tr.querySelector("input").checked = true; showCandidate();
+  });
+  showCandidate();
+}
+
+function showCandidate() {
+  const c = bplan.candidates[chosen] || bplan.candidates[0];
+  if (!c) { $("b-detail").textContent = "No candidates."; $("b-build").disabled = true; return; }
+  const list = (title, items, cls) => items.length ? `<b class="${cls}">${title} (${items.length})</b><ul>${items.map(i => `<li class="mono">${esc(i)}</li>`).join("")}</ul>` : "";
+  $("b-detail").innerHTML = `<b>${esc(c.label)}</b>` + (c.resolved ? "" : `<pre>${esc(c.error)}</pre>`)
+    + list("Version pins loosened (conflict with earlier requirements)", c.loosened, "risk")
+    + list("Requirements that cannot be resolved (carried-over ones are retried with --no-deps)", c.dropped, "bad")
+    + (bplan.info.vcs ? `<div class="muted">${bplan.info.vcs} VCS/URL requirements are installed after the main set.</div>` : "");
+  $("b-name").value = c.default_name;
+  $("b-build").disabled = !c.resolved;
+}
+
+$("b-build").onclick = async () => {
+  const c = bplan.candidates[chosen], name = $("b-name").value.trim();
+  if (!c || !name) return;
+  if (!confirm(`Create the venv "${name}" (${c.label})?\n\nThis downloads and installs several GB and can take a while. It is added to config.json${$("b-select").checked ? " and becomes the selected venv" : ""}.`)) return;
+  showLog(`Building ${name} (${c.label})`, "", "running");
+  $("b-build").disabled = true; $("b-build").textContent = "Building…";
+  const done = () => { $("b-build").textContent = "Build venv…"; $("b-build").disabled = false; };
+  try {
+    const {job} = await api("/api/build", {plan_id: bplan.plan_id, index: c.index, name, select: $("b-select").checked});
+    watch(job, async j => {
+      done();
+      if (j.status !== "done") { logAdd([j.error || "Build failed."]); setStatus("failed"); $("b-note").textContent = "build failed, see the log"; return; }
+      setStatus("done"); $("b-note").textContent = `built ${j.result.name}`;
+      $("logsummary").textContent = j.result.venv;
+      await loadVenvs();
+    }, logAdd);
+  } catch (e) { done(); logAdd([e.message]); setStatus("failed"); }
+};
 init().catch(e => alert(e.message));
 </script>
 </body>

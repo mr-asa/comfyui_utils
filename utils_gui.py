@@ -29,7 +29,8 @@ from packaging.utils import canonicalize_name
 
 import config_schema
 from comfyui_root import resolve_comfyui_root
-from envtools import custom_nodes_paths, dedupe_dirs, install_prefix, run_uv
+from envtools import custom_nodes_paths, dedupe_dirs, install_prefix, installed_pythons, run_uv
+from build_venv import CUDA_CANDIDATES, PY_CANDIDATES, Candidate, PlanCancelled, PlanOptions, build_venv, default_venv_name, describe_plan, make_plan
 from wheels import download_wheel, load_catalog
 from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_install_changes, run_audit
 
@@ -39,6 +40,7 @@ LOG_DIR = HERE / "install_logs"
 TOKEN = secrets.token_urlsafe(16)
 CONFIG_LOCK = threading.Lock()
 JOBS: Dict[str, dict] = {}
+PLANS: Dict[str, tuple] = {}  # plan id -> (Plan, temp dir kept alive for the build that follows)
 
 
 class JobCancelled(Exception):
@@ -56,7 +58,7 @@ def run_in_thread(job: dict, fn, *args) -> None:
         try:
             job["result"] = fn(job, *args)
             job["status"] = "done"
-        except JobCancelled:
+        except (JobCancelled, PlanCancelled):
             job["log"].append("cancelled")
             job["status"] = "cancelled"
         except BaseException as e:  # SystemExit from the shared helpers must not kill the server
@@ -73,6 +75,8 @@ def venv_rows() -> dict:
         "venvs": config_schema.list_venvs(v2),
         "comfyui_root": config_schema.get_value(v2, "comfyui_root"),
         "uv": bool(shutil.which("uv")),
+        "pythons": installed_pythons(PY_CANDIDATES),
+        "cuda": CUDA_CANDIDATES,
     }
 
 
@@ -216,6 +220,59 @@ def wheel_install_job(job: dict, name: str, filenames: List[str], force_pip: boo
     return record_install(job, name, stamp, before, installed_versions(py), code)
 
 
+def candidate_json(i: int, c: Candidate, wanted: List[str]) -> dict:
+    return {
+        "index": i, "label": c.label(), "py": c.py, "cuda": c.cuda, "torch": f"{c.torch_mm[0]}.{c.torch_mm[1]}",
+        "resolved": bool(c.resolved), "error": (c.error or "")[-1500:], "loosened": c.loosened or [], "dropped": c.dropped or [],
+        "wheels": [{"name": n, "filename": w.filename, "quality": q, "local": bool(w.path)} for n, (w, q) in sorted(c.wheels.items())],
+        "missing_wheels": [w for w in wanted if w not in c.wheels], "default_name": default_venv_name(c),
+    }
+
+
+def plan_job(job: dict, opts: dict) -> dict:
+    def text_list(key: str) -> List[str]:
+        return [x for x in re.split(r"[\s,]+", str(opts.get(key) or "")) if x]
+
+    options = PlanOptions(
+        remote=bool(opts.get("remote")), python=str(opts.get("python") or "") or None, cuda=str(opts.get("cuda") or "") or None,
+        torch=str(opts.get("torch") or "") or None, top=max(1, min(int(opts.get("top") or 6), 12)),
+        exclude=text_list("exclude"), prefer=text_list("prefer"), skip_nodes=text_list("skip_nodes"), no_seed=not opts.get("seed", True),
+    )
+    for old in list(PLANS):  # only the latest plan is kept
+        PLANS.pop(old)[1].cleanup()
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        plan = make_plan(options, Path(tmp.name), lambda m: job["log"].append(m), job["cancel"].is_set)
+    except BaseException:
+        tmp.cleanup()
+        raise
+    PLANS[job["id"]] = (plan, tmp)
+    best = plan.best
+    job["log"].append(describe_plan(plan))
+    return {
+        "plan_id": job["id"], "best": plan.candidates.index(best) if best else -1,
+        "candidates": [candidate_json(i, c, plan.wanted) for i, c in enumerate(plan.candidates)],
+        "info": {"nodes": plan.nodes_with_reqs, "seeds": plan.seeds, "catalog": plan.catalog_size, "pythons": plan.pythons, "vcs": len(plan.vcs), "wanted": plan.wanted},
+    }
+
+
+def build_job(job: dict, plan_id: str, index: int, name: str, select: bool) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or name in (".", ".."):
+        raise ValueError("venv name may only contain letters, digits, '.', '_' and '-'")
+    if plan_id not in PLANS:
+        raise ValueError("this plan is gone, plan again")
+    plan, tmp = PLANS[plan_id]
+    cand = plan.candidates[index]
+    if not cand.resolved:
+        raise ValueError("this candidate did not resolve")
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    try:
+        return build_venv(plan, cand, name, Path(tmp.name), job["log"].append, select)
+    finally:
+        LOG_DIR.mkdir(exist_ok=True)
+        (LOG_DIR / f"{stamp}_build_{name}.log").write_text("\n".join(job["log"]) + "\n", encoding="utf-8")
+
+
 def save_rules(name: str, hold: List[str], pins: Dict[str, str]) -> None:
     venv_entry(name)
     hold = [canonicalize_name(h) for h in hold if h.strip()]
@@ -290,6 +347,14 @@ class Handler(BaseHTTPRequestHandler):
                 names = [str(w["filename"]) for w in body["wheels"]]
                 job = new_job("install")
                 run_in_thread(job, wheel_install_job, body["venv"], names, bool(body.get("force_pip")))
+                self.send_json({"job": job["id"]})
+            elif self.path == "/api/plan":
+                job = new_job("plan")
+                run_in_thread(job, plan_job, dict(body))
+                self.send_json({"job": job["id"]})
+            elif self.path == "/api/build":
+                job = new_job("build")
+                run_in_thread(job, build_job, str(body["plan_id"]), int(body["index"]), str(body["name"]).strip(), bool(body.get("select")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/cancel":
                 job = JOBS.get(str(body["job"]))
