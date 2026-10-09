@@ -278,8 +278,7 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
   <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
     <div class="filters">
       <span id="c-venvs"></span>
-      <label><input type="radio" name="cscope" value="key" checked> key modules</label>
-      <label><input type="radio" name="cscope" value="all"> all packages</label>
+      <label title="Show only the starred packages; untick to see everything and star more"><input type="checkbox" id="c-fav" checked> favorites only</label>
       <button id="c-all">Select all</button><button id="c-none">None</button>
       <button class="primary" id="c-run">Compare</button><button id="c-runall" title="Tick every venv and compare">Compare all</button>
       <input type="text" id="c-search" placeholder="Filter…" size="16">
@@ -987,7 +986,8 @@ $("c-run").onclick = async () => {
   const venvs = [...document.querySelectorAll(".cv")].filter(c => c.checked).map(c => c.value);
   if (venvs.length < 2) return alert("Tick at least two venvs.");
   try {
-    cmp = await api("/api/compare", {venvs, scope: document.querySelector("input[name=cscope]:checked").value});
+    cTouched.clear();
+    cmp = await api("/api/compare", {venvs, scope: "all"});
     cRender();
   } catch (e) { alert(e.message); }
 };
@@ -1015,7 +1015,7 @@ function cellClasses(vals) {
 function cRender() {
   if (!cmp) return;
   const q = $("c-search").value.trim().toLowerCase();
-  const rows = cmp.rows.filter(r => (!$("c-diff").checked || r.differs) && (!q || r.name.includes(q)));
+  const rows = cmp.rows.filter(r => (!$("c-diff").checked || r.differs) && (!$("c-fav").checked || r.key || cTouched.has(r.name)) && (!q || r.name.includes(q)));
   $("c-count").textContent = `${rows.length} of ${cmp.rows.length}`;
   $("c-head").innerHTML = `<tr><th>Package</th>${cmp.venvs.map(v => `<th>${esc(v)}</th>`).join("")}</tr>`;
   $("c-rows").innerHTML = rows.map(r => {
@@ -1027,12 +1027,12 @@ function cRender() {
 }
 
 // Every favorite change is listed with an Undo; a removed row stays visible (as ☆) until the next comparison.
-const favLog = [];
+const favLog = [], cTouched = new Set();  // cTouched: rows changed since the last comparison stay visible even when unstarred
 async function cToggleStar(name) {
   const row = cmp.rows.find(r => r.name === name), on = !row.key;
   let res;
   try { res = await api("/api/compare_key", {name, on}); } catch (e) { return alert(e.message); }
-  row.key = on;
+  row.key = on; cTouched.add(name);
   favLog.unshift({name, on, removed: res.removed, undone: false});
   if (favLog.length > 12) favLog.pop();
   cRender(); cRenderFavLog();
@@ -1058,7 +1058,7 @@ function cRenderFavLog() {
 $("c-all").onclick = () => document.querySelectorAll(".cv").forEach(c => c.checked = true);
 $("c-none").onclick = () => document.querySelectorAll(".cv").forEach(c => c.checked = false);
 $("c-runall").onclick = () => { $("c-all").onclick(); $("c-run").onclick(); };
-["c-search", "c-diff"].forEach(id => $(id).oninput = cRender);
+["c-search", "c-diff", "c-fav"].forEach(id => $(id).oninput = cRender);
 init().catch(e => alert(e.message));
 </script>
 </body>
