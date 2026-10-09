@@ -75,7 +75,7 @@ def venv_entry(name: str) -> dict:
     return row
 
 
-def audit_job(job: dict, name: str, include_repo: bool, force_pip: bool) -> dict:
+def audit_job(job: dict, name: str, include_repo: bool, force_pip: bool, remote_wheels: bool) -> dict:
     row = venv_entry(name)
     with CONFIG_LOCK:
         v2, _ = config_schema.load_v2(CONFIG_PATH)
@@ -94,7 +94,7 @@ def audit_job(job: dict, name: str, include_repo: bool, force_pip: bool) -> dict
     def progress(label: str, i: int, n: int, suffix: str = "") -> None:
         job["progress"] = {"label": label, "i": i, "n": n, "suffix": suffix}
 
-    res = run_audit(cfg, root, paths, hold_set, pin_map, force_pip=force_pip, progress=progress)
+    res = run_audit(cfg, root, paths, hold_set, pin_map, force_pip=force_pip, progress=progress, remote_wheels=remote_wheels)
     return {
         "rows": audit_rows(res, hold_set, pin_map),
         "vcs": [
@@ -226,7 +226,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             if self.path == "/api/audit":
                 job = new_job("audit")
-                run_in_thread(job, audit_job, body["venv"], bool(body.get("include_repo")), bool(body.get("force_pip")))
+                run_in_thread(job, audit_job, body["venv"], bool(body.get("include_repo")), bool(body.get("force_pip")), bool(body.get("remote_wheels")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/install":
                 packages = [str(p) for p in body["packages"] if str(p).strip()]

@@ -12,6 +12,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
+from urllib.parse import unquote
 
 import requests
 from packaging.requirements import Requirement
@@ -19,6 +20,7 @@ from packaging.specifiers import Specifier, SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
+from wheels import best_wheels, load_catalog
 from envtools import (
     dedupe_dirs,
     enabled_node_dirs,
@@ -129,6 +131,10 @@ class PackageReport:
     safe_update: Optional[Version] = None
     risky_update: Optional[Version] = None
     side_changes: List[dict] = field(default_factory=list)  # other packages the safe update would also change
+    from_wheel: bool = False  # installed from a prebuilt wheel file, PyPI versions do not apply
+    source: str = ""  # human readable origin when it is not plain PyPI
+    wheel_update: Optional[dict] = None  # newer matching wheel found in the wheel sources
+    wheel_note: str = ""
 
 
 @dataclass
@@ -913,6 +919,8 @@ class AuditResult:
 def package_action(r: PackageReport) -> Optional[str]:
     """install / upgrade / downgrade, or None when the package already matches its constraints."""
     tgt = r.installable_max or r.max_allowed
+    if r.from_wheel:
+        return None
     if not r.installed and tgt:
         return "install"
     if tgt and r.installed and r.installed < tgt:
@@ -924,7 +932,7 @@ def package_action(r: PackageReport) -> Optional[str]:
 
 def package_unchanged(r: PackageReport, pin_off: bool) -> bool:
     """Nothing to do and nothing to report for this package."""
-    return not (package_action(r) or r.update_error or r.availability_issue or pin_off)
+    return not (package_action(r) or r.update_error or r.availability_issue or pin_off or r.wheel_update)
 
 
 def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> List[dict]:
@@ -941,6 +949,10 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
             state = "pin-mismatch" if pin_off else "pinned"
         elif n in hold_set:
             state = "held"
+        elif r.wheel_update:
+            state = "wheel-update"
+        elif r.from_wheel:
+            state = "wheel"
         elif action == "install":
             state = "missing"
         elif action == "downgrade":
@@ -949,6 +961,18 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
             state = ("safe-deps" if r.side_changes else "safe") if n in safe else "risky" if n in risky else "unknown" if n in unknown else "upgrade"
         else:
             state = "ok"
+        extra_info = []
+        if r.wheel_note:
+            extra_info.append(r.wheel_note)
+        if state == "safe-deps":
+            extra_info.append("Also changes: " + ", ".join(f"{c['name']} {c['from'] or '-'} -> {c['to'] or '-'}" for c in r.side_changes))
+        problem = r.update_error or r.availability_issue or ""
+        if problem and not (state == "wheel" and not r.update_error):
+            kind = "error" if state == "risky" else "warn"
+            issue = problem + ("\n" + "\n".join(extra_info) if extra_info else "")
+        else:
+            kind = "info" if extra_info else ""
+            issue = "\n".join(extra_info)
         rows.append({
             "name": n,
             "installed": str(r.installed) if r.installed else "",
@@ -959,11 +983,45 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
             "state": state,
             "unchanged": package_unchanged(r, pin_off),
             "side_changes": r.side_changes,
-            "issue": r.update_error or r.availability_issue or "",
+            "issue": issue,
+            "issue_kind": kind,
+            "source": r.source,
+            "wheel_update": r.wheel_update,
             "pin": pin_map.get(n, ""),
             "used_in": [{"repo": c.repo, "spec": str(c.spec)} for c in r.constraints],
         })
     return rows
+
+
+def _torch_cuda(torch_version: str) -> Tuple[Optional[Tuple[int, int]], Optional[Tuple[int, int]]]:
+    m = re.match(r"(\d+)\.(\d+)", torch_version)
+    cu = re.search(r"\+cu(\d{2})(\d)", torch_version)
+    return ((int(m[1]), int(m[2])) if m else None), ((int(cu[1]), int(cu[2])) if cu else None)
+
+
+def mark_wheel_packages(reports: Dict[str, PackageReport], installed_map: Dict[str, dict], target_py_ver: str, remote: bool) -> None:
+    """Flag packages installed from a .whl file and look for a newer matching wheel in the wheel sources."""
+    catalog, _wheel_dir, wanted = load_catalog(remote)
+    torch_info = installed_map.get("torch")
+    torch_mm, cuda = _torch_cuda(torch_info["version"]) if torch_info else (None, None)
+    best = best_wheels(catalog, wanted, ".".join(target_py_ver.split(".")[:2]), torch_mm, cuda) if torch_mm and cuda else {}
+    for n, r in reports.items():
+        durl = ((installed_map.get(n) or {}).get("direct_url") or "")
+        r.from_wheel = durl.lower().endswith(".whl")
+        found = best.get(n)
+        if not r.from_wheel and not found:
+            continue
+        notes = []
+        if r.from_wheel:
+            fn = unquote(durl.rsplit("/", 1)[-1])
+            r.source = f"wheel {fn}"
+            pypi = r.available_versions[-1] if r.available_versions else None
+            notes.append(f"Installed from wheel {fn}" + (f"; PyPI has {pypi}" + (" (older)" if r.installed and pypi < r.installed else "") if pypi else "; not on PyPI"))
+        if found and found[1] >= 2 and r.installed and found[0].pep_version() > r.installed:
+            w = found[0]
+            r.wheel_update = {"version": str(w.pep_version()), "filename": w.filename, "url": w.url or "", "path": str(w.path) if w.path else ""}
+            notes.append(f"Newer matching wheel {w.filename}: uv pip install --no-deps \"{w.path or w.url}\"")
+        r.wheel_note = "\n".join(notes)
 
 
 def run_audit(
@@ -976,6 +1034,7 @@ def run_audit(
     classify_workers: Optional[int] = None,
     installed_map: Optional[Dict[str, dict]] = None,
     progress: Optional[Callable[[str, int, int, str], None]] = None,
+    remote_wheels: bool = False,
 ) -> AuditResult:
     def report(label: str, i: int, n: int, suffix: str = "") -> None:
         if progress:
@@ -1075,6 +1134,9 @@ def run_audit(
         report("VCS refs", i, len(extra_reqs))
     vcs_reports = extra_reqs
 
+    # Packages installed from a prebuilt wheel: PyPI versions say nothing about them, the wheel sources do
+    mark_wheel_packages(reports, installed_map, target_py_ver, remote_wheels)
+
     # Candidates
     cand: List[Tuple[str, Version]] = []
     missing: List[Tuple[str, Version]] = []
@@ -1095,6 +1157,8 @@ def run_audit(
             continue
         if n in hold_set:
             held.append(n)
+            continue
+        if r.from_wheel:
             continue
         if not r.installed:
             missing.append((n, tgt))

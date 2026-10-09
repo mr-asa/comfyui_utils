@@ -44,11 +44,14 @@ th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--lin
 th { position: sticky; top: 0; z-index: 2; background: var(--panel); color: var(--muted); font-weight: 600; cursor: pointer; box-shadow: 0 1px 0 var(--line); }
 tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 td.used { white-space: normal; max-width: 300px; }
-td.issue { white-space: pre-wrap; width: 100%; min-width: 360px; overflow-wrap: anywhere; color: var(--bad); font-size: 12px; }
+td.issue { white-space: pre-wrap; width: 100%; min-width: 360px; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
+td.issue.k-error { color: var(--bad); }
+td.issue.k-warn { color: var(--warn); }
+td.issue.k-info { color: var(--muted); }
 tr.flash td { background: color-mix(in srgb, var(--ok) 14%, transparent); }
 tr.side td { background: color-mix(in srgb, var(--warn) 16%, transparent); }
 .badge { padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; white-space: nowrap; }
-.s-safe { color: var(--ok); } .s-safe-deps { color: var(--ok); border-style: dashed; } .s-ok { color: var(--muted); } .s-risky { color: var(--bad); } .s-unknown { color: var(--warn); }
+.s-safe { color: var(--ok); } .s-safe-deps { color: var(--ok); border-style: dashed; } .s-wheel-update { color: var(--info); } .s-wheel { color: var(--muted); border-style: dashed; } .s-ok { color: var(--muted); } .s-risky { color: var(--bad); } .s-unknown { color: var(--warn); }
 .s-missing { color: var(--info); } .s-downgrade { color: var(--warn); } .s-held, .s-pinned { color: var(--accent); } .s-pin-mismatch { color: var(--bad); }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 .muted { color: var(--muted); }
@@ -86,6 +89,7 @@ h3 { margin: 12px 0 4px; font-size: 13px; }
   <label>venv <select id="venv"></select></label>
   <label title="Also scan requirements of the nodes in custom_nodes_repo_path (real clones, including ones not linked into custom_nodes)"><input type="checkbox" id="repo"> include custom_nodes_repo</label>
   <label><input type="checkbox" id="pip"> use pip instead of uv</label>
+  <label title="Also list the GitHub / Hugging Face sources from wheel_sources.json to find newer prebuilt wheels (a few seconds)"><input type="checkbox" id="remotewh"> check wheel sources online</label>
   <button class="primary" id="run">Run audit</button>
   <div class="progress" id="progress"><span id="plabel"></span><div class="bar"><div id="pbar"></div></div></div>
   <span class="muted" id="info"></span>
@@ -139,9 +143,9 @@ h3 { margin: 12px 0 4px; font-size: 13px; }
 const TOKEN = "__TOKEN__";
 const $ = id => document.getElementById(id);
 // order = what needs installing first, what needs nothing last
-const STATES = ["missing", "safe", "safe-deps", "pin-mismatch", "downgrade", "risky", "unknown", "held", "pinned", "ok"];
+const STATES = ["missing", "safe", "safe-deps", "wheel-update", "pin-mismatch", "downgrade", "risky", "unknown", "held", "pinned", "wheel", "ok"];
 const RANK = Object.fromEntries(STATES.map((s, i) => [s, i]));
-const LABEL = {"safe-deps": "safe +deps"};
+const LABEL = {"safe-deps": "safe +deps", "wheel-update": "wheel update", "wheel": "from wheel"};
 const sideTip = r => (r.side_changes || []).map(c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`).join("\n");
 let data = null, rules = {hold: new Set(), pins: {}}, selected = new Set(), activeStates = new Set(STATES);
 let sortKey = "state", sortDir = 1, pending = null, previewSeq = 0;
@@ -169,7 +173,7 @@ async function init() {
   const st = await api("/api/state");
   $("venv").innerHTML = st.venvs.filter(v => v.exists === "1").map(v => `<option value="${esc(v.name)}" ${v.selected === "1" ? "selected" : ""}>${esc(v.name)}${v.comment ? " — " + esc(v.comment) : ""}</option>`).join("");
   $("info").textContent = st.uv ? "uv found" : "uv not found, pip will be used";
-  try { const s = JSON.parse(localStorage.getItem("audit-ui") || "{}"); if (s.venv && [...$("venv").options].some(o => o.value === s.venv)) $("venv").value = s.venv; $("repo").checked = !!s.repo; $("pip").checked = !!s.pip; } catch (e) {}
+  try { const s = JSON.parse(localStorage.getItem("audit-ui") || "{}"); if (s.venv && [...$("venv").options].some(o => o.value === s.venv)) $("venv").value = s.venv; $("repo").checked = !!s.repo; $("pip").checked = !!s.pip; $("remotewh").checked = !!s.remotewh; } catch (e) {}
 }
 
 function watch(jobId, onDone, sink) {
@@ -188,11 +192,11 @@ function watch(jobId, onDone, sink) {
 
 $("run").onclick = async () => {
   const venv = $("venv").value;
-  localStorage.setItem("audit-ui", JSON.stringify({venv, repo: $("repo").checked, pip: $("pip").checked}));
+  localStorage.setItem("audit-ui", JSON.stringify({venv, repo: $("repo").checked, pip: $("pip").checked, remotewh: $("remotewh").checked}));
   $("run").disabled = true; selected.clear();
   showLog(`Audit: ${venv}`, "", "running");
   try {
-    const {job} = await api("/api/audit", {venv, include_repo: $("repo").checked, force_pip: $("pip").checked});
+    const {job} = await api("/api/audit", {venv, include_repo: $("repo").checked, force_pip: $("pip").checked, remote_wheels: $("remotewh").checked});
     watch(job, j => {
       $("run").disabled = false;
       if (j.status === "error") { logAdd(["Audit failed: " + j.error]); setStatus("failed"); return; }
@@ -209,7 +213,8 @@ $("run").onclick = async () => {
 
 const LOGRULES = [
   [/^exit code [1-9]|error|×|failed|unsatisfiable|cannot be|conflict/i, "l-err"],
-  [/^updated as requested|^exit code 0|^audit done|^saved:/i, "l-add"],
+  [/^updated as requested|^exit code 0/i, "l-add"],
+  [/^audit done|^saved:/i, "l-dim"],
   [/warning|downgrade|side effect|risky|re-run the audit/i, "l-warn"],
   [/^\s*\+ /, "l-add"], [/^\s*- /, "l-del"],
   [/^> /, "l-cmd"],
@@ -290,8 +295,8 @@ function render() {
     const inst = p.ver ? (p.risky ? `<span class="risk" title="No safe version found; this one conflicts with something">${esc(p.ver)} (risky)</span>` : esc(p.ver)) : "—";
     const was = r.was ? ` <span class="${r.side ? "risk" : "muted"}" title="${r.side ? "changed as a side effect of an install" : "updated"}">(was ${esc(r.was)})</span>` : "";
     return `<tr class="${r.flash ? "flash" : r.side ? "side" : ""}"><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
-      <td class="mono">${esc(r.name)}</td><td class="mono">${esc(r.installed) || "—"}${was}</td><td class="mono">${inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
-      <td><span class="badge s-${r.state}" title="${esc(sideTip(r))}">${LABEL[r.state] || r.state}</span></td><td class="used">${used}</td><td class="issue">${esc(r.issue)}</td>
+      <td class="mono">${esc(r.name)}</td><td class="mono">${esc(r.installed) || "—"}${was}${r.source ? ` <span class="muted" title="${esc(r.source)}">[wheel]</span>` : ""}</td><td class="mono">${r.wheel_update ? `${esc(r.wheel_update.version)} <span class="muted" title="${esc(r.wheel_update.filename)}">(wheel)</span>` : inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
+      <td><span class="badge s-${r.state}" title="${esc(sideTip(r))}">${LABEL[r.state] || r.state}</span></td><td class="used">${used}</td><td class="issue k-${r.issue_kind || "warn"}">${esc(r.issue)}</td>
       <td>${held ? `<button class="link" data-a="unhold" data-n="${esc(r.name)}">unhold</button>` : `<button class="link" data-a="hold" data-n="${esc(r.name)}">hold</button>`}
           ${pin ? `<button class="link" data-a="unpin" data-n="${esc(r.name)}">unpin ${esc(pin)}</button>` : r.installed ? `<button class="link" data-a="pin" data-n="${esc(r.name)}">pin ${esc(r.installed)}</button>` : ""}</td></tr>`;
   }).join("");
