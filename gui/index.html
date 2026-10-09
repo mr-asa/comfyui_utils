@@ -1241,7 +1241,7 @@ $("setcancel").onclick = () => $("setdlg").close();
 
 function setRender() {
   const P = S.paths;
-  const pathRow = (key, label, hint) => `<div class="srow"><label class="sl" title="${esc(hint)}">${esc(label)}</label><input type="text" data-path="${key}" value="${esc(P[key])}" placeholder="${key === "workflows_dir" ? esc(P.workflows_default) : ""}"><span class="mark" data-mark="${key}"></span></div>`;
+  const pathRow = (key, label, hint) => `<div class="srow"><label class="sl" title="${esc(hint)}">${esc(label)}</label><input type="text" data-path="${key}" value="${esc(P[key])}" placeholder="${key === "workflows_dir" ? esc(P.workflows_default) : ""}"><span class="mark" data-mark="${key}"></span></div>${key === "workflows_dir" ? `<div class="srow"><label class="sl"></label><span class="muted" style="font-size:12px">Grey text = the default (${esc(P.workflows_default)}). Type a folder to replace it; empty means the default.</span></div>` : ""}`;
   const kv = (obj, kind) => Object.entries(obj).map(([k, v], i) => `<tr><td><input type="text" data-${kind}-k="${i}" value="${esc(k)}" placeholder="NAME"></td><td><input type="text" data-${kind}-v="${i}" value="${esc(v)}" placeholder="value"></td><td><button type="button" class="link" data-${kind}-del="${i}">remove</button></td></tr>`).join("");
   $("setbody").innerHTML = `
     <h3>Folders</h3>
