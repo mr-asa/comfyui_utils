@@ -41,6 +41,8 @@ label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted)
 .tablewrap { flex: 1; min-height: 0; overflow: auto; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+th[data-dir=asc]::after { content: " ▲"; font-size: 10px; } th[data-dir=desc]::after { content: " ▼"; font-size: 10px; }
+th.sorted { color: var(--text); }
 th { position: sticky; top: 0; z-index: 2; background: var(--panel); color: var(--muted); font-weight: 600; cursor: pointer; box-shadow: 0 1px 0 var(--line); }
 tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 td.used { white-space: normal; max-width: 300px; }
@@ -230,7 +232,7 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
       <span class="muted">Restart ComfyUI for link changes to take effect.</span>
     </div>
     <div class="tablewrap"><table>
-      <thead><tr><th></th><th data-nk="name">Node</th><th data-nk="kind">State</th><th>Tags</th><th>Target</th></tr></thead>
+      <thead><tr><th></th><th data-nk="name">Node</th><th data-nk="kind">State</th><th data-nk="tags">Tags</th><th data-nk="target">Target</th></tr></thead>
       <tbody id="n-rows"></tbody>
     </table></div>
   </div>
@@ -296,6 +298,9 @@ async function api(path, body) {
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
+}
+function markSort(sel, attr, key, dir) {
+  document.querySelectorAll(sel).forEach(th => { const on = th.dataset[attr] === key; th.classList.toggle("sorted", on); th.dataset.dir = on ? (dir > 0 ? "asc" : "desc") : ""; });
 }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const verParts = v => String(v).split(/[^0-9]+/).filter(Boolean).map(Number);
@@ -434,6 +439,7 @@ function visibleRows() {
 
 function render() {
   if (!data) return;
+  markSort("th[data-k]", "k", sortKey, sortDir);
   const rows = visibleRows();
   $("count").textContent = `${rows.length} of ${data.rows.length}`;
   $("rows").innerHTML = rows.map(r => {
@@ -729,6 +735,7 @@ function rVisible() {
 }
 
 function rRender() {
+  markSort("th[data-rk]", "rk", rSortKey, rSortDir);
   const rows = rVisible();
   $("r-count").textContent = `${rows.length} of ${repos.length}`;
   $("r-rows").innerHTML = rows.map(r => {
@@ -835,12 +842,13 @@ async function nLoad() {
 function nVisible() {
   const q = $("n-search").value.trim().toLowerCase(), tag = $("n-tag").value;
   const rows = nodes.rows.filter(r => nActive.has(r.kind) && !($("n-hidelinked").checked && r.kind === "linked") && (!q || r.name.toLowerCase().includes(q)) && (!tag || r.tags.includes(tag)));
-  const key = r => nSortKey === "kind" ? NRANK[r.kind] : r.name.toLowerCase();
+  const key = r => nSortKey === "kind" ? NRANK[r.kind] : nSortKey === "tags" ? (r.tags.length ? r.tags.join(",").toLowerCase() : "zzzz") : nSortKey === "target" ? r.target.toLowerCase() : r.name.toLowerCase();
   rows.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * nSortDir || a.name.localeCompare(b.name));
   return rows;
 }
 
 function nRender() {
+  markSort("th[data-nk]", "nk", nSortKey, nSortDir);
   if (!nodes) return;
   const rows = nVisible();
   $("n-count").textContent = `${rows.length} of ${nodes.rows.length}`;
