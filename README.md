@@ -1,5 +1,7 @@
 [![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Russian](https://img.shields.io/badge/lang-Russian-red)](README_RU.md)
 
+<p align="center"><img src="docs/banner.png" alt="ComfyUI Utils: venvs, pip packages, repos, workflows, custom nodes"></p>
+
 # ComfyUI Utils
 
 A local toolbox for looking after a ComfyUI install: venvs, pip packages, repositories, workflows and custom-node links,
@@ -13,6 +15,12 @@ all in one browser UI. The original console tools still work (see the collapsed 
 3. Work through the tabs from left to right.
 
 Needs: Python with `requests` and `packaging` (any ComfyUI venv has them) and [`uv`](https://docs.astral.sh/uv/) (`pip install uv`) for installs and venv building.
+
+## Screenshots
+
+<p align="center"><img src="docs/screenshot_audit.png" alt="Pip audit" width="900"><br>*Pip audit: what can be updated safely, what pulls other packages in (`safe +deps`), and what would break a requirement (`risky`), with the reason.*</p>
+
+<p align="center"><img src="docs/screenshot_install_preview.png" alt="Install preview" width="900"><br>*Install preview: every package an update would change, including dependencies, with a choice of what to keep untouched.*</p>
 
 ## Tabs (in the order you work)
 

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ComfyUI Utils banner</title>
+<style>
+  /* Source of banner.png: open in Chrome at 1280x360 and take a screenshot. Icons come from ../ico. */
+  html, body { margin: 0; width: 1280px; height: 360px; overflow: hidden; }
+  body {
+    font: 16px/1.4 system-ui, "Segoe UI", sans-serif; color: #e6e9f0;
+    background:
+      radial-gradient(900px 340px at 85% 10%, rgba(109,148,255,.28), transparent 70%),
+      radial-gradient(700px 300px at 5% 100%, rgba(76,194,126,.18), transparent 70%),
+      linear-gradient(135deg, #12151b, #1b2230);
+    position: relative;
+  }
+  body::before { content: ""; position: absolute; inset: 0; opacity: .5;
+    background-image: linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
+    background-size: 32px 32px; mask-image: linear-gradient(90deg, transparent 0%, #000 60%); }
+  .wrap { position: relative; padding: 44px 56px; }
+  h1 { margin: 0; font-size: 64px; letter-spacing: -1px; font-weight: 800; }
+  h1 span { background: linear-gradient(90deg, #6d94ff, #4cc3dc 60%, #4cc27e); -webkit-background-clip: text; color: transparent; }
+  .tag { margin: 6px 0 22px; font-size: 22px; color: #aab4c8; }
+  .tag b { color: #e6e9f0; font-weight: 600; }
+  .icons { display: flex; gap: 14px; }
+  .card { width: 118px; padding: 12px 6px 10px; text-align: center; border-radius: 14px; border: 1px solid rgba(255,255,255,.1);
+    background: rgba(255,255,255,.05); box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  .card img { width: 52px; height: 52px; display: block; margin: 0 auto 8px; }
+  .card span { font-size: 13px; color: #c7cfdf; }
+  .badges { position: absolute; right: 56px; top: 54px; display: flex; flex-direction: column; gap: 9px; align-items: flex-end; }
+  .b { padding: 3px 14px; border-radius: 999px; border: 1.5px solid currentColor; font-size: 15px; background: rgba(18,21,27,.7); }
+  .ok { color: #4cc27e; } .dep { color: #4cc27e; border-style: dashed; } .risk { color: #ef6b5b; } .wheel { color: #98a2b3; border-style: dashed; } .info { color: #4cc3dc; } .warn { color: #e0a64a; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span>ComfyUI</span> Utils</h1>
+  <div class="tag"><b>venvs</b> · <b>pip packages</b> · <b>repos</b> · <b>workflows</b> · <b>custom nodes</b> — one local control panel</div>
+  <div class="icons">
+    <div class="card"><img src="../ico/build_venv_run.ico" alt=""><span>Build venv</span></div>
+    <div class="card"><img src="../ico/update_comfy_repos_run.ico" alt=""><span>Repos</span></div>
+    <div class="card"><img src="../ico/comfyui_pip_update_audit_run.ico" alt=""><span>Pip audit</span></div>
+    <div class="card"><img src="../ico/custom_nodes_link_manager_run.ico" alt=""><span>Nodes</span></div>
+    <div class="card"><img src="../ico/update_workflow_repos_run.ico" alt=""><span>Workflows</span></div>
+    <div class="card"><img src="../ico/compare_venv_versions_run.ico" alt=""><span>Compare venvs</span></div>
+  </div>
+  <div class="badges">
+    <span class="b ok">safe</span><span class="b dep">safe +deps</span><span class="b risk">risky</span>
+    <span class="b wheel">from wheel</span><span class="b info">behind ↓3</span><span class="b warn">no sync record</span>
+  </div>
+</div>
+</body>
+</html>

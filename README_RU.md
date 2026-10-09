@@ -1,5 +1,7 @@
 [![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Russian](https://img.shields.io/badge/lang-Russian-red)](README_RU.md)
 
+<p align="center"><img src="docs/banner.png" alt="ComfyUI Utils: venvs, pip packages, repos, workflows, custom nodes"></p>
+
 # ComfyUI Utils
 
 Локальный набор инструментов для ухода за установкой ComfyUI: виртуальные окружения, pip-пакеты, репозитории, воркфлоу и ссылки на custom nodes —
@@ -13,6 +15,12 @@
 3. Идите по вкладкам слева направо.
 
 Нужно: Python с `requests` и `packaging` (есть в любом venv ComfyUI) и [`uv`](https://docs.astral.sh/uv/) (`pip install uv`) для установки пакетов и сборки venv.
+
+## Скриншоты
+
+<p align="center"><img src="docs/screenshot_audit.png" alt="Pip audit" width="900"><br>*Pip audit: что можно обновить безопасно, что тянет за собой другие пакеты (`safe +deps`) и что сломает требование (`risky`), с причиной.*</p>
+
+<p align="center"><img src="docs/screenshot_install_preview.png" alt="Install preview" width="900"><br>*Предпросмотр установки: все пакеты, которые изменит обновление, включая зависимости, с выбором, что оставить нетронутым.*</p>
 
 ## Вкладки (в порядке работы)
 

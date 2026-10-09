@@ -570,7 +570,8 @@ function render() {
   $("count").textContent = `${rows.length} of ${data.rows.length}`;
   $("rows").innerHTML = rows.map(r => {
     const held = rules.hold.has(r.name), pin = rules.pins[r.name];
-    const used = r.used_in.map(u => `<span title="${esc(u.spec || "no specifier")}">${esc(u.repo)}</span>`).join(", ");
+    const usedAll = r.used_in.map(u => `${u.repo} ${u.spec || ""}`.trim()).join("\n");
+    const used = r.used_in.slice(0, 3).map(u => `<span title="${esc(u.spec || "no specifier")}">${esc(u.repo)}</span>`).join(", ") + (r.used_in.length > 3 ? ` <span class="muted" title="${esc(usedAll)}">+${r.used_in.length - 3} more</span>` : "");
     const p = plan(r);
     const inst = p.override ? `<span class="badge s-safe-deps" title="chosen by hand in the versions list">${esc(p.ver)} chosen</span>` : p.ver ? (p.risky ? `<span class="risk" title="No safe version found; this one conflicts with something">${esc(p.ver)} (risky)</span>` : esc(p.ver)) : "—";
     const was = r.was ? ` <span class="${r.side ? "risk" : "muted"}" title="${r.side ? "changed as a side effect of an install" : "updated"}">(was ${esc(r.was)})</span>` : "";
