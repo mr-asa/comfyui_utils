@@ -98,7 +98,7 @@ nav button.on { color: var(--text); border-color: var(--accent); }
 #r-detail .files { color: var(--muted); }
 tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .s-linked { color: var(--ok); } .s-unlinked { color: var(--muted); border-style: dashed; } .s-junk { color: var(--bad); } .s-external { color: var(--info); } .s-direct { color: var(--warn); }
-.cell-diff { color: var(--warn); font-weight: 600; } .cell-miss { color: var(--bad); }
+.cell-up { color: var(--ok); font-weight: 600; } .cell-down { color: var(--bad); font-weight: 600; } .cell-mid { color: var(--warn); font-weight: 600; } .cell-miss { color: var(--warn); }
 .tag { padding: 0 7px; border-radius: 999px; background: var(--chip); color: var(--muted); font-size: 12px; margin-right: 4px; }
 @media (max-width: 700px) { main { padding: 8px; } header { padding: 8px; } }
 </style>
@@ -243,7 +243,8 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
       <span id="c-venvs"></span>
       <label><input type="radio" name="cscope" value="key" checked> key modules</label>
       <label><input type="radio" name="cscope" value="all"> all packages</label>
-      <button class="primary" id="c-run">Compare</button>
+      <button id="c-all">Select all</button><button id="c-none">None</button>
+      <button class="primary" id="c-run">Compare</button><button id="c-runall" title="Tick every venv and compare">Compare all</button>
       <input type="text" id="c-search" placeholder="Filter…" size="16">
       <label><input type="checkbox" id="c-diff" checked> only differences</label>
       <span class="muted" id="c-count"></span>
@@ -911,15 +912,42 @@ $("c-run").onclick = async () => {
     cRender();
   } catch (e) { alert(e.message); }
 };
+// Same rules as compare_venv_versions.ps1: equal rows stay plain; a single outlier is green (newer) / red (older);
+// otherwise the newest is green, the oldest red, the rest and missing ones yellow.
+function cellClasses(vals) {
+  const out = vals.map(() => "");
+  const distinct = [...new Set(vals)];
+  if (distinct.length <= 1) return out;
+  const count = v => vals.filter(x => x === v).length;
+  const base = distinct.reduce((a, b) => (count(b) > count(a) ? b : a));
+  const outliers = distinct.length === 2 ? distinct.filter(v => count(v) === 1) : [];
+  if (outliers.length === 1) {
+    const o = outliers[0], d = !base && o ? 1 : cmpVer(o, base);
+    const cls = d > 0 ? "cell-up" : d < 0 ? "cell-down" : "cell-mid";
+    vals.forEach((v, i) => { if (v === o) out[i] = cls; });
+    return out;
+  }
+  const have = vals.filter(Boolean);
+  const max = have.reduce((a, b) => (cmpVer(b, a) > 0 ? b : a), have[0]), min = have.reduce((a, b) => (cmpVer(b, a) < 0 ? b : a), have[0]);
+  vals.forEach((v, i) => { out[i] = !v ? "cell-mid" : cmpVer(v, max) === 0 ? "cell-up" : cmpVer(v, min) === 0 && cmpVer(max, min) !== 0 ? "cell-down" : "cell-mid"; });
+  return out;
+}
+
 function cRender() {
   if (!cmp) return;
   const q = $("c-search").value.trim().toLowerCase();
   const rows = cmp.rows.filter(r => (!$("c-diff").checked || r.differs) && (!q || r.name.includes(q)));
   $("c-count").textContent = `${rows.length} of ${cmp.rows.length}`;
   $("c-head").innerHTML = `<tr><th>Package</th>${cmp.venvs.map(v => `<th>${esc(v)}</th>`).join("")}</tr>`;
-  $("c-rows").innerHTML = rows.map(r => `<tr><td class="mono">${esc(r.name)}${r.key ? ' <span class="muted">★</span>' : ""}</td>`
-    + cmp.venvs.map(v => { const x = r.versions[v]; return `<td class="mono ${!x ? "cell-miss" : r.differs ? "cell-diff" : ""}">${x ? esc(x) : "—"}</td>`; }).join("") + "</tr>").join("");
+  $("c-rows").innerHTML = rows.map(r => {
+    const cls = cellClasses(cmp.venvs.map(v => r.versions[v]));
+    return `<tr><td class="mono ${r.differs ? "cell-mid" : ""}">${esc(r.name)}${r.key ? ' <span class="muted">★</span>' : ""}</td>`
+      + cmp.venvs.map((v, i) => { const x = r.versions[v]; return `<td class="mono ${cls[i]}">${x ? esc(x) : "—"}</td>`; }).join("") + "</tr>";
+  }).join("");
 }
+$("c-all").onclick = () => document.querySelectorAll(".cv").forEach(c => c.checked = true);
+$("c-none").onclick = () => document.querySelectorAll(".cv").forEach(c => c.checked = false);
+$("c-runall").onclick = () => { $("c-all").onclick(); $("c-run").onclick(); };
 ["c-search", "c-diff"].forEach(id => $(id).oninput = cRender);
 init().catch(e => alert(e.message));
 </script>
