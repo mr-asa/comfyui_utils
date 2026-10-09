@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ComfyUI Utils</title>
+<link rel="icon" href="/ico/utils_gui_run.ico">
 <style>
 :root {
   --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #667085; --line: #e1e5ec;
@@ -87,7 +88,7 @@ a { color: var(--accent); text-decoration: none; } a:visited { color: var(--info
 .ctl { display: contents; }
 nav { display: flex; gap: 4px; flex-wrap: wrap; }
 nav button { display: inline-flex; align-items: center; gap: 6px; }
-nav button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+nav button img { width: 20px; height: 20px; flex: none; opacity: .85; } nav button.on img, nav button:hover img { opacity: 1; }
 nav button { border-color: transparent; background: transparent; color: var(--muted); }
 nav button.on { color: var(--text); border-color: var(--accent); }
 #b-result { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -108,7 +109,7 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 <body>
 <header>
   <h1>ComfyUI Utils</h1>
-  <nav><button class="on" data-tab="audit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg><span>Pip audit</span></button><button data-tab="build"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/><path d="M3 17.5l9 4.5 9-4.5"/></svg><span>Build venv</span></button><button data-tab="repos"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10"/><path d="M18 10c0 5-8 3-12 7"/></svg><span>Repos</span></button><button data-tab="workflows"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h3a2 2 0 0 1 2 2V14"/></svg><span>Workflows</span></button><button data-tab="nodes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg><span>Nodes</span></button><button data-tab="compare"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="7" height="16" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/><path d="M12 8v8"/></svg><span>Compare venvs</span></button></nav>
+  <nav><button class="on" data-tab="audit"><img src="/ico/comfyui_pip_update_audit_run.ico" alt=""><span>Pip audit</span></button><button data-tab="build"><img src="/ico/build_venv_run.ico" alt=""><span>Build venv</span></button><button data-tab="repos"><img src="/ico/update_comfy_repos_run.ico" alt=""><span>Repos</span></button><button data-tab="workflows"><img src="/ico/update_workflow_repos_run.ico" alt=""><span>Workflows</span></button><button data-tab="nodes"><img src="/ico/custom_nodes_link_manager_run.ico" alt=""><span>Nodes</span></button><button data-tab="compare"><img src="/ico/compare_venv_versions_run.ico" alt=""><span>Compare venvs</span></button></nav>
   <span class="ctl" id="auditctl">
   <label>venv <select id="venv"></select></label>
   <label title="Also scan requirements of the nodes in custom_nodes_repo_path (real clones, including ones not linked into custom_nodes)"><input type="checkbox" id="repo"> include custom_nodes_repo</label>

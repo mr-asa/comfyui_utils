@@ -580,6 +580,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(html)))
             self.end_headers()
             self.wfile.write(html)
+        elif re.fullmatch(r"/ico/[A-Za-z0-9_]+\.ico", path) and (HERE / path.lstrip("/")).is_file():
+            data = (HERE / path.lstrip("/")).read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/x-icon")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
         elif path == "/api/nodes_state":
             try:
                 self.send_json(nodes_state())
