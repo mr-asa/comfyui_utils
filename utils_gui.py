@@ -49,8 +49,7 @@ PRESETS_PATH = str(HERE / "run_comfyui_presets_config.json")
 TOKEN = secrets.token_urlsafe(16)
 CONFIG_LOCK = threading.Lock()
 JOBS: Dict[str, dict] = {}
-REPO_KIND: Dict[str, str] = {}  # scanned path -> "nodes" | "workflows"
-REPO_PATHS: set = set()  # repositories found by the last scan; the only paths the update endpoints accept
+REPO_KIND: Dict[str, str] = {}  # repositories found by the last scans (path -> "nodes" | "workflows"); the only paths the update endpoints accept
 PLANS: Dict[str, tuple] = {}  # plan id -> (Plan, temp dir kept alive for the build that follows)
 
 
@@ -302,9 +301,8 @@ def repos_scan_job(job: dict, kind: str, fetch: bool, include_disabled: bool) ->
         repos = [str(p) for p in wf.collect_workflow_sources(wdir)] if wdir.is_dir() else []
     else:
         repos = collect_repos(root, custom_nodes_paths(cfg, str(root)), include_disabled)
-    REPO_PATHS.clear()
-    REPO_PATHS.update(repos)
-    REPO_KIND.clear()
+    for old in [p for p, k in REPO_KIND.items() if k == kind]:  # each tab rescans only its own kind
+        del REPO_KIND[old]
     REPO_KIND.update({r: kind for r in repos})
     rows, done = [], 0
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -327,7 +325,7 @@ def repos_scan_job(job: dict, kind: str, fetch: bool, include_disabled: bool) ->
 def repos_update_job(job: dict, paths: List[str], on_local: str, on_conflict: str, dry_run: bool) -> dict:
     """Nodes: local changes stash/replace/skip, conflicts skip/reset. Workflows: local changes also fetch-only / move edited JSONs,
     "conflicts" is the Windows-incompatible-paths answer (skip / fetch + sparse checkout)."""
-    unknown = [p for p in paths if p not in REPO_PATHS]
+    unknown = [p for p in paths if p not in REPO_KIND]
     if unknown:
         raise ValueError("not a scanned repository: " + unknown[0])
     local = {"stash": "2", "replace": "1", "skip": "3", "fetch": "5", "move_json": "6"}[on_local]
@@ -640,7 +638,7 @@ class Handler(BaseHTTPRequestHandler):
                 run_in_thread(job, add_workflow_job, str(body["url"]))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repo_detail":
-                if str(body["path"]) not in REPO_PATHS:
+                if str(body["path"]) not in REPO_KIND:
                     return self.send_json({"error": "unknown repository"}, 400)
                 self.send_json(incoming_changes(str(body["path"])))
             elif self.path == "/api/repos_update":

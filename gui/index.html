@@ -85,7 +85,9 @@ h3 { margin: 12px 0 4px; font-size: 13px; }
 a { color: var(--accent); text-decoration: none; } a:visited { color: var(--info); } a:hover { text-decoration: underline; }
 .tabsec { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ctl { display: contents; }
-nav { display: flex; gap: 4px; }
+nav { display: flex; gap: 4px; flex-wrap: wrap; }
+nav button { display: inline-flex; align-items: center; gap: 6px; }
+nav button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 nav button { border-color: transparent; background: transparent; color: var(--muted); }
 nav button.on { color: var(--text); border-color: var(--accent); }
 #b-result { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -106,7 +108,7 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 <body>
 <header>
   <h1>ComfyUI Utils</h1>
-  <nav><button class="on" data-tab="audit">Pip audit</button><button data-tab="build">Build venv</button><button data-tab="repos">Repos</button><button data-tab="nodes">Nodes</button><button data-tab="compare">Compare venvs</button></nav>
+  <nav><button class="on" data-tab="audit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg><span>Pip audit</span></button><button data-tab="build"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/><path d="M3 17.5l9 4.5 9-4.5"/></svg><span>Build venv</span></button><button data-tab="repos"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10"/><path d="M18 10c0 5-8 3-12 7"/></svg><span>Repos</span></button><button data-tab="workflows"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h3a2 2 0 0 1 2 2V14"/></svg><span>Workflows</span></button><button data-tab="nodes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg><span>Nodes</span></button><button data-tab="compare"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="7" height="16" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/><path d="M12 8v8"/></svg><span>Compare venvs</span></button></nav>
   <span class="ctl" id="auditctl">
   <label>venv <select id="venv"></select></label>
   <label title="Also scan requirements of the nodes in custom_nodes_repo_path (real clones, including ones not linked into custom_nodes)"><input type="checkbox" id="repo"> include custom_nodes_repo</label>
@@ -180,7 +182,6 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 <section id="tab-repos" class="tabsec" hidden>
   <div class="panel" id="r-panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
     <div class="filters">
-      <select id="r-kind" title="What to scan and update"><option value="nodes">ComfyUI &amp; custom nodes</option><option value="workflows">Workflow sources</option></select>
       <button class="primary" id="r-scan">Scan</button>
       <label title="git fetch every repository so ahead/behind is current (slower)"><input type="checkbox" id="r-fetch" checked> fetch from remotes</label>
       <label><input type="checkbox" id="r-disabled"> include disabled folders</label>
@@ -188,7 +189,6 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
       <label><input type="checkbox" id="r-hide" checked> hide up-to-date</label>
       <label><input type="checkbox" id="r-dirtyonly"> only with local changes</label>
       <span id="r-chips"></span>
-      <span id="r-add" hidden><input type="text" id="r-url" size="40" placeholder="GitHub / Hugging Face URL (repository or folder)"> <button id="r-addbtn">Add workflow source</button></span>
       <span class="muted" id="r-count"></span>
     </div>
     <div class="toolbar">
@@ -204,6 +204,32 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
       <tbody id="r-rows"></tbody>
     </table></div>
     <div id="r-detail"><span class="muted">Scan, then click a row to see the incoming commits.</span></div>
+  </div>
+</section>
+<section id="tab-workflows" class="tabsec" hidden>
+  <div class="panel" id="w-panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+    <div class="filters">
+      <button class="primary" id="w-scan">Scan</button>
+      <label title="git fetch every repository so ahead/behind is current (slower)"><input type="checkbox" id="w-fetch" checked> fetch from remotes</label>
+      <input type="text" id="w-search" placeholder="Filter…" size="18">
+      <label><input type="checkbox" id="w-hide" checked> hide up-to-date</label>
+      <label><input type="checkbox" id="w-dirtyonly"> only with local changes</label>
+      <span id="w-chips"></span>
+      <span id="w-add"><input type="text" id="w-url" size="40" placeholder="GitHub / Hugging Face URL (repository or folder)"> <button id="w-addbtn">Add workflow source</button></span>
+      <span class="muted" id="w-count"></span>
+    </div>
+    <div class="toolbar">
+      <button id="w-selbehind">Select behind</button><button id="w-selvis">Select visible</button><button id="w-selnone">Clear</button>
+      <label>local changes <select id="w-local"></select></label>
+      <label><span id="w-conflict-label">conflicts</span> <select id="w-conflict"></select></label>
+      <button class="primary" id="w-update" disabled>Update selected…</button>
+      <span class="muted" id="w-selinfo"></span>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th></th><th data-rk="name">Workflow source</th><th data-rk="branch">Branch</th><th data-rk="state">State</th><th>Behind / ahead</th><th>Local changes</th><th data-rk="last_date">Last commit</th></tr></thead>
+      <tbody id="w-rows"></tbody>
+    </table></div>
+    <div id="w-detail"><span class="muted">Scan, then click a row to see the incoming commits.</span></div>
   </div>
 </section>
 <section id="tab-nodes" class="tabsec" hidden>
@@ -681,7 +707,8 @@ $("b-build").onclick = async () => {
   } catch (e) { done(); logAdd([e.message]); setStatus("failed"); }
 };
 
-// ---- repos
+// ---- repos and workflow sources (one UI, two instances)
+function repoTab(p, kind, tabId) {
 const RSTATES = ["behind", "diverged", "fetch-failed", "not-git", "ahead", "partial", "no-upstream", "up-to-date"];
 const RRANK = Object.fromEntries(RSTATES.map((x, i) => [x, i]));
 const R_OPTS = {
@@ -690,27 +717,25 @@ const R_OPTS = {
     conflictLabel: "Windows-bad paths", conflict: [["skip", "skip"], ["sparse", "fetch + sparse checkout"]]},
 };
 function setRepoOptions() {
-  const o = R_OPTS[$("r-kind").value];
-  $("r-local").innerHTML = o.local.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
-  $("r-conflict").innerHTML = o.conflict.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
-  $("r-conflict-label").textContent = o.conflictLabel;
-  $("r-add").hidden = $("r-kind").value !== "workflows";
+  const o = R_OPTS[kind];
+  $(p + "-local").innerHTML = o.local.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+  $(p + "-conflict").innerHTML = o.conflict.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+  $(p + "-conflict-label").textContent = o.conflictLabel;
 }
 setRepoOptions();
-$("r-kind").onchange = () => { setRepoOptions(); repos = []; rSel.clear(); rBuildChips(); rRender(); $("r-detail").innerHTML = '<span class="muted">Scan to list the repositories.</span>'; };
 let repos = [], rSel = new Set(), rActive = new Set(RSTATES), rJob = null, rSortKey = "state", rSortDir = 1, rPicked = "", rDetailSeq = 0;
 
-$("r-scan").onclick = async () => {
+$(p + "-scan").onclick = async () => {
   if (rJob) {
-    $("r-scan").disabled = true; $("r-scan").textContent = "Cancelling…";
+    $(p + "-scan").disabled = true; $(p + "-scan").textContent = "Cancelling…";
     api("/api/cancel", {job: rJob}).catch(e => logAdd([e.message]));
     return;
   }
-  showLog("Scan: " + $("r-kind").selectedOptions[0].textContent, "", "running");
-  const idle = () => { rJob = null; $("r-scan").disabled = false; $("r-scan").textContent = "Scan"; };
+  showLog("Scan: " + (kind === "nodes" ? "ComfyUI & custom nodes" : "workflow sources"), "", "running");
+  const idle = () => { rJob = null; $(p + "-scan").disabled = false; $(p + "-scan").textContent = "Scan"; };
   try {
-    const {job} = await api("/api/repos_scan", {kind: $("r-kind").value, fetch: $("r-fetch").checked, include_disabled: $("r-disabled").checked});
-    rJob = job; $("r-scan").textContent = "Cancel scan"; rSel.clear();
+    const {job} = await api("/api/repos_scan", {kind, fetch: $(p + "-fetch").checked, include_disabled: $(p + "-disabled") ? $(p + "-disabled").checked : false});
+    rJob = job; $(p + "-scan").textContent = "Cancel scan"; rSel.clear();
     watch(job, j => {
       idle();
       if (j.status === "cancelled") { logAdd(["Scan cancelled."]); setStatus("cancelled"); return; }
@@ -722,24 +747,24 @@ $("r-scan").onclick = async () => {
 
 function rBuildChips() {
   const counts = {}; repos.forEach(r => counts[r.state] = (counts[r.state] || 0) + 1);
-  $("r-chips").innerHTML = RSTATES.filter(x => counts[x]).map(x => `<span class="chip ${rActive.has(x) ? "on" : ""}" data-s="${x}">${x} ${counts[x]}</span>`).join(" ");
-  $("r-chips").querySelectorAll(".chip").forEach(c => c.onclick = () => { const x = c.dataset.s; rActive.has(x) ? rActive.delete(x) : rActive.add(x); c.classList.toggle("on"); rRender(); });
+  $(p + "-chips").innerHTML = RSTATES.filter(x => counts[x]).map(x => `<span class="chip ${rActive.has(x) ? "on" : ""}" data-s="${x}">${x} ${counts[x]}</span>`).join(" ");
+  $(p + "-chips").querySelectorAll(".chip").forEach(c => c.onclick = () => { const x = c.dataset.s; rActive.has(x) ? rActive.delete(x) : rActive.add(x); c.classList.toggle("on"); rRender(); });
 }
 
 function rVisible() {
-  const q = $("r-search").value.trim().toLowerCase();
-  const rows = repos.filter(r => rActive.has(r.state) && !($("r-hide").checked && r.state === "up-to-date" && !r.flash)
-    && (!$("r-dirtyonly").checked || r.dirty) && (!q || r.name.toLowerCase().includes(q)));
+  const q = $(p + "-search").value.trim().toLowerCase();
+  const rows = repos.filter(r => rActive.has(r.state) && !($(p + "-hide").checked && r.state === "up-to-date" && !r.flash)
+    && (!$(p + "-dirtyonly").checked || r.dirty) && (!q || r.name.toLowerCase().includes(q)));
   const key = r => rSortKey === "state" ? RRANK[r.state] : r[rSortKey];
   rows.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * rSortDir || a.name.localeCompare(b.name));
   return rows;
 }
 
 function rRender() {
-  markSort("th[data-rk]", "rk", rSortKey, rSortDir);
+  markSort("#tab-" + tabId + " th[data-rk]", "rk", rSortKey, rSortDir);
   const rows = rVisible();
-  $("r-count").textContent = `${rows.length} of ${repos.length}`;
-  $("r-rows").innerHTML = rows.map(r => {
+  $(p + "-count").textContent = `${rows.length} of ${repos.length}`;
+  $(p + "-rows").innerHTML = rows.map(r => {
     const name = r.web_url ? `<a href="${esc(r.web_url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name);
     const dirty = r.dirty ? `<span class="risk" title="${esc(r.dirty_lines.join("\n"))}">${r.dirty} file(s)</span>` : '<span class="muted">—</span>';
     const date = r.last_date ? r.last_date.slice(0, 10) : "";
@@ -749,35 +774,35 @@ function rRender() {
       <td class="mono">${r.behind ? "↓" + r.behind : ""} ${r.ahead ? "↑" + r.ahead : ""}</td><td>${dirty}</td>
       <td><span class="mono">${esc(date)}</span> <span class="muted">${esc(r.last_subject.slice(0, 90))}</span></td></tr>`;
   }).join("");
-  $("r-rows").querySelectorAll("input[type=checkbox]").forEach(cb => { cb.onclick = e => e.stopPropagation(); cb.onchange = () => { cb.checked ? rSel.add(cb.dataset.p) : rSel.delete(cb.dataset.p); rUpdateSel(); }; });
-  $("r-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => rPick(tr.dataset.p));
+  $(p + "-rows").querySelectorAll("input[type=checkbox]").forEach(cb => { cb.onclick = e => e.stopPropagation(); cb.onchange = () => { cb.checked ? rSel.add(cb.dataset.p) : rSel.delete(cb.dataset.p); rUpdateSel(); }; });
+  $(p + "-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => rPick(tr.dataset.p));
   rUpdateSel();
 }
-function rUpdateSel() { $("r-selinfo").textContent = rSel.size ? `${rSel.size} selected` : ""; $("r-update").disabled = !rSel.size || $("r-update").dataset.busy === "1"; }
+function rUpdateSel() { $(p + "-selinfo").textContent = rSel.size ? `${rSel.size} selected` : ""; $(p + "-update").disabled = !rSel.size || $(p + "-update").dataset.busy === "1"; }
 
 async function rPick(path) {
   rPicked = path; const seq = ++rDetailSeq, r = repos.find(x => x.path === path);
-  document.querySelectorAll("#r-rows tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.p === path && !tr.classList.contains("flash")));
-  if (r.updated) { $("r-detail").innerHTML = r.updated; return; }
-  $("r-detail").innerHTML = '<span class="muted">Loading…</span>';
+  document.querySelectorAll("#" + p + "-rows tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.p === path && !tr.classList.contains("flash")));
+  if (r.updated) { $(p + "-detail").innerHTML = r.updated; return; }
+  $(p + "-detail").innerHTML = '<span class="muted">Loading…</span>';
   try {
     const d = await api("/api/repo_detail", {path});
     if (seq !== rDetailSeq) return;
     const head = `<b>${esc(r.name)}</b> <span class="muted">${esc(r.path)}</span>` + (r.dirty ? `<div class="risk">Local changes:<br>${r.dirty_lines.map(l => `<span class="mono">${esc(l)}</span>`).join("<br>")}</div>` : "");
-    $("r-detail").innerHTML = head + (d.commits.length ? `<div>Incoming (${d.commits.length}${d.commits.length >= 60 ? "+" : ""}):</div>` + d.commits.map(c => `<div class="mono">${esc(c)}</div>`).join("") + `<div class="files">${d.files.length} file(s): ` + d.files.slice(0, 40).map(f => `+${f.added} -${f.deleted} ${esc(f.path)}`).join(" · ") + "</div>" : '<div class="muted">Nothing incoming.</div>')
+    $(p + "-detail").innerHTML = head + (d.commits.length ? `<div>Incoming (${d.commits.length}${d.commits.length >= 60 ? "+" : ""}):</div>` + d.commits.map(c => `<div class="mono">${esc(c)}</div>`).join("") + `<div class="files">${d.files.length} file(s): ` + d.files.slice(0, 40).map(f => `+${f.added} -${f.deleted} ${esc(f.path)}`).join(" · ") + "</div>" : '<div class="muted">Nothing incoming.</div>')
       + (d.error ? `<div class="bad">${esc(d.error)}</div>` : "");
-  } catch (e) { if (seq === rDetailSeq) $("r-detail").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  } catch (e) { if (seq === rDetailSeq) $(p + "-detail").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 }
 
-$("r-update").onclick = async () => {
-  const paths = [...rSel], local = $("r-local").value, conflict = $("r-conflict").value, dry = $("r-dry").checked;
+$(p + "-update").onclick = async () => {
+  const paths = [...rSel], local = $(p + "-local").value, conflict = $(p + "-conflict").value, dry = $(p + "-dry") ? $(p + "-dry").checked : false;
   const dirty = paths.map(p => repos.find(r => r.path === p)).filter(r => r.dirty);
   if (!confirm(`${dry ? "Dry run for" : "Update"} ${paths.length} repositor${paths.length === 1 ? "y" : "ies"}?`
     + (dirty.length ? `\n\n${dirty.length} have local changes → ${local === "stash" ? "stash and re-apply after the pull" : local === "skip" ? "they will be skipped" : local === "fetch" ? "only fetched, the working tree stays as it is" : "LOCAL CHANGES WILL BE DISCARDED"}.` : "")
     + (conflict === "reset" ? "\nConflicts → hard reset to the remote (local commits are lost)." : "") + (local === "move_json" ? "\nEdited JSONs are moved to github_edits, other local changes are discarded." : ""))) return;
   showLog(`${dry ? "Dry run" : "Update"}: ${paths.length} repositories`, "", "running");
-  $("r-update").dataset.busy = "1"; $("r-update").disabled = true; $("r-update").textContent = "Updating…";
-  const finish = () => { $("r-update").dataset.busy = "0"; $("r-update").textContent = "Update selected…"; rUpdateSel(); };
+  $(p + "-update").dataset.busy = "1"; $(p + "-update").disabled = true; $(p + "-update").textContent = "Updating…";
+  const finish = () => { $(p + "-update").dataset.busy = "0"; $(p + "-update").textContent = "Update selected…"; rUpdateSel(); };
   try {
     const {job} = await api("/api/repos_update", {paths, on_local: local, on_conflict: conflict, dry_run: dry});
     watch(job, j => {
@@ -805,22 +830,25 @@ $("r-update").onclick = async () => {
   } catch (e) { finish(); setStatus("failed"); logAdd([e.message]); }
 };
 
-$("r-addbtn").onclick = async () => {
-  const url = $("r-url").value.trim(); if (!url) return;
+if ($(p + "-addbtn")) $(p + "-addbtn").onclick = async () => {
+  const url = $(p + "-url").value.trim(); if (!url) return;
   showLog("Add workflow source", url, "running");
   try {
     const {job} = await api("/api/add_workflow", {url});
     watch(job, j => {
       if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
-      setStatus("done"); $("r-url").value = ""; $("r-scan").onclick();
+      setStatus("done"); $(p + "-url").value = ""; $(p + "-scan").onclick();
     }, logAdd);
   } catch (e) { logAdd([e.message]); setStatus("failed"); }
 };
-$("r-selbehind").onclick = () => { repos.filter(r => r.state === "behind").forEach(r => rSel.add(r.path)); rRender(); };
-$("r-selvis").onclick = () => { rVisible().forEach(r => rSel.add(r.path)); rRender(); };
-$("r-selnone").onclick = () => { rSel.clear(); rRender(); };
-["r-search", "r-hide", "r-dirtyonly"].forEach(id => $(id).oninput = rRender);
-document.querySelectorAll("th[data-rk]").forEach(th => th.onclick = () => { rSortDir = rSortKey === th.dataset.rk ? -rSortDir : 1; rSortKey = th.dataset.rk; rRender(); });
+$(p + "-selbehind").onclick = () => { repos.filter(r => r.state === "behind").forEach(r => rSel.add(r.path)); rRender(); };
+$(p + "-selvis").onclick = () => { rVisible().forEach(r => rSel.add(r.path)); rRender(); };
+$(p + "-selnone").onclick = () => { rSel.clear(); rRender(); };
+["search", "hide", "dirtyonly"].forEach(id => $(p + "-" + id).oninput = rRender);
+document.querySelectorAll("#tab-" + tabId + " th[data-rk]").forEach(th => th.onclick = () => { rSortDir = rSortKey === th.dataset.rk ? -rSortDir : 1; rSortKey = th.dataset.rk; rRender(); });
+}
+repoTab("r", "nodes", "repos");
+repoTab("w", "workflows", "workflows");
 
 // ---- nodes (junction links, presets, tags)
 const NKINDS = ["junk", "direct", "external", "unlinked", "linked"];

@@ -32,8 +32,8 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
   Conflicting pins are loosened, packages from your other venvs are carried over (`--seed-from`, `--no-seed`), the new venv is selected only with `--select`.
 - <img src="ico/utils_gui_run.ico" width="16" height="16" alt=""> `utils_gui.py` starts a local browser GUI (stdlib only, `127.0.0.1`): pip audit table with filters
   (hide unchanged, state chips, per-node), hold/pin buttons, install preview with dependency changes, wheel updates, a live log,
-  a "Build venv" tab (plan the Python/CUDA/torch combination, pick a candidate, build), a "Repos" tab (scan and update ComfyUI,
-  custom nodes and workflow sources, add workflow sources by URL), a "Nodes" tab (junction links, presets, tags) and a "Compare venvs" tab.
+  a "Build venv" tab (plan the Python/CUDA/torch combination, pick a candidate, build), a "Repos" tab (scan and update ComfyUI and
+  custom nodes), a "Workflows" tab (the same for workflow sources, plus adding new ones by URL), a "Nodes" tab (junction links, presets, tags) and a "Compare venvs" tab.
 - `comfyui_root.py` resolves the ComfyUI root using config, validation, and upward search.
 
 ## Path handling
