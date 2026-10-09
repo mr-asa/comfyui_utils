@@ -471,6 +471,42 @@ def fetch_pypi(name: str, py_ver: Optional[str] = None) -> Tuple[List[Version], 
         return [], [], []
 
 
+def fetch_release_list(name: str, py_ver: Optional[str] = None) -> List[dict]:
+    """Every release on PyPI, newest first: version, date, pre-release / yanked flags and Python compatibility."""
+    try:
+        r = requests.get(f"https://pypi.org/pypi/{name}/json", timeout=12)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+    except (requests.RequestException, ValueError):
+        return []
+    py_ver = py_ver or f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    out: List[dict] = []
+    for v, files in (data.get("releases") or {}).items():
+        try:
+            ver = Version(v)
+        except Exception:
+            continue
+        compatible = not files
+        for f in files or []:
+            rp = f.get("requires_python")
+            try:
+                if not rp or SpecifierSet(rp).contains(py_ver, prereleases=True):
+                    compatible = True
+                    break
+            except Exception:
+                compatible = True
+                break
+        out.append({
+            "version": v, "pre": ver.is_prerelease or ver.is_devrelease, "yanked": bool(files) and all(f.get("yanked") for f in files),
+            "python_ok": compatible, "date": ((files[0].get("upload_time_iso_8601") or "")[:10] if files else ""), "_v": ver,
+        })
+    out.sort(key=lambda x: x["_v"], reverse=True)
+    for x in out:
+        del x["_v"]
+    return out
+
+
 def build_reverse_constraints(
     target_names: List[str],
     installed: Dict[str, dict],

@@ -29,7 +29,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List
 
+from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 import config_schema
 from comfyui_root import resolve_comfyui_root
@@ -42,7 +44,7 @@ from workflow_sources import parse_workflow_url, partial_changes, partial_remote
 from workflow_sources import _cache_key as _partial_cache_key
 from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, run_git, update_repo
 from wheels import download_wheel, load_catalog
-from pip_audit_core import audit_rows, diff_versions, need_vcs_install, parse_install_changes, run_audit
+from pip_audit_core import audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, find_reverse_conflicts, load_installed_dists, need_vcs_install, parse_install_changes, run_audit
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = str(HERE / "config.json")
@@ -737,6 +739,23 @@ def add_workflow_job(job: dict, url: str) -> dict:
     return {"path": str(dest), "mode": source.mode}
 
 
+def versions_info(venv: str, name: str, specs: List[str]) -> dict:
+    """All releases of a package with the verdict of the requirements files and of the installed packages that depend on it."""
+    row = venv_entry(venv)
+    canon = canonicalize_name(name)
+    releases = fetch_release_list(canon, venv_python_version(row["path"]) or None)
+    installed_map = load_installed_dists({"env_type": "venv", "venv_path": row["path"]})
+    current = (installed_map.get(canon) or {}).get("version", "")
+    reverse = build_reverse_constraints([canon], installed_map)
+    spec_sets = [(s, SpecifierSet(s)) for s in specs if s.strip()]
+    for rel in releases:
+        v = Version(rel["version"])
+        rel["blocked_by"] = [s for s, ss in spec_sets if not ss.contains(v, prereleases=True)]
+        rel["conflicts"] = find_reverse_conflicts(reverse, canon, v)
+        rel["installed"] = rel["version"] == current
+    return {"name": canon, "installed": current, "specs": specs, "required_by": [f"{d} {s}" for d, s in reverse.get(canon, [])], "versions": releases[:400]}
+
+
 def save_rules(name: str, hold: List[str], pins: Dict[str, str]) -> None:
     venv_entry(name)
     hold = [canonicalize_name(h) for h in hold if h.strip()]
@@ -860,6 +879,8 @@ class Handler(BaseHTTPRequestHandler):
                 job = new_job("repos")
                 run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
                 self.send_json({"job": job["id"]})
+            elif self.path == "/api/versions":
+                self.send_json(versions_info(str(body["venv"]), str(body["name"]), [str(x) for x in body.get("specs", [])]))
             elif self.path == "/api/compare_key":
                 self.send_json(set_key_module(str(body["name"]), bool(body["on"])))
             elif self.path == "/api/compare_key_restore":

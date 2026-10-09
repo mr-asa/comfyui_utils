@@ -76,6 +76,11 @@ pre { margin: 0; padding: 6px 12px; overflow: auto; background: var(--bg); font-
 details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
 .link { background: none; border: none; color: var(--accent); padding: 0 4px; }
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0; width: min(860px, 94vw); max-height: 88vh; }
+#verdlg { width: min(900px, 94vw); }
+#verhead { padding: 10px 14px 4px; }
+#verbody { max-height: 56vh; overflow: auto; padding: 0 6px; }
+#verfoot { padding: 8px 14px; display: flex; gap: 8px; align-items: center; border-top: 1px solid var(--line); }
+#verbody table { width: 100%; }
 dialog::backdrop { background: rgba(0,0,0,.45); }
 dialog form { display: flex; flex-direction: column; max-height: 88vh; }
 #dlgbody { padding: 12px 16px; overflow: auto; flex: 1; }
@@ -337,6 +342,23 @@ header .spacer { flex: 1; }
     <span style="flex:1"></span><button id="logcopy">copy</button><button id="logclear">clear</button><button id="logmin">minimize</button></div>
   <pre id="log"></pre>
 </div>
+<dialog id="verdlg">
+  <form method="dialog" onsubmit="return false">
+    <div id="verhead"><b id="vertitle"></b> <span class="muted" id="verinfo"></span></div>
+    <div class="grp" style="padding:4px 14px">
+      <label title="Versions allowed by every requirements.txt that mentions the package and by the installed packages that depend on it"><input type="checkbox" id="ver-ok" checked> only versions that satisfy the constraints</label>
+      <label><input type="checkbox" id="ver-pre"> pre-releases</label>
+      <label><input type="checkbox" id="ver-py"> incompatible with this Python</label>
+      <span class="muted" id="vercount"></span>
+    </div>
+    <div id="verbody"></div>
+    <div id="verfoot">
+      <label>any version <input type="text" id="ver-typed" size="14" placeholder="e.g. 3.5.1"></label>
+      <button type="button" id="ver-typed-use">Use</button><button type="button" id="ver-typed-install">Install…</button>
+      <span style="flex:1"></span><button type="button" id="verclose">Close</button>
+    </div>
+  </form>
+</dialog>
 <dialog id="dlg">
   <form method="dialog" onsubmit="return false">
     <div id="dlghead">
@@ -362,6 +384,7 @@ let sortKey = "state", sortDir = 1, pending = null, previewSeq = 0, auditJob = n
 
 // what "Install selected" will put into the venv for a row
 function plan(r) {
+  if (r.override && r.override !== r.installed) return {ver: r.override, risky: false, override: true};
   if (r.wheel_update) return {ver: r.wheel_update.version, risky: false, wheel: true};
   if (r.safe_update) return {ver: r.safe_update, risky: false};
   if (r.state === "missing" || r.state === "downgrade") return {ver: r.target, risky: false};
@@ -524,16 +547,17 @@ function render() {
     const held = rules.hold.has(r.name), pin = rules.pins[r.name];
     const used = r.used_in.map(u => `<span title="${esc(u.spec || "no specifier")}">${esc(u.repo)}</span>`).join(", ");
     const p = plan(r);
-    const inst = p.ver ? (p.risky ? `<span class="risk" title="No safe version found; this one conflicts with something">${esc(p.ver)} (risky)</span>` : esc(p.ver)) : "—";
+    const inst = p.override ? `<span class="badge s-safe-deps" title="chosen by hand in the versions list">${esc(p.ver)} chosen</span>` : p.ver ? (p.risky ? `<span class="risk" title="No safe version found; this one conflicts with something">${esc(p.ver)} (risky)</span>` : esc(p.ver)) : "—";
     const was = r.was ? ` <span class="${r.side ? "risk" : "muted"}" title="${r.side ? "changed as a side effect of an install" : "updated"}">(was ${esc(r.was)})</span>` : "";
     return `<tr class="${r.flash ? "flash" : r.side ? "side" : ""}"><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
-      <td class="mono">${esc(r.name)}</td><td class="mono">${esc(r.installed) || "—"}${was}${r.source ? ` <span class="muted" title="${esc(r.source)}">[wheel]</span>` : ""}</td><td class="mono">${r.wheel_update ? `${esc(r.wheel_update.version)} <span class="muted" title="${esc(r.wheel_update.filename)}">(wheel)</span>` : inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
+      <td class="mono">${esc(r.name)} <button class="link" data-ver="${esc(r.name)}" title="All versions of this package: pick any, check it, install it">versions</button></td><td class="mono">${esc(r.installed) || "—"}${was}${r.source ? ` <span class="muted" title="${esc(r.source)}">[wheel]</span>` : ""}</td><td class="mono">${r.wheel_update ? `${esc(r.wheel_update.version)} <span class="muted" title="${esc(r.wheel_update.filename)}">(wheel)</span>` : inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
       <td><span class="badge s-${r.state}" title="${esc(sideTip(r))}">${LABEL[r.state] || r.state}</span></td><td class="used">${used}</td><td class="issue k-${r.issue_kind || "warn"}">${esc(r.issue)}</td>
       <td>${held ? `<button class="link" data-a="unhold" data-n="${esc(r.name)}">unhold</button>` : `<button class="link" data-a="hold" data-n="${esc(r.name)}">hold</button>`}
           ${pin ? `<button class="link" data-a="unpin" data-n="${esc(r.name)}">unpin ${esc(pin)}</button>` : r.installed ? `<button class="link" data-a="pin" data-n="${esc(r.name)}">pin ${esc(r.installed)}</button>` : ""}</td></tr>`;
   }).join("");
   $("rows").querySelectorAll("input[type=checkbox]").forEach(cb => cb.onchange = () => { cb.checked ? selected.add(cb.dataset.n) : selected.delete(cb.dataset.n); updateSel(); });
   $("rows").querySelectorAll("button[data-a]").forEach(b => b.onclick = () => rule(b.dataset.a, b.dataset.n));
+  $("rows").querySelectorAll("button[data-ver]").forEach(b => b.onclick = () => openVersions(b.dataset.ver));
   updateSel();
 }
 
@@ -559,6 +583,57 @@ function renderExtra() {
   $("env").innerHTML = env || '<span class="muted">none</span>';
   $("extrapanel").hidden = false;
 }
+
+// ---- all versions of one package
+let verData = null, verRow = null;
+async function openVersions(name) {
+  verRow = data.rows.find(r => r.name === name);
+  $("vertitle").textContent = name; $("verinfo").textContent = "loading…"; $("verbody").innerHTML = ""; $("ver-typed").value = "";
+  $("verdlg").showModal();
+  try {
+    verData = await api("/api/versions", {venv: data.venv, name, specs: verRow.used_in.map(u => u.spec).filter(Boolean)});
+    $("verinfo").textContent = `installed ${verData.installed || "—"}` + (verData.specs.length ? ` · requirements.txt: ${[...new Set(verData.specs)].join(" ; ")}` : "")
+      + (verData.required_by.length ? ` · needed by installed packages: ${verData.required_by.join(" ; ")}` : "")
+      + (verData.versions.some(v => !v.pre && v.python_ok && versionOk(v) && cmpVer(v.version, verData.installed || "0") > 0) ? "" : " · no newer release satisfies the constraints");
+    renderVersions();
+  } catch (e) { $("verinfo").textContent = ""; $("verbody").innerHTML = `<div class="bad" style="padding:8px 14px">${esc(e.message)}</div>`; }
+}
+function versionOk(v) { return !v.blocked_by.length && !v.conflicts.length; }
+function renderVersions() {
+  if (!verData) return;
+  const onlyOk = $("ver-ok").checked, pre = $("ver-pre").checked, badPy = $("ver-py").checked;
+  const rows = verData.versions.filter(v => (pre || !v.pre) && (badPy || v.python_ok) && (!onlyOk || versionOk(v) || v.installed));
+  $("vercount").textContent = `${rows.length} of ${verData.versions.length}`;
+  $("verbody").innerHTML = `<table><thead><tr><th>Version</th><th>Date</th><th>Verdict</th><th></th></tr></thead><tbody>` + rows.map(v => {
+    const tags = [];
+    if (v.installed) tags.push('<span class="badge s-ok">installed</span>');
+    if (versionOk(v)) tags.push('<span class="badge s-safe">satisfies constraints</span>');
+    v.blocked_by.forEach(b => tags.push(`<span class="badge s-risky" title="requirements.txt">requires ${esc(b)}</span>`));
+    v.conflicts.forEach(c => tags.push(`<span class="badge s-unknown">${esc(c)}</span>`));
+    if (v.pre) tags.push('<span class="badge s-ok">pre-release</span>');
+    if (v.yanked) tags.push('<span class="badge s-risky">yanked</span>');
+    if (!v.python_ok) tags.push('<span class="badge s-risky">not for this Python</span>');
+    return `<tr><td class="mono">${esc(v.version)}</td><td class="mono muted">${esc(v.date)}</td><td>${tags.join(" ")}</td>
+      <td>${v.installed ? "" : `<button class="link" data-use="${esc(v.version)}" title="Make this the version that Install selected uses">use</button> <button class="link" data-inst="${esc(v.version)}" title="Check what it changes and install it now">install…</button>`}</td></tr>`;
+  }).join("") + "</tbody></table>";
+  $("verbody").querySelectorAll("button[data-use]").forEach(b => b.onclick = () => useVersion(b.dataset.use));
+  $("verbody").querySelectorAll("button[data-inst]").forEach(b => b.onclick = () => installVersion(b.dataset.inst));
+}
+function useVersion(ver) {
+  if (!ver) return;
+  verRow.override = ver; selected.add(verRow.name);
+  $("verdlg").close(); render();
+  $("selinfo").textContent = `${selected.size} selected (${verRow.name} → ${ver})`;
+}
+function installVersion(ver) {
+  if (!ver) return;
+  pending = {items: [{name: verRow.name, ver, state: verRow.state, from: verRow.installed, wheel: null}]};
+  $("verdlg").close(); $("dlg").showModal(); preview();
+}
+["ver-ok", "ver-pre", "ver-py"].forEach(id => $(id).oninput = renderVersions);
+$("verclose").onclick = () => $("verdlg").close();
+$("ver-typed-use").onclick = () => useVersion($("ver-typed").value.trim());
+$("ver-typed-install").onclick = () => installVersion($("ver-typed").value.trim());
 
 // ---- install: preview (dry run) -> confirm -> real install
 const protectMode = () => document.querySelector("input[name=protect]:checked").value;
@@ -653,7 +728,7 @@ async function doInstall(protect) {
     if (!row) { other.push(c); return; }
     row.was = c.from; row.installed = c.to;
     if (item && c.to === item.ver) {
-      row.action = ""; row.safe_update = ""; row.risky_update = ""; row.issue = ""; row.issue_kind = ""; row.unchanged = true; row.flash = true;
+      delete row.override; row.action = ""; row.safe_update = ""; row.risky_update = ""; row.issue = ""; row.issue_kind = ""; row.unchanged = true; row.flash = true;
       if (item.wheel) { row.wheel_update = null; row.source = `wheel ${item.wheel.filename}`; }
       row.state = rules.pins[c.name] ? "pinned" : rules.hold.has(c.name) ? "held" : item.wheel ? "wheel" : "ok";
       selected.delete(c.name); done.push(c);
