@@ -458,6 +458,7 @@ from pip_audit_core import (
     load_installed_dists,
     need_vcs_install,
     package_action,
+    package_unchanged,
     run_audit,
     wheel_local_suffix_for_env,
 )
@@ -1014,7 +1015,7 @@ def main() -> None:
         tgt = r.installable_max or r.max_allowed
         action = package_action(r)
         pin_off = n in pin_map and str(r.installed) != pin_map[n]
-        if args.hide_unchanged and not (action or r.update_error or r.availability_issue or pin_off):
+        if args.hide_unchanged and package_unchanged(r, pin_off):
             continue
 
         # Installed color

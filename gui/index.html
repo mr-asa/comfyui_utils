@@ -43,7 +43,9 @@ tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .s-missing { color: var(--info); } .s-downgrade { color: var(--warn); } .s-held, .s-pinned { color: var(--accent); } .s-pin-mismatch { color: var(--bad); }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 .muted { color: var(--muted); }
-.issue { color: var(--bad); max-width: 460px; overflow-wrap: anywhere; font-size: 12px; }
+.issue { color: var(--bad); min-width: 340px; width: 38%; overflow-wrap: anywhere; font-size: 12px; white-space: pre-wrap; }
+.issue.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: zoom-in; }
+.risk { color: var(--warn); }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; }
 pre { margin: 0; padding: 12px; max-height: 320px; overflow: auto; background: var(--bg); border-radius: 0 0 8px 8px; font-size: 12px; white-space: pre-wrap; }
 details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
@@ -55,7 +57,7 @@ details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
 <header>
   <h1>ComfyUI Utils · pip audit</h1>
   <label>venv <select id="venv"></select></label>
-  <label><input type="checkbox" id="repo"> include custom_nodes_repo</label>
+  <label title="Also scan requirements of the nodes in custom_nodes_repo_path (real clones, including ones not linked into custom_nodes)"><input type="checkbox" id="repo"> include custom_nodes_repo</label>
   <label><input type="checkbox" id="pip"> use pip instead of uv</label>
   <button class="primary" id="run">Run audit</button>
   <div class="progress" id="progress"><span id="plabel"></span><div class="bar"><div id="pbar"></div></div></div>
@@ -78,7 +80,7 @@ details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
       <span class="muted" id="selinfo"></span>
     </div>
     <div class="tablewrap"><table>
-      <thead><tr><th></th><th data-k="name">Package</th><th data-k="installed">Installed</th><th data-k="target">Target</th><th data-k="state">State</th><th>Used in</th><th>Issue</th><th>Rule</th></tr></thead>
+      <thead><tr><th></th><th data-k="name">Package</th><th data-k="installed">Installed</th><th data-k="install">Will install</th><th data-k="target" title="Highest version the requirements allow">Latest allowed</th><th data-k="state">State</th><th>Used in</th><th>Issue</th><th>Rule</th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
   </div>
@@ -94,9 +96,19 @@ details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
 <script>
 const TOKEN = "__TOKEN__";
 const $ = id => document.getElementById(id);
-const STATES = ["safe", "risky", "unknown", "missing", "downgrade", "held", "pinned", "pin-mismatch", "ok"];
-let data = null, rules = {hold: new Set(), pins: {}}, selected = new Set(), activeStates = new Set(STATES.filter(s => s !== "ok"));
+// order = what needs installing first, what needs nothing last
+const STATES = ["missing", "safe", "pin-mismatch", "downgrade", "risky", "unknown", "held", "pinned", "ok"];
+const RANK = Object.fromEntries(STATES.map((s, i) => [s, i]));
+let data = null, rules = {hold: new Set(), pins: {}}, selected = new Set(), activeStates = new Set(STATES);
 let sortKey = "state", sortDir = 1;
+
+// what "Install selected" will put into the venv for a row
+function plan(r) {
+  if (r.safe_update) return {ver: r.safe_update, risky: false};
+  if (r.state === "missing" || r.state === "downgrade") return {ver: r.target, risky: false};
+  if (r.risky_update) return {ver: r.risky_update, risky: true};
+  return {ver: "", risky: false};
+}
 
 async function api(path, body) {
   const opt = body === undefined ? {} : {method: "POST", headers: {"X-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify(body)};
@@ -158,14 +170,13 @@ function buildFilters() {
 function visibleRows() {
   const q = $("search").value.trim().toLowerCase(), node = $("node").value, hide = $("hide").checked;
   const rows = data.rows.filter(r => activeStates.has(r.state)
-    && !(hide && r.state === "ok")
+    && !(hide && r.unchanged)
     && (!q || r.name.includes(q))
     && (!node || r.used_in.some(u => u.repo === node)));
-  rows.sort((a, b) => (a[sortKey] > b[sortKey] ? 1 : a[sortKey] < b[sortKey] ? -1 : 0) * sortDir || a.name.localeCompare(b.name));
+  const key = r => sortKey === "state" ? RANK[r.state] : sortKey === "install" ? plan(r).ver : r[sortKey];
+  rows.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * sortDir || a.name.localeCompare(b.name));
   return rows;
 }
-
-function spec(r) { return r.safe_update || (r.state === "missing" || r.state === "downgrade" ? r.target : "") || ""; }
 
 function render() {
   if (!data) return;
@@ -174,14 +185,16 @@ function render() {
   $("rows").innerHTML = rows.map(r => {
     const held = rules.hold.has(r.name), pin = rules.pins[r.name];
     const used = r.used_in.map(u => `<span title="${esc(u.spec || "no specifier")}">${esc(u.repo)}</span>`).join(", ");
-    const to = r.safe_update && r.safe_update !== r.target ? `${esc(r.target)} <span class="muted">(safe ${esc(r.safe_update)})</span>` : esc(r.target);
+    const p = plan(r);
+    const inst = p.ver ? (p.risky ? `<span class="risk" title="No safe version found; this one conflicts with something">${esc(p.ver)} (risky)</span>` : esc(p.ver)) : "—";
     return `<tr><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
-      <td class="mono">${esc(r.name)}</td><td class="mono">${esc(r.installed) || "—"}</td><td class="mono">${to || "—"}</td>
-      <td><span class="badge s-${r.state}">${r.state}</span></td><td>${used}</td><td class="issue">${esc(r.issue)}</td>
+      <td class="mono">${esc(r.name)}</td><td class="mono">${esc(r.installed) || "—"}</td><td class="mono">${inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
+      <td><span class="badge s-${r.state}">${r.state}</span></td><td>${used}</td><td class="issue ${r.issue.length > 160 ? "clamp" : ""}">${esc(r.issue)}</td>
       <td>${held ? `<button class="link" data-a="unhold" data-n="${esc(r.name)}">unhold</button>` : `<button class="link" data-a="hold" data-n="${esc(r.name)}">hold</button>`}
           ${pin ? `<button class="link" data-a="unpin" data-n="${esc(r.name)}">unpin ${esc(pin)}</button>` : r.installed ? `<button class="link" data-a="pin" data-n="${esc(r.name)}">pin ${esc(r.installed)}</button>` : ""}</td></tr>`;
   }).join("");
   $("rows").querySelectorAll("input[type=checkbox]").forEach(cb => cb.onchange = () => { cb.checked ? selected.add(cb.dataset.n) : selected.delete(cb.dataset.n); updateSel(); });
+  $("rows").querySelectorAll(".issue.clamp").forEach(td => td.onclick = () => td.classList.toggle("clamp"));
   $("rows").querySelectorAll("button[data-a]").forEach(b => b.onclick = () => rule(b.dataset.a, b.dataset.n));
   updateSel();
 }
@@ -196,6 +209,7 @@ async function rule(action, name) {
   if (action === "unpin") delete rules.pins[name];
   await api("/api/rules", {venv: data.venv, hold: [...rules.hold], pins: rules.pins});
   row.state = rules.pins[name] ? (rules.pins[name] === row.installed ? "pinned" : "pin-mismatch") : rules.hold.has(name) ? "held" : (row.action ? "upgrade" : "ok");
+  row.unchanged = !(row.action || row.issue) && row.state !== "pin-mismatch";
   render();
 }
 
@@ -208,7 +222,7 @@ function renderExtra() {
 }
 
 $("install").onclick = async () => {
-  const pkgs = [...selected].map(n => { const r = data.rows.find(x => x.name === n); const v = spec(r) || r.risky_update; return v ? `${n}==${v}` : null; }).filter(Boolean);
+  const pkgs = [...selected].map(n => { const r = data.rows.find(x => x.name === n); const v = plan(r).ver; return v ? `${n}==${v}` : null; }).filter(Boolean);
   if (!pkgs.length) return alert("Nothing to install for the selected rows.");
   const risky = [...selected].filter(n => data.rows.find(x => x.name === n).state === "risky");
   if (!confirm(`Install ${pkgs.length} package(s) into ${data.venv}?` + (risky.length ? `\n\nRisky: ${risky.join(", ")}` : "") + "\n\n" + pkgs.join("\n"))) return;

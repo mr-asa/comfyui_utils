@@ -859,6 +859,11 @@ def package_action(r: PackageReport) -> Optional[str]:
     return None
 
 
+def package_unchanged(r: PackageReport, pin_off: bool) -> bool:
+    """Nothing to do and nothing to report for this package."""
+    return not (package_action(r) or r.update_error or r.availability_issue or pin_off)
+
+
 def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> List[dict]:
     """One JSON-friendly row per package: what a table (or a GUI) needs without touching the dataclasses."""
     safe = dict(result.safe)
@@ -889,6 +894,7 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
             "risky_update": str(risky.get(n) or r.risky_update or ""),
             "action": action or "",
             "state": state,
+            "unchanged": package_unchanged(r, pin_off),
             "issue": r.update_error or r.availability_issue or "",
             "pin": pin_map.get(n, ""),
             "used_in": [{"repo": c.repo, "spec": str(c.spec)} for c in r.constraints],
