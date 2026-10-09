@@ -33,7 +33,7 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
 - <img src="ico/utils_gui_run.ico" width="16" height="16" alt=""> `utils_gui.py` starts a local browser GUI (stdlib only, `127.0.0.1`): pip audit table with filters
   (hide unchanged, state chips, per-node), hold/pin buttons, install preview with dependency changes, wheel updates, a live log,
   a "Build venv" tab (plan the Python/CUDA/torch combination, pick a candidate, build), a "Repos" tab (scan and update ComfyUI and
-  custom nodes), a "Workflows" tab (the same for workflow sources, plus adding new ones by URL), a "Nodes" tab (junction links, presets, tags) and a "Compare venvs" tab.
+  custom nodes), a "Workflows" tab (the same for workflow sources, plus adding new ones by URL), a "Nodes" tab (junction links, presets, tags) and a "Compare venvs" tab. The gear in the header opens Settings: folders (ComfyUI, custom_nodes, the junction repo, workflows, wheels), venvs with comments / CUDA path / environment variables, global environment variables, wheel sources and updater options, so config.json and the other JSON files need no hand editing.
 - `comfyui_root.py` resolves the ComfyUI root using config, validation, and upward search.
 
 ## Path handling

@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from config_schema import load_legacy_compat, save_legacy_compat
+from config_schema import load_legacy_compat, load_v2, save_legacy_compat
 
 
 CONFIG_ROOT_KEY = "Comfyui_root"
@@ -120,4 +120,10 @@ def default_custom_nodes(root: Path) -> Path:
 
 
 def default_workflows_dir(root: Path) -> Path:
-    return root / "user" / "default" / "workflows" / "github"
+    """The folder the workflow sources live in: extras.workflows_dir of config.json (Settings), else the ComfyUI default."""
+    try:
+        v2, _ = load_v2(str(Path(__file__).resolve().parent / "config.json"), auto_migrate=False)
+        custom = str((v2.get("extras") or {}).get("workflows_dir") or "").strip()
+    except Exception:
+        custom = ""
+    return Path(custom) if custom else root / "user" / "default" / "workflows" / "github"

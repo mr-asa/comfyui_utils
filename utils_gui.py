@@ -34,7 +34,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 import config_schema
-from comfyui_root import resolve_comfyui_root
+from comfyui_root import resolve_comfyui_root, validate_root
 from envtools import custom_nodes_paths, dedupe_dirs, install_prefix, installed_pythons, run_uv
 from build_venv import CUDA_CANDIDATES, PY_CANDIDATES, Candidate, PlanCancelled, PlanOptions, build_venv, default_venv_name, describe_plan, make_plan
 import custom_nodes_link_manager as nodes_mgr
@@ -756,6 +756,131 @@ def versions_info(venv: str, name: str, specs: List[str]) -> dict:
     return {"name": canon, "installed": current, "specs": specs, "required_by": [f"{d} {s}" for d, s in reverse.get(canon, [])], "versions": releases[:400]}
 
 
+UPDATE_CONFIG = HERE / "update_comfy_repos_config.json"
+WHEEL_CONFIG = HERE / "wheel_sources.json"
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def settings_state() -> dict:
+    with CONFIG_LOCK:
+        v2, _ = config_schema.load_v2(CONFIG_PATH, auto_migrate=False)
+    paths = v2["paths"]
+    root = paths.get("comfyui_root", "")
+    wheel = _read_json(WHEEL_CONFIG)
+    venvs = [
+        {"name": n, "path": e.get("path", ""), "exists": os.path.isfile(config_schema.venv_python_path(e.get("path", ""))),
+         "comment": e.get("comment", ""), "cuda_path": e.get("cuda_path", ""), "env_vars": e.get("env_vars", {})}
+        for n, e in v2["environments"]["venvs"].items()
+    ]
+    return {
+        "paths": {
+            "comfyui_root": root, "custom_nodes_path": paths.get("custom_nodes_path", ""), "custom_nodes_paths": paths.get("custom_nodes_paths", []),
+            "custom_nodes_repo_path": paths.get("custom_nodes_repo_path", ""), "workflows_dir": str((v2.get("extras") or {}).get("workflows_dir") or ""),
+            "workflows_default": str(Path(root) / "user" / "default" / "workflows" / "github") if root else "",
+            "wheel_dir": str(wheel.get("wheel_dir") or ""),
+        },
+        "venvs": venvs, "selected": v2["runtime"]["selected"].get("name", ""),
+        "env_vars": v2["defaults"].get("env_vars", {}),
+        "wheels": {"packages": wheel.get("packages", []), "sources": wheel.get("sources", [])},
+        "updates": {"parallel_jobs": _read_json(UPDATE_CONFIG).get("parallel_jobs", "")},
+    }
+
+
+def path_checks(paths: List[str]) -> List[bool]:
+    return [bool(p.strip()) and os.path.isdir(p.strip()) for p in paths]
+
+
+def find_unregistered_venvs() -> List[dict]:
+    with CONFIG_LOCK:
+        v2, _ = config_schema.load_v2(CONFIG_PATH, auto_migrate=False)
+    root = Path(v2["paths"].get("comfyui_root", ""))
+    known = {os.path.normcase(os.path.normpath(e.get("path", ""))) for e in v2["environments"]["venvs"].values()}
+    out = []
+    if root.is_dir():
+        for d in sorted(root.iterdir()):
+            if d.is_dir() and (d / "pyvenv.cfg").is_file() and os.path.normcase(os.path.normpath(str(d))) not in known:
+                out.append({"name": d.name, "path": str(d)})
+    return out
+
+
+def save_settings(body: dict) -> dict:
+    """Apply the whole Settings dialog. Returns warnings (paths that do not exist, ...)."""
+    warnings: List[str] = []
+    paths = body["paths"]
+    root = str(paths.get("comfyui_root", "")).strip()
+    if root:
+        ok, reasons = validate_root(Path(root))
+        if not ok:
+            warnings.append(f"ComfyUI root does not look like a ComfyUI folder ({', '.join(reasons)})")
+    for label, value in (("custom_nodes folder", paths.get("custom_nodes_path")), ("custom_nodes repo folder", paths.get("custom_nodes_repo_path")),
+                         *(("extra custom_nodes folder", p) for p in paths.get("custom_nodes_paths", []))):
+        if str(value or "").strip() and not os.path.isdir(str(value).strip()):
+            warnings.append(f"{label} does not exist: {value}")
+    for key in ("workflows_dir", "wheel_dir"):
+        value = str(paths.get(key) or "").strip()
+        if value and not os.path.isdir(value):
+            os.makedirs(value, exist_ok=True)
+            warnings.append(f"created {value}")
+    venvs = body["venvs"]
+    names = [str(v["name"]).strip() for v in venvs]
+    if len(set(names)) != len(names) or any(not n for n in names):
+        raise ValueError("venv names must be unique and not empty")
+    with CONFIG_LOCK:
+        v2, _ = config_schema.load_v2(CONFIG_PATH)
+        v2["paths"].update({
+            "comfyui_root": root, "custom_nodes_path": str(paths.get("custom_nodes_path", "")).strip(),
+            "custom_nodes_repo_path": str(paths.get("custom_nodes_repo_path", "")).strip(),
+            "custom_nodes_paths": [str(p).strip() for p in paths.get("custom_nodes_paths", []) if str(p).strip()],
+        })
+        extras = v2.setdefault("extras", {})
+        if str(paths.get("workflows_dir") or "").strip():
+            extras["workflows_dir"] = str(paths["workflows_dir"]).strip()
+        else:
+            extras.pop("workflows_dir", None)
+        old = v2["environments"]["venvs"]
+        new = {}
+        for v in venvs:
+            name = str(v["name"]).strip()
+            keep = old.get(name) or old.get(str(v.get("orig") or ""), {})
+            new[name] = {
+                "path": str(v["path"]).strip(), "comment": str(v.get("comment", "")).strip(), "cuda_path": str(v.get("cuda_path", "")).strip(),
+                "env_vars": {str(k).strip(): str(x) for k, x in dict(v.get("env_vars", {})).items() if str(k).strip()},
+                "pip": keep.get("pip", {"hold_packages": [], "pin_packages": {}}),
+            }
+            if v["path"] and not os.path.isfile(config_schema.venv_python_path(str(v["path"]).strip())):
+                warnings.append(f"venv {name}: no python found in {v['path']}")
+        v2["environments"]["venvs"] = new
+        selected = str(body.get("selected") or "")
+        v2["runtime"]["selected"] = {"kind": "venv", "name": selected if selected in new else next(iter(new), "")}
+        v2["defaults"]["env_vars"] = {str(k).strip(): str(x) for k, x in dict(body.get("env_vars", {})).items() if str(k).strip()}
+        config_schema.save_v2(CONFIG_PATH, v2)
+    wheel = _read_json(WHEEL_CONFIG)
+    wheel["wheel_dir"] = str(paths.get("wheel_dir") or "").strip()
+    wheel["packages"] = [str(p).strip() for p in body["wheels"].get("packages", []) if str(p).strip()]
+    wheel["sources"] = [{k: v for k, v in {"type": s["type"], "repo": str(s["repo"]).strip(), "path": str(s.get("path") or "").strip()}.items() if v}
+                        for s in body["wheels"].get("sources", []) if s.get("type") in ("github", "hf") and str(s.get("repo") or "").strip()]
+    _write_json(WHEEL_CONFIG, wheel)
+    upd = _read_json(UPDATE_CONFIG)
+    jobs = str(body.get("updates", {}).get("parallel_jobs", "")).strip()
+    if jobs.isdigit() and int(jobs) > 0:
+        upd["parallel_jobs"] = int(jobs)
+    else:
+        upd.pop("parallel_jobs", None)
+    _write_json(UPDATE_CONFIG, upd)
+    return {"warnings": warnings}
+
+
 def save_rules(name: str, hold: List[str], pins: Dict[str, str]) -> None:
     venv_entry(name)
     hold = [canonicalize_name(h) for h in hold if h.strip()]
@@ -803,6 +928,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "max-age=3600")
             self.end_headers()
             self.wfile.write(data)
+        elif path == "/api/settings":
+            self.send_json(settings_state())
+        elif path == "/api/settings_venvs":
+            self.send_json({"found": find_unregistered_venvs()})
         elif path == "/api/nodes_state":
             try:
                 self.send_json(nodes_state())
@@ -881,6 +1010,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/versions":
                 self.send_json(versions_info(str(body["venv"]), str(body["name"]), [str(x) for x in body.get("specs", [])]))
+            elif self.path == "/api/settings":
+                self.send_json(save_settings(body))
+            elif self.path == "/api/path_check":
+                self.send_json({"ok": path_checks([str(p) for p in body["paths"]])})
             elif self.path == "/api/compare_key":
                 self.send_json(set_key_module(str(body["name"]), bool(body["on"])))
             elif self.path == "/api/compare_key_restore":

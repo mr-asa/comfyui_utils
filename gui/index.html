@@ -76,6 +76,23 @@ pre { margin: 0; padding: 6px 12px; overflow: auto; background: var(--bg); font-
 details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
 .link { background: none; border: none; color: var(--accent); padding: 0 4px; }
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0; width: min(860px, 94vw); max-height: 88vh; }
+#setdlg .clr { display: flex; flex: 1; } #setdlg .clr input { width: 100%; }
+.iconbtn { padding: 3px 6px; display: inline-flex; align-items: center; background: transparent; border-color: transparent; color: var(--muted); }
+.iconbtn:hover { color: var(--text); border-color: var(--line); }
+#setdlg { width: min(1040px, 96vw); }
+#sethead { padding: 10px 16px 6px; border-bottom: 1px solid var(--line); }
+#setbody { padding: 4px 16px 12px; max-height: 68vh; overflow: auto; }
+#setfoot { padding: 8px 16px; display: flex; gap: 8px; align-items: center; border-top: 1px solid var(--line); }
+#setbody h3 { margin: 14px 0 6px; font-size: 13px; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; }
+.srow { display: flex; gap: 8px; align-items: center; margin: 3px 0; }
+.srow > label.sl { width: 190px; flex: none; color: var(--muted); }
+.srow input[type=text] { flex: 1; min-width: 120px; }
+.srow .mark { width: 16px; text-align: center; flex: none; }
+.mark.ok { color: var(--ok); } .mark.no { color: var(--bad); }
+#setbody table { width: 100%; table-layout: fixed; }
+#setbody th { cursor: default; }
+#setbody td { padding: 2px 4px; border: none; }
+#setbody td input[type=text], #setbody td select { width: 100%; }
 #verdlg { width: min(900px, 94vw); }
 #verhead { padding: 10px 14px 4px; }
 #verbody { max-height: 56vh; overflow: auto; padding: 0 6px; }
@@ -134,6 +151,7 @@ header .spacer { flex: 1; }
   <span class="spacer"></span>
   <div class="progress" id="progress"><span id="plabel"></span><div class="bar"><div id="pbar"></div></div></div>
   <span class="muted" id="info"></span>
+  <button id="settings" class="iconbtn" title="Settings: folders, venvs, environment variables, wheel sources"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
 </header>
 <main>
 <section id="tab-build" class="tabsec" hidden>
@@ -342,6 +360,13 @@ header .spacer { flex: 1; }
     <span style="flex:1"></span><button id="logcopy">copy</button><button id="logclear">clear</button><button id="logmin">minimize</button></div>
   <pre id="log"></pre>
 </div>
+<dialog id="setdlg">
+  <form method="dialog" onsubmit="return false">
+    <div id="sethead"><b>Settings</b> <span class="muted">saved to config.json, wheel_sources.json and update_comfy_repos_config.json</span></div>
+    <div id="setbody"></div>
+    <div id="setfoot"><span id="setmsg" style="flex:1"></span><button type="button" id="setcancel">Cancel</button><button type="button" class="primary" id="setsave">Save</button></div>
+  </form>
+</dialog>
 <dialog id="verdlg">
   <form method="dialog" onsubmit="return false">
     <div id="verhead"><b id="vertitle"></b> <span class="muted" id="verinfo"></span></div>
@@ -1182,8 +1207,10 @@ $("c-all").onclick = () => document.querySelectorAll(".cv").forEach(c => c.check
 $("c-none").onclick = () => document.querySelectorAll(".cv").forEach(c => c.checked = false);
 $("c-runall").onclick = () => { $("c-all").onclick(); $("c-run").onclick(); };
 ["c-search", "c-diff", "c-fav"].forEach(id => $(id).oninput = cRender);
-// a click-to-clear "x" inside every text field
-document.querySelectorAll("input[type=text]").forEach(inp => {
+// a click-to-clear "x" inside every text field (also called for the fields the Settings dialog builds)
+function addClear(root) {
+ root.querySelectorAll("input[type=text]").forEach(inp => {
+  if (inp.parentNode.classList.contains("clr")) return;
   const wrap = document.createElement("span"); wrap.className = "clr";
   inp.parentNode.insertBefore(wrap, inp); wrap.appendChild(inp);
   const x = document.createElement("button"); x.type = "button"; x.className = "x"; x.title = "Clear"; x.textContent = "×";
@@ -1192,7 +1219,116 @@ document.querySelectorAll("input[type=text]").forEach(inp => {
   inp.addEventListener("input", sync);
   x.onclick = () => { inp.value = ""; sync(); inp.dispatchEvent(new Event("input", {bubbles: true})); inp.focus(); };
   sync();
-});
+ });
+}
+addClear(document);
+
+// ---- settings dialog
+let S = null;
+const PATH_FIELDS = [
+  ["comfyui_root", "ComfyUI folder", "the folder with main.py"],
+  ["custom_nodes_path", "custom_nodes folder", "where ComfyUI loads nodes from (the junctions live here)"],
+  ["custom_nodes_repo_path", "Custom nodes repo", "the real clones that the junctions point to"],
+  ["workflows_dir", "Workflows folder", "workflow sources are cloned here; empty = the ComfyUI default"],
+  ["wheel_dir", "Wheel folder", "downloaded prebuilt wheels"],
+];
+
+$("settings").onclick = async () => {
+  $("setmsg").textContent = ""; $("setbody").innerHTML = '<span class="muted">Loading…</span>'; $("setdlg").showModal();
+  try { S = await api("/api/settings"); setRender(); } catch (e) { $("setbody").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
+$("setcancel").onclick = () => $("setdlg").close();
+
+function setRender() {
+  const P = S.paths;
+  const pathRow = (key, label, hint) => `<div class="srow"><label class="sl" title="${esc(hint)}">${esc(label)}</label><input type="text" data-path="${key}" value="${esc(P[key])}" placeholder="${key === "workflows_dir" ? esc(P.workflows_default) : ""}"><span class="mark" data-mark="${key}"></span></div>`;
+  const kv = (obj, kind) => Object.entries(obj).map(([k, v], i) => `<tr><td><input type="text" data-${kind}-k="${i}" value="${esc(k)}" placeholder="NAME"></td><td><input type="text" data-${kind}-v="${i}" value="${esc(v)}" placeholder="value"></td><td><button type="button" class="link" data-${kind}-del="${i}">remove</button></td></tr>`).join("");
+  $("setbody").innerHTML = `
+    <h3>Folders</h3>
+    ${PATH_FIELDS.slice(0, 3).map(f => pathRow(...f)).join("")}
+    <div class="srow"><label class="sl" title="More custom_nodes folders to scan (optional)">Extra custom_nodes</label><div style="flex:1">${P.custom_nodes_paths.map((x, i) => `<div class="srow"><input type="text" data-cn="${i}" value="${esc(x)}"><span class="mark" data-markcn="${i}"></span><button type="button" class="link" data-cn-del="${i}">remove</button></div>`).join("")}<button type="button" id="set-cn-add">+ add folder</button></div></div>
+    ${PATH_FIELDS.slice(3).map(f => pathRow(...f)).join("")}
+    <h3>Venvs</h3>
+    <table><thead><tr><th style="width:26px"></th><th style="width:19%">Name</th><th>Folder</th><th style="width:16%">Comment</th><th style="width:12%">CUDA path</th><th style="width:17%" title="NAME=value; NAME2=value2">Environment variables</th><th style="width:58px"></th></tr></thead><tbody>
+    ${S.venvs.map((v, i) => `<tr><td><input type="radio" name="setsel" data-sel="${i}" ${S.selected === v.name ? "checked" : ""} title="the venv the console tools and ComfyUI use"></td>
+      <td><input type="text" data-v-name="${i}" value="${esc(v.name)}"></td><td><div class="srow"><input type="text" data-v-path="${i}" value="${esc(v.path)}"><span class="mark" data-markv="${i}"></span></div></td>
+      <td><input type="text" data-v-comment="${i}" value="${esc(v.comment)}"></td><td><input type="text" data-v-cuda="${i}" value="${esc(v.cuda_path)}"></td>
+      <td><input type="text" data-v-env="${i}" value="${esc(Object.entries(v.env_vars).map(([k, x]) => k + "=" + x).join("; "))}"></td>
+      <td><button type="button" class="link" data-v-del="${i}" title="Forget this venv (the folder is not deleted)">remove</button></td></tr>`).join("")}
+    </tbody></table>
+    <div class="srow"><button type="button" id="set-v-add">+ add venv</button><button type="button" id="set-v-find" title="Look for venv folders inside the ComfyUI folder that are not registered yet">Find venvs…</button><span id="set-found" class="muted"></span></div>
+    <h3>Environment variables for every venv</h3>
+    <table><tbody>${kv(S.env_vars, "env")}</tbody></table>
+    <div class="srow"><button type="button" id="set-env-add">+ add variable</button></div>
+    <h3>Wheel sources</h3>
+    <div class="srow"><label class="sl" title="Package names whose prebuilt wheels are looked up">Packages</label><input type="text" id="set-wpk" value="${esc(S.wheels.packages.join(", "))}" placeholder="sageattention, flash_attn, ..."></div>
+    <table><thead><tr><th style="width:140px">Type</th><th>Repository</th><th style="width:160px">Folder in repo</th><th></th></tr></thead><tbody>
+    ${S.wheels.sources.map((x, i) => `<tr><td><select data-ws-t="${i}"><option value="github" ${x.type === "github" ? "selected" : ""}>GitHub</option><option value="hf" ${x.type === "hf" ? "selected" : ""}>Hugging Face</option></select></td>
+      <td><input type="text" data-ws-r="${i}" value="${esc(x.repo || "")}" placeholder="owner/name"></td><td><input type="text" data-ws-p="${i}" value="${esc(x.path || "")}" placeholder="(optional)"></td>
+      <td><button type="button" class="link" data-ws-del="${i}">remove</button></td></tr>`).join("")}
+    </tbody></table>
+    <div class="srow"><button type="button" id="set-ws-add">+ add source</button></div>
+    <h3>Updates</h3>
+    <div class="srow"><label class="sl" title="How many repositories the console updater pulls at once (empty = automatic)">Parallel git jobs</label><input type="text" id="set-jobs" size="4" style="flex:none;width:70px" value="${esc(S.updates.parallel_jobs)}" placeholder="auto"></div>`;
+  addClear($("setbody")); setWire(); setMarks();
+}
+
+function setWire() {
+  const b = $("setbody"), P = S.paths;
+  b.querySelectorAll("[data-path]").forEach(i => { i.oninput = () => P[i.dataset.path] = i.value; i.onblur = setMarks; });
+  b.querySelectorAll("[data-cn]").forEach(i => { i.oninput = () => P.custom_nodes_paths[+i.dataset.cn] = i.value; i.onblur = setMarks; });
+  b.querySelectorAll("[data-cn-del]").forEach(x => x.onclick = () => { P.custom_nodes_paths.splice(+x.dataset.cnDel, 1); setRender(); });
+  $("set-cn-add").onclick = () => { P.custom_nodes_paths.push(""); setRender(); };
+  const V = S.venvs;
+  b.querySelectorAll("[data-v-name]").forEach(i => i.oninput = () => { const old = V[+i.dataset.vName].name; V[+i.dataset.vName].name = i.value; if (S.selected === old) S.selected = i.value; });
+  b.querySelectorAll("[data-v-path]").forEach(i => { i.oninput = () => V[+i.dataset.vPath].path = i.value; i.onblur = setMarks; });
+  b.querySelectorAll("[data-v-comment]").forEach(i => i.oninput = () => V[+i.dataset.vComment].comment = i.value);
+  b.querySelectorAll("[data-v-cuda]").forEach(i => i.oninput = () => V[+i.dataset.vCuda].cuda_path = i.value);
+  b.querySelectorAll("[data-v-env]").forEach(i => i.oninput = () => V[+i.dataset.vEnv].env_vars = Object.fromEntries(i.value.split(";").map(x => x.trim()).filter(x => x.includes("=")).map(x => [x.slice(0, x.indexOf("=")).trim(), x.slice(x.indexOf("=") + 1).trim()])));
+  b.querySelectorAll("[data-sel]").forEach(i => i.onchange = () => S.selected = V[+i.dataset.sel].name);
+  b.querySelectorAll("[data-v-del]").forEach(x => x.onclick = () => { const v = V.splice(+x.dataset.vDel, 1)[0]; if (S.selected === v.name) S.selected = V[0] ? V[0].name : ""; setRender(); });
+  $("set-v-add").onclick = () => { V.push({name: "", path: "", exists: false, comment: "", cuda_path: "", env_vars: {}}); setRender(); };
+  $("set-v-find").onclick = async () => {
+    const {found} = await api("/api/settings_venvs");
+    $("set-found").innerHTML = found.length ? "Found: " + found.map((f, i) => `<button type="button" class="link" data-addfound="${i}">+ ${esc(f.name)}</button>`).join(" ") : "no unregistered venv folders in the ComfyUI folder";
+    $("set-found").querySelectorAll("[data-addfound]").forEach(x => x.onclick = () => { const f = found[+x.dataset.addfound]; V.push({name: f.name, path: f.path, exists: true, comment: "", cuda_path: "", env_vars: {}}); setRender(); });
+  };
+  // global env vars (keys may be renamed, so write the whole object back)
+  const syncEnv = () => { const o = {}; b.querySelectorAll("[data-env-k]").forEach(k => { const v = b.querySelector(`[data-env-v="${k.dataset.envK}"]`); if (k.value.trim()) o[k.value.trim()] = v.value; }); S.env_vars = o; };
+  b.querySelectorAll("[data-env-k],[data-env-v]").forEach(i => i.oninput = syncEnv);
+  b.querySelectorAll("[data-env-del]").forEach(x => x.onclick = () => { syncEnv(); delete S.env_vars[Object.keys(S.env_vars)[+x.dataset.envDel]]; setRender(); });
+  $("set-env-add").onclick = () => { syncEnv(); S.env_vars[""] = ""; setRender(); };
+  $("set-wpk").oninput = e => S.wheels.packages = e.target.value.split(",").map(x => x.trim()).filter(Boolean);
+  b.querySelectorAll("[data-ws-t]").forEach(i => i.onchange = () => S.wheels.sources[+i.dataset.wsT].type = i.value);
+  b.querySelectorAll("[data-ws-r]").forEach(i => i.oninput = () => S.wheels.sources[+i.dataset.wsR].repo = i.value);
+  b.querySelectorAll("[data-ws-p]").forEach(i => i.oninput = () => S.wheels.sources[+i.dataset.wsP].path = i.value);
+  b.querySelectorAll("[data-ws-del]").forEach(x => x.onclick = () => { S.wheels.sources.splice(+x.dataset.wsDel, 1); setRender(); });
+  $("set-ws-add").onclick = () => { S.wheels.sources.push({type: "github", repo: "", path: ""}); setRender(); };
+  $("set-jobs").oninput = e => S.updates.parallel_jobs = e.target.value;
+}
+
+async function setMarks() {
+  const P = S.paths, items = [];
+  PATH_FIELDS.forEach(([k]) => { if (k === "workflows_dir" && !P[k]) return; items.push([`[data-mark="${k}"]`, P[k]]); });
+  P.custom_nodes_paths.forEach((x, i) => items.push([`[data-markcn="${i}"]`, x]));
+  S.venvs.forEach((v, i) => items.push([`[data-markv="${i}"]`, v.path]));
+  try {
+    const {ok} = await api("/api/path_check", {paths: items.map(x => x[1])});
+    items.forEach(([sel, val], i) => { const m = $("setbody").querySelector(sel); if (m) { m.textContent = !val ? "" : ok[i] ? "✓" : "✗"; m.className = "mark " + (!val ? "" : ok[i] ? "ok" : "no"); m.title = !val ? "" : ok[i] ? "exists" : "does not exist"; } });
+  } catch (e) {}
+}
+
+$("setsave").onclick = async () => {
+  $("setmsg").textContent = "Saving…";
+  try {
+    const r = await api("/api/settings", {paths: S.paths, venvs: S.venvs, selected: S.selected, env_vars: S.env_vars, wheels: S.wheels, updates: S.updates});
+    $("setdlg").close();
+    showLog("Settings saved", "", "done");
+    logAdd(r.warnings.length ? r.warnings.map(w => "warning: " + w) : ["No problems found."]);
+    nodes = null;  // folders may have changed: the Nodes list reloads when it is opened
+    await loadVenvs();
+  } catch (e) { $("setmsg").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
 
 let firstTab = "build";
 try { firstTab = localStorage.getItem("tab") || firstTab; } catch (e) {}
