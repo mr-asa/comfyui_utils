@@ -516,10 +516,25 @@ def load_key_config() -> dict:
     return json.loads(KEY_CONFIG.read_text(encoding="utf-8-sig")) if KEY_CONFIG.is_file() else {}
 
 
-def set_key_module(name: str, on: bool) -> None:
-    """Add or remove a package in the favorites list that compare_venv_versions.ps1 and the Compare tab share."""
+KEY_FLAGS = ("include_python", "include_cuda_from_torch")
+
+
+def _key_snapshot(cfg: dict) -> dict:
+    return {"modules": list(cfg.get("modules", [])), "custom_checks": list(cfg.get("custom_checks", [])), **{f: cfg.get(f, True) for f in KEY_FLAGS}}
+
+
+def _write_key_config(cfg: dict) -> None:
+    if KEY_CONFIG.is_file():
+        shutil.copy(KEY_CONFIG, KEY_CONFIG.with_name(KEY_CONFIG.name + ".bak"))  # one step back is always on disk
+    KEY_CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False).replace("\n", "\r\n") + "\r\n", encoding="utf-8")
+
+
+def set_key_module(name: str, on: bool) -> dict:
+    """Add or remove a package in the favorites list that compare_venv_versions.ps1 and the Compare tab share.
+    Returns what was removed, so the page can offer an undo."""
     cfg = load_key_config()
     cfg.setdefault("modules", [])
+    before = _key_snapshot(cfg)
     canon = canonicalize_name(name)
     if canon == "python":
         cfg["include_python"] = on
@@ -531,7 +546,28 @@ def set_key_module(name: str, on: bool) -> None:
     else:
         cfg["modules"] = [m for m in cfg["modules"] if canonicalize_name(m) != canon]
         cfg["custom_checks"] = [chk for chk in cfg.get("custom_checks", []) if canon not in {canonicalize_name(c) for c in chk.get("candidates", [])}]
-    KEY_CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False).replace("\n", "\r\n") + "\r\n", encoding="utf-8")
+    after = _key_snapshot(cfg)
+    _write_key_config(cfg)
+    return {"removed": {
+        "modules": [m for m in before["modules"] if m not in after["modules"]],
+        "custom_checks": [c for c in before["custom_checks"] if c not in after["custom_checks"]],
+        "flags": {f: before[f] for f in KEY_FLAGS if before[f] != after[f]},
+    }}
+
+
+def restore_key_parts(removed: dict) -> None:
+    """Put back what set_key_module reported as removed (what is already there stays untouched)."""
+    cfg = load_key_config()
+    mods = cfg.setdefault("modules", [])
+    have = {canonicalize_name(m) for m in mods}
+    mods += [m for m in removed.get("modules", []) if canonicalize_name(m) not in have]
+    checks = cfg.setdefault("custom_checks", [])
+    names = {c.get("name") for c in checks}
+    checks += [c for c in removed.get("custom_checks", []) if c.get("name") not in names]
+    for flag, value in removed.get("flags", {}).items():
+        if flag in KEY_FLAGS:
+            cfg[flag] = bool(value)
+    _write_key_config(cfg)
 
 
 def compare_venvs(names: List[str], scope: str) -> dict:
@@ -825,7 +861,9 @@ class Handler(BaseHTTPRequestHandler):
                 run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/compare_key":
-                set_key_module(str(body["name"]), bool(body["on"]))
+                self.send_json(set_key_module(str(body["name"]), bool(body["on"])))
+            elif self.path == "/api/compare_key_restore":
+                restore_key_parts(dict(body["removed"]))
                 self.send_json({"ok": True})
             elif self.path == "/api/compare":
                 self.send_json(compare_venvs([str(n) for n in body["venvs"]], str(body.get("scope", "key"))))

@@ -286,6 +286,7 @@ tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
       <label><input type="checkbox" id="c-diff" checked> only differences</label>
       <span class="muted" id="c-count"></span>
     </div>
+    <div id="c-favlog" class="toolbar" hidden></div>
     <div class="tablewrap"><table>
       <thead id="c-head"></thead><tbody id="c-rows"></tbody>
     </table></div>
@@ -1022,13 +1023,37 @@ function cRender() {
     return `<tr><td class="mono ${r.differs ? "cell-mid" : ""}"><button class="link star ${r.key ? "on" : ""}" data-star="${esc(r.name)}" title="${r.key ? "Remove from" : "Add to"} the favorite (key) modules">${r.key ? "★" : "☆"}</button> ${esc(r.name)}</td>`
       + cmp.venvs.map((v, i) => { const x = r.versions[v]; return `<td class="mono ${cls[i]}">${x ? esc(x) : "—"}</td>`; }).join("") + "</tr>";
   }).join("");
-  $("c-rows").querySelectorAll("button[data-star]").forEach(b => b.onclick = async () => {
-    const row = cmp.rows.find(r => r.name === b.dataset.star), on = !row.key;
-    try { await api("/api/compare_key", {name: row.name, on}); } catch (e) { return alert(e.message); }
-    row.key = on;
-    if (!on && document.querySelector("input[name=cscope]:checked").value === "key") cmp.rows = cmp.rows.filter(r => r !== row);
-    cRender();
-  });
+  $("c-rows").querySelectorAll("button[data-star]").forEach(b => b.onclick = () => cToggleStar(b.dataset.star));
+}
+
+// Every favorite change is listed with an Undo; a removed row stays visible (as ☆) until the next comparison.
+const favLog = [];
+async function cToggleStar(name) {
+  const row = cmp.rows.find(r => r.name === name), on = !row.key;
+  let res;
+  try { res = await api("/api/compare_key", {name, on}); } catch (e) { return alert(e.message); }
+  row.key = on;
+  favLog.unshift({name, on, removed: res.removed, undone: false});
+  if (favLog.length > 12) favLog.pop();
+  cRender(); cRenderFavLog();
+}
+async function cUndo(i) {
+  const e = favLog[i]; if (!e || e.undone) return;
+  try {
+    if (e.on) await api("/api/compare_key", {name: e.name, on: false});
+    else await api("/api/compare_key_restore", {removed: e.removed});
+  } catch (err) { return alert(err.message); }
+  e.undone = true;
+  const row = cmp && cmp.rows.find(r => r.name === e.name); if (row) row.key = !e.on;
+  cRender(); cRenderFavLog();
+}
+function cRenderFavLog() {
+  $("c-favlog").hidden = !favLog.length;
+  $("c-favlog").innerHTML = '<span class="muted">Favorites changes:</span> ' + favLog.map((e, i) => {
+    const what = e.on ? `added <b>${esc(e.name)}</b>` : `removed <b>${esc(e.name)}</b>` + (e.removed.custom_checks.length ? " (custom check)" : "");
+    return `<span class="tag" style="${e.undone ? "opacity:.5;text-decoration:line-through" : ""}">${what}${e.undone ? "" : ` <button class="link" data-undo="${i}">undo</button>`}</span>`;
+  }).join(" ");
+  $("c-favlog").querySelectorAll("button[data-undo]").forEach(b => b.onclick = () => cUndo(+b.dataset.undo));
 }
 $("c-all").onclick = () => document.querySelectorAll(".cv").forEach(c => c.checked = true);
 $("c-none").onclick = () => document.querySelectorAll(".cv").forEach(c => c.checked = false);
