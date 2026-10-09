@@ -25,6 +25,7 @@ SHORTCUTS=(
   "Update Comfy Repos|update_comfy_repos_run.sh"
   "Update Workflow Repos|update_workflow_repos_run.sh"
   "Compare venv Versions|compare_venv_versions_run.sh"
+  "Build New Venv|build_venv_run.sh"
 )
 
 # =========================================================

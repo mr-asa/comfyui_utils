@@ -26,6 +26,10 @@ but placing this repo near your ComfyUI folder keeps paths tidy.
   their repo URLs, useful for collecting all plugins into a single list/repository.
 - <img src="ico/png_to_json_run.ico" width="16" height="16" alt=""> `png_to_json.py` scans a folder of images and video (`.png/.jpeg/.webp/.bmp/.tif/.mp4/.mkv/.webm/.mov/.gif`), reads ComfyUI `workflow` metadata,
   and writes a matching `.json` file next to each file that contains a workflow.
+- <img src="ico/build_venv_run.ico" width="16" height="16" alt=""> `build_venv.py` builds a fresh venv with `uv`: picks the Python / CUDA / torch combination for which all custom-node
+  requirements resolve and the most prebuilt wheels (sageattention, flash-attn, llama-cpp...) exist, installs it, writes a lock to `locks/`.
+  Commands: `plan` (rank only), `build`, `wheels` (catalog). Wheel folder and remote sources live in `wheel_sources.json`.
+  Conflicting pins are loosened, packages from your other venvs are carried over (`--seed-from`, `--no-seed`), the new venv is selected only with `--select`.
 - `comfyui_root.py` resolves the ComfyUI root using config, validation, and upward search.
 
 ## Path handling
@@ -162,6 +166,7 @@ easier maintenance, and fast enable/disable of node sets without moving files.
 - Classifies updates as safe/risky/unknown and prints reasons for risky items.
 - Checks reverse dependencies of already installed packages to flag conflicts before install.
 - Treats inline comments in `requirements.txt` correctly (e.g. `pkg  # comment`).
+- Uses `uv pip install --dry-run` for checks and prints `uv pip install --python ...` commands when `uv` is on PATH (`--pip` forces pip); the header lists pip and uv equivalents.
 
 ## Hold / pin usage (comfyui_pip_update_audit.py)
 

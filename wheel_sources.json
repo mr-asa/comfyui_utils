@@ -1,0 +1,13 @@
+{
+    "wheel_dir": "D:/Downloads/browser/whl",
+    "packages": ["sageattention", "sageattn3", "flash_attn", "llama_cpp_python"],
+    "sources": [
+        {"type": "github", "repo": "sdbds/SageAttention-for-windows"},
+        {"type": "github", "repo": "mengqin/SageAttention"},
+        {"type": "github", "repo": "JamePeng/llama-cpp-python"},
+        {"type": "hf", "repo": "UmeAiRT/ComfyUI-Auto-Installer-Assets", "path": "whl"},
+        {"type": "hf", "repo": "Kijai/PrecompiledWheels"},
+        {"type": "hf", "repo": "ussoewwin/Sage-Attention-for-Windows"},
+        {"type": "hf", "repo": "ussoewwin/Flash-Attention-2_for_Windows"}
+    ]
+}

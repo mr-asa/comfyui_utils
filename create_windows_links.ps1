@@ -55,6 +55,10 @@ $Shortcuts = @(
   @{
     name   = "Compare venv Versions"
     target = "compare_venv_versions_run.bat"
+  },
+  @{
+    name   = "Build New Venv"
+    target = "build_venv_run.bat"
   }
 )
 
