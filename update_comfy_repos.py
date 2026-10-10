@@ -660,6 +660,7 @@ def repo_status(path: str, fetch: bool = True) -> Dict[str, object]:
         info["state"] = "not-git"
         return info
     info["web_url"] = to_web_url(get_remote_url(path) or "")
+    info["commit_base"] = info["web_url"]  # commits are linked as <commit_base>/commit/<hash>
     info["branch"] = get_current_branch(path) or "DETACHED"
     if fetch:
         ok, out, err = run_git(["fetch", "--all", "--tags"], cwd=path)

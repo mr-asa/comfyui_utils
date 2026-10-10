@@ -42,7 +42,7 @@ import update_workflow_repos as wf
 from comfyui_root import default_workflows_dir
 from workflow_sources import parse_workflow_url, partial_changes, partial_remote_status, read_metadata, sync_partial_source, write_metadata
 from workflow_sources import _cache_key as _partial_cache_key
-from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, run_git, update_repo
+from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, run_git, to_web_url, update_repo
 from wheels import download_wheel, load_catalog
 from pip_audit_core import audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, find_reverse_conflicts, load_installed_dists, need_vcs_install, parse_install_changes, run_audit
 
@@ -309,6 +309,7 @@ def source_status(path: str, fetch: bool) -> dict:
             row["state"] = "not-git"
             return row
         row["web_url"] = source.source_url or source.repo_url
+        row["commit_base"] = to_web_url(source.repo_url)
         row["branch"] = source.branch or ""
         row["partial"] = True
         row["last_subject"] = f"partial: {', '.join(source.paths or [])}" + (f" (synced {source.synced_commit[:8]})" if source.synced_commit else " (no sync record yet)")

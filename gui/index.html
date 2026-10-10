@@ -877,9 +877,10 @@ const filesHtml = files => {
   const wa = Math.max(...files.map(f => String(f.added).length)) + 1, wd = Math.max(...files.map(f => String(f.deleted).length)) + 1;
   return `<h4>Changed files (${files.length})</h4>` + files.map(f => `<div class="frow mono" title="${esc(f.path)}"><span class="add" style="width:${wa}ch">+${f.added}</span><span class="del" style="width:${wd}ch">-${f.deleted}</span><span class="path">${esc(f.path)}</span></div>`).join("");
 };
-const commitsHtml = (commits, title) => commits.length ? `<h4>${title} (${commits.length}${commits.length >= 60 ? "+" : ""})</h4>` + commits.map(c => {
+const commitsHtml = (commits, title, base) => commits.length ? `<h4>${title} (${commits.length}${commits.length >= 60 ? "+" : ""})</h4>` + commits.map(c => {
   const [hash, date, ...subject] = c.split(" ");
-  return `<div class="crow mono"><span>${esc(hash)}</span><span class="muted">${esc(date)}</span><span>${esc(subject.join(" "))}</span></div>`;
+  const url = base ? `${base.replace(/\/$/, "")}${/gitlab/i.test(base) ? "/-" : ""}/commit/${hash}` : "";
+  return `<div class="crow mono"><span>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="Open this commit on the web">${esc(hash)}</a>` : esc(hash)}</span><span class="muted">${esc(date)}</span><span>${esc(subject.join(" "))}</span></div>`;
 }).join("") : "";
 
 function repoTab(p, kind, tabId) {
@@ -965,7 +966,7 @@ async function rPick(path) {
     const d = await api("/api/repo_detail", {path});
     if (seq !== rDetailSeq) return;
     const head = `<b>${esc(r.name)}</b> <span class="muted">${esc(r.path)}</span>` + (r.dirty ? `<div class="risk">Local changes:<br>${r.dirty_lines.map(l => `<span class="mono">${esc(l)}</span>`).join("<br>")}</div>` : "");
-    $(p + "-detail").innerHTML = head + (d.commits.length ? commitsHtml(d.commits, "Incoming commits") + filesHtml(d.files) : '<div class="muted" style="margin-top:8px">Nothing incoming.</div>')
+    $(p + "-detail").innerHTML = head + (d.commits.length ? commitsHtml(d.commits, "Incoming commits", r.commit_base) + filesHtml(d.files) : '<div class="muted" style="margin-top:8px">Nothing incoming.</div>')
       + (d.error ? `<div class="bad">${esc(d.error)}</div>` : "");
   } catch (e) { if (seq === rDetailSeq) $(p + "-detail").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 }
@@ -992,7 +993,7 @@ $(p + "-update").onclick = async () => {
         if (res.error) problems++;
         if (res.changed && !j.result.dry_run) {
           changed++; row.flash = true; rSel.delete(res.path);
-          row.updated = `<b>${esc(res.name)}</b> updated${res.last_update_at ? " (" + esc(res.last_update_at) + ")" : ""}` + commitsHtml(res.commits, "Pulled commits")
+          row.updated = `<b>${esc(res.name)}</b> updated${res.last_update_at ? " (" + esc(res.last_update_at) + ")" : ""}` + commitsHtml(res.commits, "Pulled commits", row.commit_base)
             + filesHtml(res.files) + (res.notes.length ? `<h4>Notes</h4><div class="risk">${res.notes.map(esc).join("<br>")}</div>` : "");
         } else if (res.error || res.skipped || res.notes.length) {
           row.updated = `<b>${esc(res.name)}</b> ${res.skipped ? "skipped: " + esc(res.skipped) : ""}${res.error ? `<div class="bad">${esc(res.error)}</div>` : ""}` + (res.notes.length ? `<div class="risk">${res.notes.map(esc).join("<br>")}</div>` : "");
