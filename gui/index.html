@@ -877,10 +877,15 @@ const filesHtml = files => {
   const wa = Math.max(...files.map(f => String(f.added).length)) + 1, wd = Math.max(...files.map(f => String(f.deleted).length)) + 1;
   return `<h4>Changed files (${files.length})</h4>` + files.map(f => `<div class="frow mono" title="${esc(f.path)}"><span class="add" style="width:${wa}ch">+${f.added}</span><span class="del" style="width:${wd}ch">-${f.deleted}</span><span class="path">${esc(f.path)}</span></div>`).join("");
 };
+// "(#16881)" in a subject is the pull request number: link it (GitHub redirects /pull/N to the issue when it is one)
+const prLinks = (text, base) => !base ? text : text.replace(/#(\d+)/g, (m, n) => {
+  const url = /gitlab/i.test(base) ? `${base.replace(/\/$/, "")}/-/merge_requests/${n}` : `${base.replace(/\/$/, "")}/pull/${n}`;
+  return `<a href="${url}" target="_blank" rel="noopener" title="Open pull request #${n}">#${n}</a>`;
+});
 const commitsHtml = (commits, title, base) => commits.length ? `<h4>${title} (${commits.length}${commits.length >= 60 ? "+" : ""})</h4>` + commits.map(c => {
   const [hash, date, ...subject] = c.split(" ");
   const url = base ? `${base.replace(/\/$/, "")}${/gitlab/i.test(base) ? "/-" : ""}/commit/${hash}` : "";
-  return `<div class="crow mono"><span>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="Open this commit on the web">${esc(hash)}</a>` : esc(hash)}</span><span class="muted">${esc(date)}</span><span>${esc(subject.join(" "))}</span></div>`;
+  return `<div class="crow mono"><span>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="Open this commit on the web">${esc(hash)}</a>` : esc(hash)}</span><span class="muted">${esc(date)}</span><span>${prLinks(esc(subject.join(" ")), base)}</span></div>`;
 }).join("") : "";
 
 function repoTab(p, kind, tabId) {
