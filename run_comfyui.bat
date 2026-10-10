@@ -397,6 +397,8 @@ echo.
      if defined USE_UV (
        set PIP_INSTALL=uv pip install --python "!PYTHON_EXE!"
        set PIP_LIST=uv pip list --python "!PYTHON_EXE!" --format=freeze
+       set UP_ARGS=--upgrade-package comfyui-workflow-templates --upgrade-package comfyui-embedded-docs --upgrade-package comfyui-manager
+       set UP_FE=--upgrade-package comfyui-frontend-package
      ) else (
        "!PYTHON_EXE!" -m pip --version >nul 2>&1
        if errorlevel 1 goto no_pip
@@ -404,6 +406,8 @@ echo.
        if errorlevel 1 goto pip_upgrade_fail
        set PIP_INSTALL="!PYTHON_EXE!" -m pip install
        set PIP_LIST="!PYTHON_EXE!" -m pip list --format=freeze
+       set UP_ARGS=-U
+       set UP_FE=
      )
  
      set "FRONTEND_LATEST=0"
@@ -416,24 +420,30 @@ echo.
  
      if "%FRONTEND_LATEST%"=="1" (
        echo Frontend mode: latest ^(--front-end-version ...@latest detected^)
-       !PIP_INSTALL! -U comfyui-frontend-package comfyui-workflow-templates comfyui-embedded-docs comfyui-manager
+       !PIP_INSTALL! !UP_ARGS! !UP_FE! comfyui-frontend-package comfyui-workflow-templates comfyui-embedded-docs comfyui-manager
      ) else (
        if exist "%ROOT%requirements.txt" (
          for /f "tokens=2 delims==" %%V in ('findstr /R /C:"^comfyui-frontend-package==" "%ROOT%requirements.txt"') do set "FRONTEND_REQ_VER=%%V"
        )
        if defined FRONTEND_REQ_VER if not "!FRONTEND_REQ_VER!"=="" (
          echo Frontend mode: stable ^(pin from requirements.txt = !FRONTEND_REQ_VER!^)
-         !PIP_INSTALL! -U "comfyui-frontend-package==!FRONTEND_REQ_VER!" comfyui-workflow-templates comfyui-embedded-docs comfyui-manager
+         !PIP_INSTALL! !UP_ARGS! "comfyui-frontend-package==!FRONTEND_REQ_VER!" comfyui-workflow-templates comfyui-embedded-docs comfyui-manager
        ) else (
          echo Frontend mode: stable requested, but pin not found in requirements.txt. Falling back to latest.
-         !PIP_INSTALL! -U comfyui-frontend-package comfyui-workflow-templates comfyui-embedded-docs comfyui-manager
+         !PIP_INSTALL! !UP_ARGS! !UP_FE! comfyui-frontend-package comfyui-workflow-templates comfyui-embedded-docs comfyui-manager
        )
      )
  
      echo Updating all comfyui-* packages from collected list...
      for /f "tokens=1 delims==" %%P in ('type "%TEMP%\comfyui_pkgs.txt"') do (
-       echo   - updating %%P
-       !PIP_INSTALL! -U %%P 2>nul
+       set "SKIP_PKG="
+       if /I "%%P"=="comfyui-frontend-package" if not "%FRONTEND_LATEST%"=="1" if defined FRONTEND_REQ_VER set "SKIP_PKG=1"
+       if defined SKIP_PKG (
+         echo   - keeping %%P at the pinned version
+       ) else (
+         echo   - updating %%P
+         if defined USE_UV (!PIP_INSTALL! --upgrade-package %%P %%P 2>nul) else (!PIP_INSTALL! -U %%P 2>nul)
+       )
      )
      if errorlevel 1 goto pkgs_fail
  
