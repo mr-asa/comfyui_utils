@@ -121,8 +121,14 @@ nav button.on { color: var(--text); border-color: var(--accent); }
 #b-foot { flex: none; border-top: 1px solid var(--line); }
 .s-behind { color: var(--info); } .s-diverged, .s-fetch-failed, .s-not-git { color: var(--bad); } .s-ahead { color: var(--warn); }
 .s-partial { color: var(--info); border-style: dashed; } .s-untracked { color: var(--warn); border-style: dashed; } .s-up-to-date { color: var(--muted); } .s-no-upstream { color: var(--muted); border-style: dashed; }
-#r-detail, #w-detail { flex: none; height: 110px; overflow: auto; border-top: 1px solid var(--line); padding: 5px 12px; font-size: 13px; }
-#r-detail .files, #w-detail .files { color: var(--muted); }
+.tabsec.split { flex-direction: row; }
+.detail { flex: none; width: var(--detw, 380px); min-width: 220px; max-width: 70vw; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; padding: 8px 12px; font-size: 13px; }
+.detail h4 { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.detail .crow { padding: 1px 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.detail .frow { padding: 1px 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail .add { color: var(--ok); } .detail .del { color: var(--bad); }
+.vgrip { flex: none; width: 8px; cursor: ew-resize; margin: 0 1px 6px; border-radius: 4px; }
+.vgrip:hover, .vgrip.drag { background: color-mix(in srgb, var(--accent) 45%, transparent); }
 tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .s-linked { color: var(--ok); } .s-unlinked { color: var(--muted); border-style: dashed; } .s-junk { color: var(--bad); } .s-external { color: var(--info); } .s-direct { color: var(--warn); }
 .star { font-size: 15px; padding: 0 2px; } .star.on { color: var(--warn); }
@@ -188,8 +194,8 @@ header .spacer { flex: 1; }
     </div>
   </div>
 </section>
-<section id="tab-repos" class="tabsec" hidden>
-  <div class="panel" id="r-panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+<section id="tab-repos" class="tabsec split" hidden>
+  <div class="panel" id="r-panel" style="flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden">
     <div class="grp"><span class="gl">Scan</span>
       <button class="primary" id="r-scan">Scan</button>
       <label title="git fetch every repository so ahead/behind is current (slower)"><input type="checkbox" id="r-fetch" checked> fetch from remotes</label>
@@ -222,8 +228,9 @@ header .spacer { flex: 1; }
       <thead><tr><th></th><th data-rk="name">Repository</th><th data-rk="branch">Branch</th><th data-rk="state">State</th><th>Behind / ahead</th><th>Local changes</th><th data-rk="last_date">Last commit</th></tr></thead>
       <tbody id="r-rows"></tbody>
     </table></div>
-    <div id="r-detail"><span class="muted">Scan, then click a row to see the incoming commits.</span></div>
   </div>
+  <div class="vgrip" id="r-vgrip" title="Drag to change the width of the details panel"></div>
+  <aside class="detail" id="r-detail"><span class="muted">Scan, then click a row to see the incoming commits and changed files.</span></aside>
 </section>
 <section id="tab-audit" class="tabsec" hidden>
   <div class="panel">
@@ -298,8 +305,8 @@ header .spacer { flex: 1; }
     </table></div>
   </div>
 </section>
-<section id="tab-workflows" class="tabsec" hidden>
-  <div class="panel" id="w-panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+<section id="tab-workflows" class="tabsec split" hidden>
+  <div class="panel" id="w-panel" style="flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden">
     <div class="grp"><span class="gl">Scan</span>
       <button class="primary" id="w-scan">Scan</button>
       <label title="git fetch every repository so ahead/behind is current (slower)"><input type="checkbox" id="w-fetch" checked> fetch from remotes</label>
@@ -330,8 +337,9 @@ header .spacer { flex: 1; }
       <thead><tr><th></th><th data-rk="name">Workflow source</th><th data-rk="branch">Branch</th><th data-rk="state">State</th><th>Behind / ahead</th><th>Local changes</th><th data-rk="last_date">Last commit</th></tr></thead>
       <tbody id="w-rows"></tbody>
     </table></div>
-    <div id="w-detail"><span class="muted">Scan, then click a row to see the incoming commits.</span></div>
   </div>
+  <div class="vgrip" id="w-vgrip" title="Drag to change the width of the details panel"></div>
+  <aside class="detail" id="w-detail"><span class="muted">Scan, then click a row to see the incoming commits and changed files.</span></aside>
 </section>
 <section id="tab-compare" class="tabsec" hidden>
   <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
@@ -860,6 +868,10 @@ $("b-build").onclick = async () => {
 };
 
 // ---- repos and workflow sources (one UI, two instances)
+const filesHtml = files => files.length
+  ? `<h4>Changed files (${files.length})</h4>` + files.map(f => `<div class="frow mono" title="${esc(f.path)}"><span class="add">+${f.added}</span> <span class="del">-${f.deleted}</span> ${esc(f.path)}</div>`).join("") : "";
+const commitsHtml = (commits, title) => commits.length ? `<h4>${title} (${commits.length}${commits.length >= 60 ? "+" : ""})</h4>` + commits.map(c => `<div class="crow mono">${esc(c)}</div>`).join("") : "";
+
 function repoTab(p, kind, tabId) {
 const RSTATES = ["behind", "diverged", "fetch-failed", "not-git", "ahead", "untracked", "partial", "no-upstream", "up-to-date"];
 const RLABEL = {untracked: "no sync record"};
@@ -943,7 +955,7 @@ async function rPick(path) {
     const d = await api("/api/repo_detail", {path});
     if (seq !== rDetailSeq) return;
     const head = `<b>${esc(r.name)}</b> <span class="muted">${esc(r.path)}</span>` + (r.dirty ? `<div class="risk">Local changes:<br>${r.dirty_lines.map(l => `<span class="mono">${esc(l)}</span>`).join("<br>")}</div>` : "");
-    $(p + "-detail").innerHTML = head + (d.commits.length ? `<div>Incoming (${d.commits.length}${d.commits.length >= 60 ? "+" : ""}):</div>` + d.commits.map(c => `<div class="mono">${esc(c)}</div>`).join("") + `<div class="files">${d.files.length} file(s): ` + d.files.slice(0, 40).map(f => `+${f.added} -${f.deleted} ${esc(f.path)}`).join(" · ") + "</div>" : '<div class="muted">Nothing incoming.</div>')
+    $(p + "-detail").innerHTML = head + (d.commits.length ? commitsHtml(d.commits, "Incoming commits") + filesHtml(d.files) : '<div class="muted" style="margin-top:8px">Nothing incoming.</div>')
       + (d.error ? `<div class="bad">${esc(d.error)}</div>` : "");
   } catch (e) { if (seq === rDetailSeq) $(p + "-detail").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 }
@@ -970,8 +982,8 @@ $(p + "-update").onclick = async () => {
         if (res.error) problems++;
         if (res.changed && !j.result.dry_run) {
           changed++; row.flash = true; rSel.delete(res.path);
-          row.updated = `<b>${esc(res.name)}</b> updated${res.last_update_at ? " (" + esc(res.last_update_at) + ")" : ""}` + res.commits.map(c => `<div class="mono">${esc(c)}</div>`).join("")
-            + `<div class="files">${res.files.length} file(s): ` + res.files.slice(0, 40).map(f => `+${f.added} -${f.deleted} ${esc(f.path)}`).join(" · ") + "</div>" + (res.notes.length ? `<div class="risk">${res.notes.map(esc).join("<br>")}</div>` : "");
+          row.updated = `<b>${esc(res.name)}</b> updated${res.last_update_at ? " (" + esc(res.last_update_at) + ")" : ""}` + commitsHtml(res.commits, "Pulled commits")
+            + filesHtml(res.files) + (res.notes.length ? `<h4>Notes</h4><div class="risk">${res.notes.map(esc).join("<br>")}</div>` : "");
         } else if (res.error || res.skipped || res.notes.length) {
           row.updated = `<b>${esc(res.name)}</b> ${res.skipped ? "skipped: " + esc(res.skipped) : ""}${res.error ? `<div class="bad">${esc(res.error)}</div>` : ""}` + (res.notes.length ? `<div class="risk">${res.notes.map(esc).join("<br>")}</div>` : "");
         }
@@ -1332,6 +1344,24 @@ $("setsave").onclick = async () => {
     await loadVenvs();
   } catch (e) { $("setmsg").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 };
+
+// the details panel of Repos / Workflows: drag the grip to change its width
+(() => {
+  const setW = w => document.documentElement.style.setProperty("--detw", Math.max(220, Math.min(w, window.innerWidth * 0.7)) + "px");
+  try { const w = parseInt(localStorage.getItem("detw")); if (w) setW(w); } catch (e) {}
+  ["r", "w"].forEach(pre => {
+    const grip = $(pre + "-vgrip"), panel = $(pre + "-detail");
+    grip.onpointerdown = e => {
+      e.preventDefault(); grip.setPointerCapture(e.pointerId); grip.classList.add("drag");
+      const startX = e.clientX, startW = panel.getBoundingClientRect().width;
+      grip.onpointermove = ev => setW(startW + startX - ev.clientX);
+      grip.onpointerup = () => {
+        grip.onpointermove = null; grip.onpointerup = null; grip.classList.remove("drag");
+        try { localStorage.setItem("detw", String(Math.round(panel.getBoundingClientRect().width))); } catch (e) {}
+      };
+    };
+  });
+})();
 
 let firstTab = "build";
 try { firstTab = localStorage.getItem("tab") || firstTab; } catch (e) {}
