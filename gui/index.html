@@ -79,7 +79,7 @@ dialog { background: var(--panel); color: var(--text); border: 1px solid var(--l
 #setdlg .clr { display: flex; flex: 1; } #setdlg .clr input { width: 100%; }
 .iconbtn { padding: 3px 6px; display: inline-flex; align-items: center; background: transparent; border-color: transparent; color: var(--muted); }
 .iconbtn:hover { color: var(--text); border-color: var(--line); }
-#setdlg { width: min(1040px, 96vw); }
+#setdlg { width: min(1340px, 97vw); }
 #sethead { padding: 10px 16px 6px; border-bottom: 1px solid var(--line); }
 #setbody { padding: 4px 16px 12px; max-height: 68vh; overflow: auto; }
 #setfoot { padding: 8px 16px; display: flex; gap: 8px; align-items: center; border-top: 1px solid var(--line); }
@@ -1280,7 +1280,7 @@ function setRender() {
     <div class="srow"><label class="sl" title="More custom_nodes folders to scan (optional)">Extra custom_nodes</label><div style="flex:1">${P.custom_nodes_paths.map((x, i) => `<div class="srow"><input type="text" data-cn="${i}" value="${esc(x)}"><span class="mark" data-markcn="${i}"></span><button type="button" class="link" data-cn-del="${i}">remove</button></div>`).join("")}<button type="button" id="set-cn-add">+ add folder</button></div></div>
     ${PATH_FIELDS.slice(3).map(f => pathRow(...f)).join("")}
     <h3>Venvs</h3>
-    <table><thead><tr><th style="width:26px"></th><th style="width:19%">Name</th><th>Folder</th><th style="width:16%">Comment</th><th style="width:12%">CUDA path</th><th style="width:17%" title="NAME=value; NAME2=value2">Environment variables</th><th style="width:58px"></th></tr></thead><tbody>
+    <table><thead><tr><th style="width:26px"></th><th style="width:270px">Name</th><th>Folder</th><th style="width:240px">Comment</th><th style="width:110px">CUDA path</th><th style="width:170px" title="NAME=value; NAME2=value2">Environment variables</th><th style="width:58px"></th></tr></thead><tbody>
     ${S.venvs.map((v, i) => `<tr><td><input type="radio" name="setsel" data-sel="${i}" ${S.selected === v.name ? "checked" : ""} title="the venv the console tools and ComfyUI use"></td>
       <td><input type="text" data-v-name="${i}" value="${esc(v.name)}"></td><td><div class="srow"><input type="text" data-v-path="${i}" value="${esc(v.path)}"><span class="mark" data-markv="${i}"></span></div></td>
       <td><input type="text" data-v-comment="${i}" value="${esc(v.comment)}"></td><td><input type="text" data-v-cuda="${i}" value="${esc(v.cuda_path)}"></td>
