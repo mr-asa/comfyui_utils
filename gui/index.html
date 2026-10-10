@@ -124,8 +124,11 @@ nav button.on { color: var(--text); border-color: var(--accent); }
 .tabsec.split { flex-direction: row; }
 .detail { flex: none; width: var(--detw, 380px); min-width: 220px; max-width: 70vw; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; padding: 8px 12px; font-size: 13px; }
 .detail h4 { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
-.detail .crow { padding: 1px 0; font-size: 12.5px; overflow-wrap: anywhere; }
-.detail .frow { padding: 1px 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail .crow { display: grid; grid-template-columns: 9ch 10ch 1fr; gap: 0 10px; padding: 1px 0; font-size: 12.5px; }
+.detail .crow span:last-child { overflow-wrap: anywhere; font-family: system-ui, "Segoe UI", sans-serif; }
+.detail .frow { display: flex; gap: 0 8px; padding: 1px 0; font-size: 12px; white-space: nowrap; }
+.detail .frow > span { flex: none; text-align: right; }
+.detail .frow > span.path { flex: 1 1 auto; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; }
 .detail .add { color: var(--ok); } .detail .del { color: var(--bad); }
 .vgrip { flex: none; width: 8px; cursor: ew-resize; margin: 0 1px 6px; border-radius: 4px; }
 .vgrip:hover, .vgrip.drag { background: color-mix(in srgb, var(--accent) 45%, transparent); }
@@ -868,9 +871,16 @@ $("b-build").onclick = async () => {
 };
 
 // ---- repos and workflow sources (one UI, two instances)
-const filesHtml = files => files.length
-  ? `<h4>Changed files (${files.length})</h4>` + files.map(f => `<div class="frow mono" title="${esc(f.path)}"><span class="add">+${f.added}</span> <span class="del">-${f.deleted}</span> ${esc(f.path)}</div>`).join("") : "";
-const commitsHtml = (commits, title) => commits.length ? `<h4>${title} (${commits.length}${commits.length >= 60 ? "+" : ""})</h4>` + commits.map(c => `<div class="crow mono">${esc(c)}</div>`).join("") : "";
+// columns line up: the +/- counts are right-aligned in fixed-width cells, the path starts at the same x on every row
+const filesHtml = files => {
+  if (!files.length) return "";
+  const wa = Math.max(...files.map(f => String(f.added).length)) + 1, wd = Math.max(...files.map(f => String(f.deleted).length)) + 1;
+  return `<h4>Changed files (${files.length})</h4>` + files.map(f => `<div class="frow mono" title="${esc(f.path)}"><span class="add" style="width:${wa}ch">+${f.added}</span><span class="del" style="width:${wd}ch">-${f.deleted}</span><span class="path">${esc(f.path)}</span></div>`).join("");
+};
+const commitsHtml = (commits, title) => commits.length ? `<h4>${title} (${commits.length}${commits.length >= 60 ? "+" : ""})</h4>` + commits.map(c => {
+  const [hash, date, ...subject] = c.split(" ");
+  return `<div class="crow mono"><span>${esc(hash)}</span><span class="muted">${esc(date)}</span><span>${esc(subject.join(" "))}</span></div>`;
+}).join("") : "";
 
 function repoTab(p, kind, tabId) {
 const RSTATES = ["behind", "diverged", "fetch-failed", "not-git", "ahead", "untracked", "partial", "no-upstream", "up-to-date"];
