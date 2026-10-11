@@ -27,13 +27,12 @@ Needs: Python with `requests` and `packaging` (any ComfyUI venv has them) and [`
 | Tab | What it is for |
 |---|---|
 | <img src="ico/build_venv_run.ico" width="16" height="16" alt=""> **Build venv** | Plan and build a fresh venv: picks the Python / CUDA / torch combination for which all your node requirements resolve and the most prebuilt wheels exist, then installs it with `uv`. |
-| <img src="ico/update_comfy_repos_run.ico" width="16" height="16" alt=""> **Repos** | Scan ComfyUI and all custom nodes (fetch, ahead / behind, local changes), read the incoming commits, update with a policy for local changes, add a node by URL, unlink or delete. |
-| <img src="ico/comfyui_pip_update_audit_run.ico" width="16" height="16" alt=""> **Pip audit** | Compare installed packages with the requirements of all nodes. States safe / safe +deps / risky, install preview with dependency changes, versions list, hold / pin, wheel updates. |
-| <img src="ico/custom_nodes_link_manager_run.ico" width="16" height="16" alt=""> **Nodes** | Junction links between your node repo and `custom_nodes`: link / unlink, presets, tags, select by tag. |
+| <img src="ico/update_comfy_repos_run.ico" width="16" height="16" alt=""> **Custom nodes** | Two views over the same nodes. **Git:** scan ComfyUI and all custom nodes (fetch, ahead / behind, local changes), read the incoming commits, update with a policy for local changes, add a node by URL (a Pip audit starts right after), unlink or delete; filter by tag. **Links:** junction links between your node repo and `custom_nodes`, presets, tags, select by tag. The selection carries over between the views. |
+| <img src="ico/comfyui_pip_update_audit_run.ico" width="16" height="16" alt=""> **Pip audit** | Compare installed packages with the requirements of all nodes. States safe / safe +deps / risky, install preview with dependency changes, versions list, hold / pin, wheel updates. Install any package by hand (name or version specifier). **Check deps** runs `pip check` and adds the broken requirements to the table (tagged update / downgrade / install); **Purge cache** empties the package cache and reports the freed space. A hold or pin can be lifted for a single install when it blocks a dependency. |
 | <img src="ico/update_workflow_repos_run.ico" width="16" height="16" alt=""> **Workflows** | The same scan / update / add / delete for workflow sources, including partial (folder-only) sources. |
 | <img src="ico/compare_venv_versions_run.ico" width="16" height="16" alt=""> **Compare venvs** | Package versions side by side with colors; favorites (the key modules) are editable with undo. |
 
-Common to all tabs: a log panel at the bottom (resizable, clearable, colored), long jobs can be cancelled, confirmations before anything destructive.
+Common to all tabs: a log panel at the bottom (resizable, clearable, colored), long jobs can be cancelled, confirmations before anything destructive. A running job shows its progress on its own tab (a bar and `done/total`); a job that finishes while you are on another tab leaves a green dot there.
 
 ## Updates
 
@@ -46,8 +45,8 @@ What changed in the toolbox and why:
 - **Versions list per package.** Every PyPI release with a verdict from the requirements files and from installed dependents; pick or install any version (answers "is there something newer that still fits?").
 - **Wheel-installed packages are recognised** (sageattention, flash-attn, llama-cpp...). They are compared against `wheel_sources.json` instead of PyPI, and newer matching wheels can be downloaded and installed from the GUI.
 - **Build venv.** `build_venv.py` (also a console tool): resolves all node requirements with uv, loosens conflicting pins, carries over packages from your other venvs, installs matching wheels, saves a lock in `locks/`.
-- **Repos / Workflows.** Fetch and ahead / behind at a glance, incoming commits before updating, local changes stashed / skipped / discarded by choice. Partial workflow sources now remember the synced commit, so they show up-to-date or behind, with a link to the original. Add and remove sources from the UI; delete refuses to lose local work unless you confirm.
-- **Nodes.** Junctions, presets and tags (the old link manager) with GitHub links per node.
+- **Custom nodes / Workflows.** Fetch and ahead / behind at a glance, incoming commits before updating, local changes stashed / skipped / discarded by choice. Partial workflow sources now remember the synced commit, so they show up-to-date or behind, with a link to the original. Add and remove sources from the UI; delete refuses to lose local work unless you confirm.
+- **Links view.** Junctions, presets and tags (the old link manager) with GitHub links per node, now a view of the Custom nodes tab.
 - **Settings gear.** All folders, venvs (comment, CUDA path, environment variables), global environment variables, wheel sources and updater options in one dialog.
 - **Shared core.** `envtools.py`, `pip_audit_core.py`, `wheels.py` hold the logic used by both the console tools and the GUI. New console flags: `comfyui_pip_update_audit.py --hide-unchanged`, `--pip`. `run_comfyui.bat` now updates the frontend packages with uv when it is on PATH.
 
@@ -63,7 +62,7 @@ What changed in the toolbox and why:
 | `config.json` | folders, venvs (with hold / pin rules), environment variables, node tags. Edit it in **Settings**. |
 | `wheel_sources.json` | wheel folder, package names and the GitHub / Hugging Face sources. |
 | `update_comfy_repos_config.json` | updater options (parallel jobs, auto-merge patterns). |
-| `run_comfyui_presets_config.json` | node presets (managed in the Nodes tab). |
+| `run_comfyui_presets_config.json` | node presets (managed in the Custom nodes tab, Links view). |
 | `compare_venv_versions_config.json` | favorite modules for Compare venvs (a `.bak` of the previous state is kept). |
 | `install_logs/` | install / build logs, `_before.txt` snapshots, constraints used. |
 | `locks/` | package lists of venvs built by `build_venv.py`. |

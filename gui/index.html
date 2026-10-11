@@ -29,9 +29,6 @@ button { cursor: pointer; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
 label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); }
-.bar { height: 6px; background: var(--chip); border-radius: 3px; width: 220px; overflow: hidden; }
-.bar > div { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
-.progress { display: none; align-items: center; gap: 8px; color: var(--muted); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; }
 #resultpanel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .filters { flex: none; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
@@ -56,7 +53,7 @@ td.issue.k-info { color: var(--muted); }
 tr.flash td { background: color-mix(in srgb, var(--ok) 14%, transparent); }
 tr.side td { background: color-mix(in srgb, var(--warn) 16%, transparent); }
 .badge { padding: 0 7px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; white-space: nowrap; }
-.s-safe { color: var(--ok); } .s-safe-deps { color: var(--ok); border-style: dashed; } .s-wheel-update { color: var(--info); } .s-wheel { color: var(--muted); border-style: dashed; } .s-ok { color: var(--muted); } .s-risky { color: var(--bad); } .s-unknown { color: var(--warn); }
+.s-safe { color: var(--ok); } .s-safe-deps { color: var(--ok); border-style: dashed; } .s-wheel-update { color: var(--info); } .s-wheel { color: var(--muted); border-style: dashed; } .s-ok { color: var(--muted); } .s-risky, .s-broken { color: var(--bad); } .s-unknown { color: var(--warn); }
 .s-missing { color: var(--info); } .s-downgrade { color: var(--warn); } .s-held, .s-pinned { color: var(--accent); } .s-pin-mismatch { color: var(--bad); }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 .muted { color: var(--muted); }
@@ -93,11 +90,13 @@ dialog { background: var(--panel); color: var(--text); border: 1px solid var(--l
 #setbody th { cursor: default; }
 #setbody td { padding: 2px 4px; border: none; }
 #setbody td input[type=text], #setbody td select { width: 100%; }
-#verdlg { width: min(900px, 94vw); }
+#verdlg { width: min(1200px, 96vw); }
 #verhead { padding: 10px 14px 4px; }
 #verbody { max-height: 56vh; overflow: auto; padding: 0 6px; }
 #verfoot { padding: 8px 14px; display: flex; gap: 8px; align-items: center; border-top: 1px solid var(--line); }
 #verbody table { width: 100%; }
+#verbody .badge { white-space: normal; }  /* long verdicts wrap, so the buttons column stays visible */
+#verbody td:last-child { white-space: nowrap; }
 dialog::backdrop { background: rgba(0,0,0,.45); }
 dialog form { display: flex; flex-direction: column; max-height: 88vh; }
 #dlgbody { padding: 12px 16px; overflow: auto; flex: 1; }
@@ -115,6 +114,15 @@ nav button { display: inline-flex; align-items: center; gap: 6px; }
 nav button img { width: 18px; height: 18px; flex: none; opacity: .85; } nav button.on img, nav button:hover img { opacity: 1; }
 nav button { border-color: transparent; background: transparent; color: var(--muted); }
 nav button.on { color: var(--text); border-color: var(--accent); }
+nav button { position: relative; overflow: hidden; }
+nav .tp { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; display: none; }
+nav .tp i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+nav button.busy .tp { display: block; }
+nav button.indet .tp i { width: 35% !important; animation: slide 1.1s ease-in-out infinite alternate; }
+@keyframes slide { from { margin-left: 0; } to { margin-left: 65%; } }
+nav .tn { display: none; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--accent); }
+nav button.busy .tn { display: inline; }
+nav button.done::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
 #b-result { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 #b-detail { padding: 8px 14px; overflow: auto; flex: 1; min-height: 60px; font-size: 13px; }
 #b-detail ul { margin: 2px 0 8px; padding-left: 18px; }
@@ -122,6 +130,12 @@ nav button.on { color: var(--text); border-color: var(--accent); }
 .s-behind { color: var(--info); } .s-diverged, .s-fetch-failed, .s-not-git { color: var(--bad); } .s-ahead { color: var(--warn); }
 .s-partial { color: var(--info); border-style: dashed; } .s-untracked { color: var(--warn); border-style: dashed; } .s-up-to-date { color: var(--muted); } .s-no-upstream { color: var(--muted); border-style: dashed; }
 .tabsec.split { flex-direction: row; }
+.subsec { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.subsec.split { flex-direction: row; }
+.subbar { flex: none; display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
+.subbar button { border-color: transparent; background: transparent; color: var(--muted); }
+.subbar button.on { color: var(--text); border-color: var(--accent); }
+.subbar .muted { margin-left: 8px; font-size: 12px; }
 .detail { flex: none; width: var(--detw, 380px); min-width: 220px; max-width: 70vw; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; padding: 8px 12px; font-size: 13px; }
 .detail h4 { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
 .detail .crow { display: grid; grid-template-columns: 9ch 10ch 1fr; gap: 0 10px; padding: 1px 0; font-size: 12.5px; }
@@ -156,9 +170,8 @@ header .spacer { flex: 1; }
 <body>
 <header>
   <h1>ComfyUI Utils</h1>
-  <nav><button data-tab="build"><img src="/ico/build_venv_run.ico" alt=""><span>Build venv</span></button><button data-tab="repos"><img src="/ico/update_comfy_repos_run.ico" alt=""><span>Repos</span></button><button data-tab="audit"><img src="/ico/comfyui_pip_update_audit_run.ico" alt=""><span>Pip audit</span></button><button data-tab="nodes"><img src="/ico/custom_nodes_link_manager_run.ico" alt=""><span>Nodes</span></button><button data-tab="workflows"><img src="/ico/update_workflow_repos_run.ico" alt=""><span>Workflows</span></button><button data-tab="compare"><img src="/ico/compare_venv_versions_run.ico" alt=""><span>Compare venvs</span></button></nav>
+  <nav><button data-tab="build"><img src="/ico/build_venv_run.ico" alt=""><span>Build venv</span></button><button data-tab="repos"><img src="/ico/update_comfy_repos_run.ico" alt=""><span>Custom nodes</span></button><button data-tab="audit"><img src="/ico/comfyui_pip_update_audit_run.ico" alt=""><span>Pip audit</span></button><button data-tab="workflows"><img src="/ico/update_workflow_repos_run.ico" alt=""><span>Workflows</span></button><button data-tab="compare"><img src="/ico/compare_venv_versions_run.ico" alt=""><span>Compare venvs</span></button></nav>
   <span class="spacer"></span>
-  <div class="progress" id="progress"><span id="plabel"></span><div class="bar"><div id="pbar"></div></div></div>
   <span class="muted" id="info"></span>
   <button id="settings" class="iconbtn" title="Settings: folders, venvs, environment variables, wheel sources"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
 </header>
@@ -197,7 +210,9 @@ header .spacer { flex: 1; }
     </div>
   </div>
 </section>
-<section id="tab-repos" class="tabsec split" hidden>
+<section id="tab-repos" class="tabsec" hidden>
+  <div class="subbar"><button type="button" data-sub="git" class="on" title="Scan, update and remove repositories">Git</button><button type="button" data-sub="links" title="Junction links, presets and tags">Links</button><span class="muted">the selection carries over between the two</span></div>
+  <div class="subsec split" id="sub-git">
   <div class="panel" id="r-panel" style="flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden">
     <div class="grp"><span class="gl">Scan</span>
       <button class="primary" id="r-scan">Scan</button>
@@ -208,6 +223,7 @@ header .spacer { flex: 1; }
     </div>
     <div class="grp"><span class="gl">Filter</span>
       <input type="text" id="r-search" placeholder="Filter…" size="18">
+      <select id="r-tag" title="Only nodes with this tag (tags are edited in Links)"><option value="">all tags</option></select>
       <label><input type="checkbox" id="r-hide" checked> hide up-to-date</label>
       <label><input type="checkbox" id="r-dirtyonly"> only with local changes</label>
       <span id="r-chips"></span>
@@ -228,52 +244,14 @@ header .spacer { flex: 1; }
       <button class="danger" id="r-remove" disabled>Remove selected…</button>
     </div>
     <div class="tablewrap"><table>
-      <thead><tr><th></th><th data-rk="name">Repository</th><th data-rk="branch">Branch</th><th data-rk="state">State</th><th>Behind / ahead</th><th>Local changes</th><th data-rk="last_date">Last commit</th></tr></thead>
+      <thead><tr><th></th><th data-rk="name">Repository</th><th>Tags</th><th data-rk="branch">Branch</th><th data-rk="state">State</th><th>Behind / ahead</th><th>Local changes</th><th data-rk="last_date">Last commit</th></tr></thead>
       <tbody id="r-rows"></tbody>
     </table></div>
   </div>
   <div class="vgrip" id="r-vgrip" title="Drag to change the width of the details panel"></div>
   <aside class="detail" id="r-detail"><span class="muted">Scan, then click a row to see the incoming commits and changed files.</span></aside>
-</section>
-<section id="tab-audit" class="tabsec" hidden>
-  <div class="panel">
-    <div class="grp"><span class="gl">Scan</span>
-      <label>venv <select id="venv"></select></label>
-      <label title="Also scan requirements of the nodes in custom_nodes_repo_path (real clones, including ones not linked into custom_nodes)"><input type="checkbox" id="repo"> include custom_nodes_repo</label>
-      <label title="Also list the GitHub / Hugging Face sources from wheel_sources.json to find newer prebuilt wheels (a few seconds)"><input type="checkbox" id="remotewh"> check wheel sources online</label>
-      <label><input type="checkbox" id="pip"> use pip instead of uv</label>
-      <button class="primary" id="run">Run audit</button>
-    </div>
   </div>
-  <div class="panel" id="resultpanel" hidden>
-    <div class="grp"><span class="gl">Filter</span>
-      <input type="text" id="search" placeholder="Filter packages…" size="22">
-      <label><input type="checkbox" id="hide" checked> hide unchanged</label>
-      <select id="node"><option value="">all nodes</option></select>
-      <span id="chips"></span>
-      <span class="muted" id="count"></span>
-    </div>
-    <div class="grp"><span class="gl">Install</span>
-      <button id="selsafe" title="Only the package itself changes">Select safe</button>
-      <button id="selsafed" title="Safe, but other packages change too (see the badge tooltip); no requirement is broken">Select safe +deps</button>
-      <button id="selwheel" title="Newer prebuilt wheels found in the wheel sources">Select wheel updates</button>
-      <button id="selvis">Select visible</button>
-      <button id="selnone">Clear</button>
-      <span class="sep"></span>
-      <button class="primary" id="install">Install selected…</button>
-      <span class="muted" id="selinfo"></span>
-    </div>
-    <div class="tablewrap"><table>
-      <thead><tr><th></th><th data-k="name">Package</th><th data-k="installed">Installed</th><th data-k="install">Will install</th><th data-k="target" title="Highest version the requirements allow">Latest allowed</th><th data-k="state">State</th><th>Used in</th><th>Issue</th><th>Rule</th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table></div>
-  </div>
-  <div class="panel" id="extrapanel" hidden>
-    <details id="vcsd"><summary>VCS / URL requirements</summary><div id="vcs"></div></details>
-    <details id="envd"><summary>comfy-env isolation</summary><div id="env"></div></details>
-  </div>
-</section>
-<section id="tab-nodes" class="tabsec" hidden>
+  <div class="subsec" id="sub-links" hidden>
   <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
     <div class="grp"><span class="gl">Filter</span>
       <button class="primary" id="n-refresh" title="Rescan the repo and custom_nodes folders">Refresh</button>
@@ -306,6 +284,51 @@ header .spacer { flex: 1; }
       <thead><tr><th></th><th data-nk="name">Node</th><th data-nk="kind">State</th><th data-nk="tags">Tags</th><th data-nk="target">Target</th></tr></thead>
       <tbody id="n-rows"></tbody>
     </table></div>
+  </div>
+  </div>
+</section>
+<section id="tab-audit" class="tabsec" hidden>
+  <div class="panel">
+    <div class="grp"><span class="gl">Scan</span>
+      <label>venv <select id="venv"></select></label>
+      <label title="Also scan requirements of the nodes in custom_nodes_repo_path (real clones, including ones not linked into custom_nodes)"><input type="checkbox" id="repo"> include custom_nodes_repo</label>
+      <label title="Also list the GitHub / Hugging Face sources from wheel_sources.json to find newer prebuilt wheels (a few seconds)"><input type="checkbox" id="remotewh"> check wheel sources online</label>
+      <label><input type="checkbox" id="pip"> use pip instead of uv</label>
+      <button class="primary" id="run">Run audit</button>
+      <span class="sep"></span>
+      <button id="pipcheck" title="Check the installed packages of this venv for broken dependencies (pip check)">Check deps</button>
+      <button id="pipcache" title="Delete the downloaded package cache (uv cache clean, or pip cache purge with pip)">Purge cache</button>
+    </div>
+  </div>
+  <div class="panel" id="resultpanel" hidden>
+    <div class="grp"><span class="gl">Filter</span>
+      <input type="text" id="search" placeholder="Filter packages…" size="22">
+      <label><input type="checkbox" id="hide" checked> hide unchanged</label>
+      <select id="node"><option value="">all nodes</option></select>
+      <span id="chips"></span>
+      <span class="muted" id="count"></span>
+    </div>
+    <div class="grp"><span class="gl">Install</span>
+      <button id="selsafe" title="Only the package itself changes">Select safe</button>
+      <button id="selsafed" title="Safe, but other packages change too (see the badge tooltip); no requirement is broken">Select safe +deps</button>
+      <button id="selwheel" title="Newer prebuilt wheels found in the wheel sources">Select wheel updates</button>
+      <button id="selvis">Select visible</button>
+      <button id="selnone">Clear</button>
+      <span class="sep"></span>
+      <button class="primary" id="install">Install selected…</button>
+      <span class="muted" id="selinfo"></span>
+      <span class="sep"></span>
+      <input type="text" id="manual" placeholder="any package: name, name==1.2, name&gt;=1" size="30" title="Several packages separated by spaces">
+      <button id="manual-go" title="Check what it would change, then install">Install…</button>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th></th><th data-k="name">Package</th><th data-k="installed">Installed</th><th data-k="install">Will install</th><th data-k="target" title="Highest version the requirements allow">Latest allowed</th><th data-k="state">State</th><th>Used in</th><th>Issue</th><th>Rule</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+  </div>
+  <div class="panel" id="extrapanel" hidden>
+    <details id="vcsd"><summary>VCS / URL requirements</summary><div id="vcs"></div></details>
+    <details id="envd"><summary>comfy-env isolation</summary><div id="env"></div></details>
   </div>
 </section>
 <section id="tab-workflows" class="tabsec split" hidden>
@@ -411,9 +434,9 @@ header .spacer { flex: 1; }
 const TOKEN = "__TOKEN__";
 const $ = id => document.getElementById(id);
 // order = what needs installing first, what needs nothing last
-const STATES = ["missing", "safe", "safe-deps", "wheel-update", "pin-mismatch", "downgrade", "risky", "unknown", "held", "pinned", "wheel", "ok"];
+const STATES = ["broken", "missing", "safe", "safe-deps", "wheel-update", "pin-mismatch", "downgrade", "risky", "unknown", "held", "pinned", "wheel", "ok"];
 const RANK = Object.fromEntries(STATES.map((s, i) => [s, i]));
-const LABEL = {"safe-deps": "safe +deps", "wheel-update": "wheel update", "wheel": "from wheel"};
+const LABEL = {"broken": "pip check", "safe-deps": "safe +deps", "wheel-update": "wheel update", "wheel": "from wheel"};
 const sideTip = r => (r.side_changes || []).map(c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`).join("\n");
 let data = null, rules = {hold: new Set(), pins: {}}, selected = new Set(), activeStates = new Set(STATES);
 let sortKey = "state", sortDir = 1, pending = null, previewSeq = 0, auditJob = null, previewJob = null;
@@ -458,15 +481,19 @@ async function init() {
   try { const s = JSON.parse(localStorage.getItem("audit-ui") || "{}"); if (s.venv && [...$("venv").options].some(o => o.value === s.venv)) $("venv").value = s.venv; $("repo").checked = !!s.repo; $("pip").checked = !!s.pip; $("remotewh").checked = !!s.remotewh; } catch (e) {}
 }
 
-function watch(jobId, onDone, sink) {
+function watch(jobId, onDone, sink, tabName) {
   let since = 0;
+  const tab = document.querySelector(tabName ? `nav button[data-tab="${tabName}"]` : "nav button.on");  // the tab that owns the job shows its progress
+  tab.classList.remove("done");
   const tick = async () => {
     const j = await api(`/api/job/${jobId}?since=${since}`);
     since = j.next;
     if (sink && j.log.length) sink(j.log);
-    if (j.progress) { $("progress").style.display = "flex"; $("plabel").textContent = `${j.progress.label} ${j.progress.i}/${j.progress.n}`; $("pbar").style.width = (j.progress.n ? 100 * j.progress.i / j.progress.n : 0) + "%"; }
+    tab.classList.add("busy"); tab.classList.toggle("indet", !j.progress);
+    if (j.progress) { tab.querySelector(".tn").textContent = `${j.progress.i}/${j.progress.n}`; tab.querySelector(".tp i").style.width = (j.progress.n ? 100 * j.progress.i / j.progress.n : 0) + "%"; }
     if (j.status === "running") return setTimeout(tick, 500);
-    $("progress").style.display = "none";
+    tab.classList.remove("busy", "indet");
+    if (!tab.classList.contains("on")) tab.classList.add("done");  // finished while another tab was open
     onDone(j);
   };
   tick();
@@ -497,11 +524,60 @@ $("run").onclick = async () => {
       const todo = data.rows.filter(r => !isUnchanged(r)).length;
       logAdd([`Audit done: ${data.rows.length} packages, ${todo} need attention, ${data.vcs.length} VCS/URL entries.`]);
       setStatus("done");
-    }, logAdd);
+    }, logAdd, "audit");
   } catch (e) { idle(); logAdd(["Audit failed: " + e.message]); setStatus("failed"); }
 };
 
+for (const [id, action, title] of [["pipcheck", "check", "Check dependencies"], ["pipcache", "cache_purge", "Purge package cache"]]) $(id).onclick = async () => {
+  if (action === "cache_purge" && !confirm("Delete the whole package cache? Later installs download everything again.")) return;
+  const venv = $("venv").value;
+  showLog(`${title}: ${venv}`, "", "running");
+  try {
+    const {job} = await api("/api/pip_tool", {venv, action, force_pip: $("pip").checked});
+    watch(job, j => {
+      if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
+      setStatus(j.result.exit_code ? "failed" : "done");
+      if (action === "cache_purge") { $("logsummary").textContent = `${(j.result.freed / 2 ** 20).toFixed(1)} MiB freed`; return; }
+      $("logsummary").textContent = j.result.exit_code ? `${j.result.problems.length} broken requirement(s)` : "no broken dependencies";
+      if (data && data.venv === venv) addCheckRows(j.result.problems);
+      else if (j.result.problems.length) logAdd(["Run the audit for this venv to see these packages in the table."]);
+    }, logAdd);
+  } catch (e) { logAdd([e.message]); setStatus("failed"); }
+};
+
+// pip check problems go into the table: by the package that has to change, next to what the audit found
+function addCheckRows(problems) {
+  data.rows = data.rows.filter(r => r.state !== "broken");
+  data.rows.forEach(r => { if (r.check) { r.hint = ""; r.issue = r.issue.split("\n").filter(l => !l.startsWith("pip check:")).join("\n"); r.check = false; r.unchanged = undefined; } });
+  const byDep = {};
+  problems.forEach(p => (byDep[canon(p.requirement.match(/^[A-Za-z0-9._-]+/)[0])] ||= []).push(p));
+  for (const [name, list] of Object.entries(byDep)) {
+    const text = list.map(p => `pip check: ${p.package} requires ${p.requirement}`).join("\n");
+    let row = data.rows.find(r => r.name === name);
+    if (!row) data.rows.push(row = {name, installed: list[0].installed, target: "", safe_update: "", risky_update: "", action: "", state: "broken", side_changes: [], source: "", wheel_update: null, pin: "", used_in: [], issue: "", issue_kind: ""});
+    const dirs = new Set(list.map(p => p.installed ? reqDirection(p.requirement, p.installed) : "install"));
+    row.hint = dirs.size === 1 ? [...dirs][0] : "";
+    row.issue = row.issue ? row.issue + "\n" + text : text; row.issue_kind = "warn"; row.check = true; row.unchanged = false;
+  }
+  buildFilters(); render();
+  logAdd([problems.length ? `${Object.keys(byDep).length} package(s) with broken requirements were added to the table.` : "Nothing to add to the table."]);
+}
+// which way a version has to move to satisfy a requirement such as "numpy>=1.22,<=2.4.6": "update", "downgrade", or "" when it already fits or is unclear
+function reqDirection(req, installed) {
+  let dir = "";
+  for (const part of req.split(";")[0].replace(/^[A-Za-z0-9._-]+(\[[^\]]*\])?/, "").split(",")) {
+    const m = part.trim().match(/^(>=|<=|==|~=|>|<)\s*(\d[\w.]*)$/);
+    if (!m) continue;
+    const c = cmpVer(installed, m[2]), op = m[1], low = op === ">=" || op === "~=" || op === "==", high = op === "<=" || op === "==";
+    const d = (c < 0 && low) || (c === 0 && op === ">") ? "update" : (c > 0 && high) || (c >= 0 && op === "<") ? "downgrade" : "";
+    if (d) dir = d;
+  }
+  return dir;
+}
+const canon = n => n.toLowerCase().replace(/[-_.]+/g, "-");
+
 const LOGRULES = [
+  [/^ {4}· /, "l-dim"],  // commit subjects: may contain "failed", "error"…
   [/^exit code [1-9]|error|×|failed|unsatisfiable|cannot be|conflict/i, "l-err"],
   [/^updated as requested|^exit code 0/i, "l-add"],
   [/^audit done|^saved:/i, "l-dim"],
@@ -574,6 +650,12 @@ function visibleRows() {
   return rows;
 }
 
+const HINT_CLASS = {update: "s-wheel-update", downgrade: "s-unknown", install: "s-safe"};
+function hintBadge(r) {
+  const hint = r.state === "risky" ? (r.risky_update && r.installed ? (cmpVer(r.risky_update, r.installed) < 0 ? "downgrade" : "update") : "") : r.check ? r.hint : "";
+  return hint ? ` <span class="badge ${HINT_CLASS[hint]}">${hint}</span>` : "";
+}
+
 function render() {
   if (!data) return;
   markSort("th[data-k]", "k", sortKey, sortDir);
@@ -588,7 +670,7 @@ function render() {
     const was = r.was ? ` <span class="${r.side ? "risk" : "muted"}" title="${r.side ? "changed as a side effect of an install" : "updated"}">(was ${esc(r.was)})</span>` : "";
     return `<tr class="${r.flash ? "flash" : r.side ? "side" : ""}"><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
       <td class="mono">${esc(r.name)} <button class="link" data-ver="${esc(r.name)}" title="All versions of this package: pick any, check it, install it">versions</button></td><td class="mono">${esc(r.installed) || "—"}${was}${r.source ? ` <span class="muted" title="${esc(r.source)}">[wheel]</span>` : ""}</td><td class="mono">${r.wheel_update ? `${esc(r.wheel_update.version)} <span class="muted" title="${esc(r.wheel_update.filename)}">(wheel)</span>` : inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
-      <td><span class="badge s-${r.state}" title="${esc(sideTip(r))}">${LABEL[r.state] || r.state}</span></td><td class="used">${used}</td><td class="issue k-${r.issue_kind || "warn"}">${esc(r.issue)}</td>
+      <td><span class="badge s-${r.state}" title="${esc(sideTip(r))}">${LABEL[r.state] || r.state}</span>${hintBadge(r)}</td><td class="used">${used}</td><td class="issue k-${r.issue_kind || "warn"}">${esc(r.issue)}</td>
       <td>${held ? `<button class="link" data-a="unhold" data-n="${esc(r.name)}">unhold</button>` : `<button class="link" data-a="hold" data-n="${esc(r.name)}">hold</button>`}
           ${pin ? `<button class="link" data-a="unpin" data-n="${esc(r.name)}">unpin ${esc(pin)}</button>` : r.installed ? `<button class="link" data-a="pin" data-n="${esc(r.name)}">pin ${esc(r.installed)}</button>` : ""}</td></tr>`;
   }).join("");
@@ -664,7 +746,7 @@ function useVersion(ver) {
 }
 function installVersion(ver) {
   if (!ver) return;
-  pending = {items: [{name: verRow.name, ver, state: verRow.state, from: verRow.installed, wheel: null}]};
+  pending = {items: [{name: verRow.name, ver, state: verRow.state, from: verRow.installed, wheel: null}], allow: []};
   $("verdlg").close(); $("dlg").showModal(); preview();
 }
 ["ver-ok", "ver-pre", "ver-py"].forEach(id => $(id).oninput = renderVersions);
@@ -676,15 +758,26 @@ $("ver-typed-install").onclick = () => installVersion($("ver-typed").value.trim(
 const protectMode = () => document.querySelector("input[name=protect]:checked").value;
 const pypiItems = () => pending.items.filter(i => !i.wheel);
 const wheelItems = () => pending.items.filter(i => i.wheel);
-const pypiPkgs = () => pypiItems().map(i => `${i.name}==${i.ver}`);
+const pypiPkgs = () => pypiItems().map(i => i.spec || `${i.name}==${i.ver}`);
 
+$("manual-go").onclick = () => {
+  const items = $("manual").value.trim().split(/\s+/).filter(Boolean).map(spec => {
+    const name = canon(spec.match(/^[A-Za-z0-9._-]+/)?.[0] || ""), row = data.rows.find(r => r.name === name);
+    return {name, spec, ver: "", from: row ? row.installed : "", wheel: null};
+  });
+  if (!items.length || items.some(i => !i.name)) return alert("Type a package name, optionally with a version specifier, e.g. numpy==2.1.0");
+  pending = {items, allow: []};
+  $("dlg").showModal();
+  preview();
+};
+$("manual").onkeydown = e => { if (e.key === "Enter") $("manual-go").click(); };
 $("install").onclick = () => {
   const items = [...selected].map(n => {
     const r = data.rows.find(x => x.name === n), p = plan(r);
     return {name: n, ver: p.ver, state: r.state, from: r.installed, wheel: p.wheel ? r.wheel_update : null};
   }).filter(i => i.ver);
   if (!items.length) return alert("Nothing to install for the selected rows.");
-  pending = {items};
+  pending = {items, allow: []};
   $("dlg").showModal();
   preview();
 };
@@ -701,7 +794,7 @@ async function preview() {
   $("dlgbody").innerHTML = '<span class="muted">Checking what would change…</span>';
   const buf = [];
   try {
-    const {job} = await api("/api/install", {venv: data.venv, packages: pypiPkgs(), force_pip: $("pip").checked, protect: protectMode(), dry_run: true});
+    const {job} = await api("/api/install", {venv: data.venv, packages: pypiPkgs(), force_pip: $("pip").checked, protect: protectMode(), dry_run: true, allow: pending.allow});
     previewJob = job;
     watch(job, j => { if (seq === previewSeq && j.status !== "cancelled") showPreview(j, buf); }, lines => buf.push(...lines));
   } catch (e) { $("dlgbody").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
@@ -721,7 +814,16 @@ function showPreview(j, buf) {
   if (j.status === "error" || j.result.exit_code !== 0) {
     $("dlgbody").innerHTML = wheelHtml + '<div class="bad"><b>This cannot be installed with the chosen protection.</b> Pick a weaker option, or hold/pin differently.</div>';
     const pre = document.createElement("pre"); pre.textContent = (j.error ? j.error + "\n" : "") + buf.slice(-14).join("\n");
-    $("dlgbody").appendChild(pre); $("dlgok").disabled = true; return;
+    $("dlgbody").appendChild(pre); $("dlgok").disabled = true;
+    // the lock only protects the other packages: release the ones named in the error for this install only
+    const text = pre.textContent.toLowerCase(), locked = [...new Set([...rules.hold, ...Object.keys(rules.pins)])].filter(n => text.includes(n) && !pending.allow.includes(n));
+    if (protectMode() !== "none" && locked.length) {
+      const box = document.createElement("div"); box.className = "chg";
+      box.innerHTML = '<span class="muted">Let it change for this install only:</span> ' + locked.map(n => `<button type="button" class="link" data-allow="${esc(n)}">${esc(n)}</button>`).join(" ");
+      box.querySelectorAll("button").forEach(b => b.onclick = () => { pending.allow.push(b.dataset.allow); preview(); });
+      $("dlgbody").appendChild(box);
+    }
+    return;
   }
   const want = new Set(pypiItems().map(i => i.name));
   const main = j.result.changes.filter(c => want.has(c.name)), extra = j.result.changes.filter(c => !want.has(c.name));
@@ -729,7 +831,7 @@ function showPreview(j, buf) {
     + `<h3 class="${extra.length ? "risk" : ""}">Also changed by dependencies (${extra.length})</h3>`
     + (extra.map(c => chgRow(c, true)).join("") || '<span class="muted">nothing else changes</span>') : "");
   $("dlgbody").querySelectorAll("button[data-hold]").forEach(b => b.onclick = async () => { await rule("hold", b.dataset.hold); preview(); });
-  $("dlgnote").textContent = `${j.result.changes.length + wheels.length} package(s) will change`;
+  $("dlgnote").textContent = `${j.result.changes.length + wheels.length} package(s) will change` + (pending.allow.length ? `; unlocked for this install: ${pending.allow.join(", ")}` : "");
   $("dlgok").disabled = !(j.result.changes.length + wheels.length);
 }
 
@@ -745,7 +847,7 @@ async function doInstall(protect) {
   const finish = () => { $("install").dataset.busy = "0"; $("install").textContent = "Install selected…"; updateSel(); };
   const results = [];
   try {
-    if (pk.length) results.push(await runJob("/api/install", {venv: data.venv, packages: pk, force_pip: $("pip").checked, protect, dry_run: false}));
+    if (pk.length) results.push(await runJob("/api/install", {venv: data.venv, packages: pk, force_pip: $("pip").checked, protect, dry_run: false, allow: pending.allow}));
     if (wheels.length && !results.some(jobFailed)) results.push(await runJob("/api/install_wheels", {venv: data.venv, wheels: wheels.map(i => ({filename: i.wheel.filename})), force_pip: $("pip").checked}));
   } catch (e) { finish(); setStatus("failed"); logAdd([e.message]); return; }
   finish();
@@ -764,11 +866,13 @@ async function doInstall(protect) {
     const row = data.rows.find(x => x.name === c.name), item = want[c.name];
     if (!row) { other.push(c); return; }
     row.was = c.from; row.installed = c.to;
-    if (item && c.to === item.ver) {
+    const target = plan(row).ver, reached = item ? (item.spec ? !!c.to : c.to === item.ver) : target && c.to && cmpVer(c.to, target) >= 0;  // a side effect may also have done the row's own update
+    if (reached) {
       delete row.override; row.action = ""; row.safe_update = ""; row.risky_update = ""; row.issue = ""; row.issue_kind = ""; row.unchanged = true; row.flash = true;
-      if (item.wheel) { row.wheel_update = null; row.source = `wheel ${item.wheel.filename}`; }
-      row.state = rules.pins[c.name] ? "pinned" : rules.hold.has(c.name) ? "held" : item.wheel ? "wheel" : "ok";
-      selected.delete(c.name); done.push(c);
+      if (item && item.wheel) { row.wheel_update = null; row.source = `wheel ${item.wheel.filename}`; }
+      row.state = rules.pins[c.name] ? "pinned" : rules.hold.has(c.name) ? "held" : item && item.wheel ? "wheel" : "ok";
+      selected.delete(c.name);
+      if (item) done.push(c); else { row.side = true; side.push(c); }
     } else { row.side = true; side.push(c); }
   });
   const fmt = c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`;
@@ -790,8 +894,10 @@ $("selnone").onclick = () => { selected.clear(); render(); };
 document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => { sortDir = sortKey === th.dataset.k ? -sortDir : 1; sortKey = th.dataset.k; render(); });
 
 // ---- tabs
+document.querySelectorAll("nav button").forEach(b => b.insertAdjacentHTML("beforeend", '<span class="tn"></span><span class="tp"><i></i></span>'));
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  b.classList.remove("done");
   document.querySelectorAll(".tabsec").forEach(sec => sec.hidden = sec.id !== "tab-" + b.dataset.tab);
   try { localStorage.setItem("tab", b.dataset.tab); } catch (e) {}
 });
@@ -934,9 +1040,9 @@ function rBuildChips() {
 }
 
 function rVisible() {
-  const q = $(p + "-search").value.trim().toLowerCase();
+  const q = $(p + "-search").value.trim().toLowerCase(), tag = $(p + "-tag") ? $(p + "-tag").value : "";
   const rows = repos.filter(r => rActive.has(r.state) && !($(p + "-hide").checked && r.state === "up-to-date" && !r.flash)
-    && (!$(p + "-dirtyonly").checked || r.dirty) && (!q || r.name.toLowerCase().includes(q)));
+    && (!$(p + "-dirtyonly").checked || r.dirty) && (!q || r.name.toLowerCase().includes(q)) && (!tag || nodeTags(r.name).includes(tag)));
   const key = r => rSortKey === "state" ? RRANK[r.state] : r[rSortKey];
   rows.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * rSortDir || a.name.localeCompare(b.name));
   return rows;
@@ -951,13 +1057,14 @@ function rRender() {
     const dirty = r.dirty ? `<span class="risk" title="${esc(r.dirty_lines.join("\n"))}">${r.dirty} file(s)</span>` : '<span class="muted">—</span>';
     const date = r.last_date ? r.last_date.slice(0, 10) : "";
     return `<tr data-p="${esc(r.path)}" class="${r.flash ? "flash" : rPicked === r.path ? "sel" : ""}"><td><input type="checkbox" data-p="${esc(r.path)}" ${rSel.has(r.path) ? "checked" : ""}></td>
-      <td class="mono">${name}${r.disabled ? ' <span class="muted">(disabled)</span>' : ""}</td><td class="mono">${esc(r.branch)}</td>
+      <td class="mono">${name}${r.disabled ? ' <span class="muted">(disabled)</span>' : ""}</td>${kind === "nodes" ? `<td>${nodeTags(r.name).map(t => `<button class="tag" data-tag="${esc(t)}" title="Show only nodes with this tag">${esc(t)}</button>`).join("")}</td>` : ""}<td class="mono">${esc(r.branch)}</td>
       <td><span class="badge s-${r.state}" title="${esc(r.error)}">${RLABEL[r.state] || r.state}</span></td>
       <td class="mono">${r.behind ? "↓" + r.behind : ""} ${r.ahead ? "↑" + r.ahead : ""}</td><td>${dirty}</td>
       <td class="trunc" title="${esc(r.last_subject)}"><span class="mono">${esc(date)}</span> <span class="muted">${esc(r.last_subject)}</span></td></tr>`;
   }).join("");
   $(p + "-rows").querySelectorAll("input[type=checkbox]").forEach(cb => { cb.onclick = e => e.stopPropagation(); cb.onchange = () => { cb.checked ? rSel.add(cb.dataset.p) : rSel.delete(cb.dataset.p); rUpdateSel(); }; });
   $(p + "-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => rPick(tr.dataset.p));
+  $(p + "-rows").querySelectorAll("button[data-tag]").forEach(b => b.onclick = e => { e.stopPropagation(); $(p + "-tag").value = b.dataset.tag; rRender(); });
   rUpdateSel();
 }
 function rUpdateSel() { $(p + "-selinfo").textContent = rSel.size ? `${rSel.size} selected` : ""; $(p + "-update").disabled = !rSel.size || $(p + "-update").dataset.busy === "1"; $(p + "-remove").disabled = !rSel.size; }
@@ -1057,21 +1164,25 @@ if ($(p + "-addnodebtn")) $(p + "-addnodebtn").onclick = async () => {
     watch(job, j => {
       if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
       setStatus("done"); $(p + "-newurl").value = ""; $(p + "-scan").onclick();
+      if (!auditJob) $("run").onclick();  // the new node may bring requirements.txt entries
     }, logAdd);
   } catch (e) { logAdd([e.message]); setStatus("failed"); }
 };
 $(p + "-selbehind").onclick = () => { repos.filter(r => r.state === "behind").forEach(r => rSel.add(r.path)); rRender(); };
 $(p + "-selvis").onclick = () => { rVisible().forEach(r => rSel.add(r.path)); rRender(); };
 $(p + "-selnone").onclick = () => { rSel.clear(); rRender(); };
-["search", "hide", "dirtyonly"].forEach(id => $(p + "-" + id).oninput = rRender);
+["search", "hide", "dirtyonly", "tag"].forEach(id => { if ($(p + "-" + id)) $(p + "-" + id).oninput = rRender; });
 document.querySelectorAll("#tab-" + tabId + " th[data-rk]").forEach(th => th.onclick = () => { rSortDir = rSortKey === th.dataset.rk ? -rSortDir : 1; rSortKey = th.dataset.rk; rRender(); });
+// the Git / Links switch hands the selection over by node name
+return {render: rRender, names: () => repos.length ? [...rSel].map(x => repos.find(r => r.path === x).name) : null, select: names => { rSel = new Set(repos.filter(r => names.includes(r.name)).map(r => r.path)); rRender(); }};
 }
-repoTab("r", "nodes", "repos");
+const gitTab = repoTab("r", "nodes", "repos");
 repoTab("w", "workflows", "workflows");
 
 // ---- nodes (junction links, presets, tags)
 const NKINDS = ["junk", "direct", "external", "unlinked", "linked"];
 const NRANK = Object.fromEntries(NKINDS.map((x, i) => [x, i]));
+const nodeTags = name => (nodes && nodes.rows.find(r => r.name === name) || {tags: []}).tags;
 let nodes = null, nSel = new Set(), nActive = new Set(NKINDS), nSortKey = "kind", nSortDir = 1;
 
 async function nLoad() {
@@ -1079,6 +1190,7 @@ async function nLoad() {
   nSel = new Set([...nSel].filter(n => nodes.rows.some(r => r.name === n)));
   $("n-paths").textContent = `repo ${nodes.repo} → ${nodes.custom}`;
   $("n-tag").innerHTML = '<option value="">all tags</option>' + nodes.tags.map(t => `<option>${esc(t)}</option>`).join("");
+  $("r-tag").innerHTML = $("n-tag").innerHTML; gitTab.render();
   $("n-taglist").innerHTML = nodes.tags.map(t => `<option value="${esc(t)}">`).join("");
   $("n-preset").innerHTML = Object.entries(nodes.presets).map(([n, v]) => `<option value="${esc(n)}">${esc(n)} (${v.mode}, ${v.count})</option>`).join("");
   const counts = {}; nodes.rows.forEach(r => counts[r.kind] = (counts[r.kind] || 0) + 1);
@@ -1151,7 +1263,16 @@ $("n-selvis").onclick = () => { nVisible().forEach(r => nSel.add(r.name)); nRend
 $("n-selnone").onclick = () => { nSel.clear(); nRender(); };
 ["n-search", "n-tag", "n-hidelinked"].forEach(id => $(id).oninput = nRender);
 document.querySelectorAll("th[data-nk]").forEach(th => th.onclick = () => { nSortDir = nSortKey === th.dataset.nk ? -nSortDir : 1; nSortKey = th.dataset.nk; nRender(); });
-document.querySelector('nav button[data-tab="nodes"]').addEventListener("click", () => { if (!nodes) nLoad(); });
+document.querySelector('nav button[data-tab="repos"]').addEventListener("click", () => { if (!nodes) nLoad(); });
+document.querySelectorAll("button[data-sub]").forEach(b => b.onclick = () => {
+  const links = b.dataset.sub === "links";
+  if (links === !$("sub-links").hidden) return;
+  if (links) { const names = gitTab.names(); if (names && nodes) nSel = new Set(names.filter(n => nodes.rows.some(r => r.name === n))); }
+  else if (nSel.size) gitTab.select([...nSel]);
+  document.querySelectorAll("button[data-sub]").forEach(x => x.classList.toggle("on", x === b));
+  $("sub-git").hidden = links; $("sub-links").hidden = !links;
+  if (links) nRender();
+});
 
 // ---- compare venvs
 let cmp = null;
@@ -1382,6 +1503,7 @@ $("setsave").onclick = async () => {
 let firstTab = "build";
 try { firstTab = localStorage.getItem("tab") || firstTab; } catch (e) {}
 if (location.hash.length > 1) firstTab = location.hash.slice(1);  // e.g. http://127.0.0.1:8765/#audit
+if (firstTab === "nodes") firstTab = "repos";  // the Nodes tab is now a view of Custom nodes
 if (!document.querySelector('nav button[data-tab="' + firstTab + '"]')) firstTab = "build";
 document.querySelector('nav button[data-tab="' + firstTab + '"]').click();
 init().catch(e => alert(e.message));

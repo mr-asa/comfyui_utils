@@ -175,12 +175,13 @@ def record_install(job: dict, name: str, stamp: str, before: Dict[str, str], aft
     return {"exit_code": code, "installed": after, "changes": changes}
 
 
-def install_job(job: dict, name: str, packages: List[str], force_pip: bool, protect: str, dry_run: bool) -> dict:
+def install_job(job: dict, name: str, packages: List[str], force_pip: bool, protect: str, dry_run: bool, allow: List[str]) -> dict:
     """Install (or only simulate) the packages.
 
     protect: "all" keeps every other installed package at its version, "held" keeps the venv's held and pinned
     packages, "none" lets the resolver change anything. Protection goes through a constraints file, so a
-    conflict fails loudly instead of silently changing numpy & co."""
+    conflict fails loudly instead of silently changing numpy & co. `allow` lists packages released from the
+    protection for this install only."""
     row = venv_entry(name)
     py = config_schema.venv_python_path(row["path"])
     before = installed_versions(py)
@@ -189,7 +190,7 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
         cmd.append("--dry-run")
     stamp = time.strftime("%Y%m%d_%H%M%S")
     LOG_DIR.mkdir(exist_ok=True)
-    requested = {canonicalize_name(re.split(r"[=<>!~ ]", p, maxsplit=1)[0]) for p in packages}
+    requested = {canonicalize_name(re.split(r"[=<>!~ ]", p, maxsplit=1)[0]) for p in packages} | {canonicalize_name(a) for a in allow}
     keep: Dict[str, str] = {}
     if protect == "all":
         keep = {n: v for n, v in before.items() if n not in requested}
@@ -207,6 +208,41 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
     if dry_run:
         return {"exit_code": code, "changes": parse_install_changes(lines) if code == 0 else []}
     return record_install(job, name, stamp, before, installed_versions(py), code)
+
+
+CHECK_UV = re.compile(r"The package `(?P<pkg>[^`]+)` requires `(?P<req>[^`]+)`, but (?:`(?P<ver>[^`]+)` is installed|it's not installed)")
+CHECK_PIP = re.compile(r"^(?P<pkg>\S+) \S+ (?:has requirement (?P<req>.+), but you have \S+ (?P<ver>\S+)\.|requires (?P<req2>.+), which is not installed\.)$")
+
+
+def parse_check(lines: List[str]) -> List[dict]:
+    """The broken requirements printed by `pip check` / `uv pip check` (Python version mismatches are left out)."""
+    problems = []
+    for line in lines:
+        m = CHECK_UV.search(line) or CHECK_PIP.match(line.strip())
+        if m:
+            problems.append({"package": m["pkg"], "requirement": m["req"] or m["req2"], "installed": m["ver"] or ""})
+    return problems
+
+
+def dir_size(path: str) -> int:
+    return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) if Path(path).is_dir() else 0
+
+
+def pip_tool_job(job: dict, name: str, action: str, force_pip: bool) -> dict:
+    """`check` verifies the venv's dependencies, `cache_purge` empties the package cache of uv (or of pip)."""
+    py = config_schema.venv_python_path(venv_entry(name)["path"])
+    use_uv = not force_pip and shutil.which("uv")
+    if action == "check":
+        code, lines = stream(job, ["uv", "pip", "check", "--python", py] if use_uv else [py, "-m", "pip", "check"])
+        return {"exit_code": code, "problems": parse_check(lines)}
+    if action != "cache_purge":
+        raise ValueError(f"unknown action '{action}'")
+    where = subprocess.run(["uv", "cache", "dir"] if use_uv else [py, "-m", "pip", "cache", "dir"], capture_output=True, text=True).stdout.strip()
+    before = dir_size(where)
+    code, _ = stream(job, ["uv", "cache", "clean"] if use_uv else [py, "-m", "pip", "cache", "purge"])
+    freed = max(before - dir_size(where), 0)
+    job["log"].append(f"freed {freed / 2**20:.1f} MiB ({where})")
+    return {"exit_code": code, "freed": freed}
 
 
 def wheel_install_job(job: dict, name: str, filenames: List[str], force_pip: bool) -> dict:
@@ -382,7 +418,7 @@ def repos_update_job(job: dict, paths: List[str], on_local: str, on_conflict: st
     def report(r: dict) -> None:
         tag = "ERROR " + r["error"][:200] if r["error"] else "skipped: " + r["skipped"] if r["skipped"] else f"updated, {len(r['commits'])} commit(s)" if r["changed"] else "no changes"
         job["log"].append(f"{r['name']}: {tag}")
-        job["log"] += [f"    {c}" for c in r["commits"][:8]]
+        job["log"] += [f"    · {c}" for c in r["commits"][:8]]
 
     for p in root_first:  # ComfyUI itself goes first and alone
         results.append(one(p))
@@ -967,7 +1003,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not packages:
                     return self.send_json({"error": "no packages"}, 400)
                 job = new_job("install")
-                run_in_thread(job, install_job, body["venv"], packages, bool(body.get("force_pip")), str(body.get("protect", "held")), bool(body.get("dry_run")))
+                run_in_thread(job, install_job, body["venv"], packages, bool(body.get("force_pip")), str(body.get("protect", "held")), bool(body.get("dry_run")), [str(a) for a in body.get("allow", [])])
+                self.send_json({"job": job["id"]})
+            elif self.path == "/api/pip_tool":
+                job = new_job("pip_tool")
+                run_in_thread(job, pip_tool_job, body["venv"], str(body["action"]), bool(body.get("force_pip")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/install_wheels":
                 names = [str(w["filename"]) for w in body["wheels"]]
