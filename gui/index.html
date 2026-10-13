@@ -127,7 +127,7 @@ nav button.done::after { content: ""; width: 7px; height: 7px; border-radius: 50
 #b-detail { padding: 8px 14px; overflow: auto; flex: 1; min-height: 60px; font-size: 13px; }
 #b-detail ul { margin: 2px 0 8px; padding-left: 18px; }
 #b-foot { flex: none; border-top: 1px solid var(--line); }
-.s-behind { color: var(--info); } .s-diverged, .s-fetch-failed, .s-not-git { color: var(--bad); } .s-ahead { color: var(--warn); }
+.s-behind { color: var(--info); } .s-diverged, .s-conflict, .s-fetch-failed, .s-not-git { color: var(--bad); } .s-ahead { color: var(--warn); }
 .s-partial { color: var(--info); border-style: dashed; } .s-untracked { color: var(--warn); border-style: dashed; } .s-up-to-date { color: var(--muted); } .s-no-upstream { color: var(--muted); border-style: dashed; }
 .tabsec.split { flex-direction: row; }
 .subsec { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
@@ -223,7 +223,9 @@ header .spacer { flex: 1; }
     </div>
     <div class="grp"><span class="gl">Filter</span>
       <input type="text" id="r-search" placeholder="Filter…" size="18">
-      <select id="r-tag" title="Only nodes with this tag (tags are edited in Links)"><option value="">all tags</option></select>
+      <select id="r-tag" title="Only nodes with this tag"><option value="">all tags</option></select>
+      <input type="text" id="r-tagname" size="10" list="n-taglist" placeholder="tag" title="Tag to add to or remove from the selected repositories">
+      <button id="r-tagadd" title="Add this tag to the selected repositories">Tag selected</button><button id="r-tagdel" title="Remove this tag from the selected repositories">Untag selected</button>
       <label><input type="checkbox" id="r-hide" checked> hide up-to-date</label>
       <label><input type="checkbox" id="r-dirtyonly"> only with local changes</label>
       <span id="r-chips"></span>
@@ -1001,7 +1003,7 @@ const commitsHtml = (commits, title, base) => commits.length ? `<h4>${title} (${
 }).join("") : "";
 
 function repoTab(p, kind, tabId) {
-const RSTATES = ["behind", "diverged", "fetch-failed", "not-git", "ahead", "untracked", "partial", "no-upstream", "up-to-date"];
+const RSTATES = ["conflict", "behind", "diverged", "fetch-failed", "not-git", "ahead", "untracked", "partial", "no-upstream", "up-to-date"];
 const RLABEL = {untracked: "no sync record"};
 const RRANK = Object.fromEntries(RSTATES.map((x, i) => [x, i]));
 const R_OPTS = {
@@ -1062,10 +1064,11 @@ function rRender() {
   $(p + "-count").textContent = `${rows.length} of ${repos.length}`;
   $(p + "-rows").innerHTML = rows.map(r => {
     const name = r.web_url ? `<a href="${esc(r.web_url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name);
+    const fork = r.fork ? ` <span class="badge s-partial" title="Compared with ${esc(r.upstream)}; ↑ are your patches">fork</span>` : "";
     const dirty = r.dirty ? `<span class="risk" title="${esc(r.dirty_lines.join("\n"))}">${r.dirty} file(s)</span>` : '<span class="muted">—</span>';
     const date = r.last_date ? r.last_date.slice(0, 10) : "";
     return `<tr data-p="${esc(r.path)}" class="${r.flash ? "flash" : rPicked === r.path ? "sel" : ""}"><td><input type="checkbox" data-p="${esc(r.path)}" ${rSel.has(r.path) ? "checked" : ""}></td>
-      <td class="mono">${name}${r.disabled ? ' <span class="muted">(disabled)</span>' : ""}</td>${kind === "nodes" ? `<td>${nodeTags(r.name).map(t => `<button class="tag" data-tag="${esc(t)}" title="Show only nodes with this tag">${esc(t)}</button>`).join("")}</td>` : ""}<td class="mono">${esc(r.branch)}</td>
+      <td class="mono">${name}${fork}${r.disabled ? ' <span class="muted">(disabled)</span>' : ""}</td>${kind === "nodes" ? `<td>${nodeTags(r.name).map(t => `<button class="tag" data-tag="${esc(t)}" title="Show only nodes with this tag">${esc(t)}</button>`).join("")}</td>` : ""}<td class="mono">${esc(r.branch)}</td>
       <td><span class="badge s-${r.state}" title="${esc(r.error)}">${RLABEL[r.state] || r.state}</span></td>
       <td class="mono">${r.behind ? "↓" + r.behind : ""} ${r.ahead ? "↑" + r.ahead : ""}</td><td>${dirty}</td>
       <td class="trunc" title="${esc(r.last_subject)}"><span class="mono">${esc(date)}</span> <span class="muted">${esc(r.last_subject)}</span></td></tr>`;
@@ -1087,6 +1090,7 @@ async function rPick(path) {
     if (seq !== rDetailSeq) return;
     const head = `<b>${esc(r.name)}</b> <span class="muted">${esc(r.path)}</span>` + (r.dirty ? `<div class="risk">Local changes:<br>${r.dirty_lines.map(l => `<span class="mono">${esc(l)}</span>`).join("<br>")}</div>` : "");
     $(p + "-detail").innerHTML = head + (d.commits.length ? commitsHtml(d.commits, "Incoming commits", r.commit_base) + filesHtml(d.files) : '<div class="muted" style="margin-top:8px">Nothing incoming.</div>')
+      + (d.conflicts && d.conflicts.length ? `<div class="risk">Conflicts with your patches:<br>${d.conflicts.map(f => `<span class="mono">${esc(f)}</span>`).join("<br>")}</div>` : "")
       + (d.error ? `<div class="bad">${esc(d.error)}</div>` : "");
   } catch (e) { if (seq === rDetailSeq) $(p + "-detail").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 }
@@ -1200,8 +1204,11 @@ async function nLoad() {
   try { nodes = await api("/api/nodes_state"); } catch (e) { logAdd(["Nodes: " + e.message]); setStatus("failed"); return; }
   nSel = new Set([...nSel].filter(n => nodes.rows.some(r => r.name === n)));
   $("n-paths").textContent = `repo ${nodes.repo} → ${nodes.custom}`;
+  const picked = {"n-tag": $("n-tag").value, "r-tag": $("r-tag").value};
   $("n-tag").innerHTML = '<option value="">all tags</option>' + nodes.tags.map(t => `<option>${esc(t)}</option>`).join("");
-  $("r-tag").innerHTML = $("n-tag").innerHTML; gitTab.render();
+  $("r-tag").innerHTML = $("n-tag").innerHTML;
+  for (const id in picked) $(id).value = picked[id];
+  gitTab.render();
   $("n-taglist").innerHTML = nodes.tags.map(t => `<option value="${esc(t)}">`).join("");
   $("n-preset").innerHTML = Object.entries(nodes.presets).map(([n, v]) => `<option value="${esc(n)}">${esc(n)} (${v.mode}, ${v.count})</option>`).join("");
   const counts = {}; nodes.rows.forEach(r => counts[r.kind] = (counts[r.kind] || 0) + 1);
@@ -1270,6 +1277,8 @@ $("n-tagsel").onclick = () => {
 };
 $("n-tagadd").onclick = () => needSel() && $("n-tagname").value.trim() && nAct({action: "tag_add", tag: $("n-tagname").value, names: nNames()}, "Tag nodes");
 $("n-tagdel").onclick = () => needSel() && $("n-tagname").value.trim() && nAct({action: "tag_remove", tag: $("n-tagname").value, names: nNames()}, "Untag nodes");
+for (const [id, action] of [["r-tagadd", "tag_add"], ["r-tagdel", "tag_remove"]])
+  $(id).onclick = () => { const names = gitTab.names(), tag = $("r-tagname").value.trim(); names && names.length && tag ? nAct({action, tag, names}, "Tag nodes") : alert("Select repositories and type a tag."); };
 $("n-selvis").onclick = () => { nVisible().forEach(r => nSel.add(r.name)); nRender(); };
 $("n-selnone").onclick = () => { nSel.clear(); nRender(); };
 ["n-search", "n-tag", "n-hidelinked"].forEach(id => $(id).oninput = nRender);

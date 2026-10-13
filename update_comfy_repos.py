@@ -415,9 +415,19 @@ def update_repo(path: str, dry_run: bool = False, on_local: Optional[str] = None
     notes: List[str] = []
 
     # Fetch
-    ok, out, err = run_git(["fetch", "--all", "--tags"], cwd=path)
+    ok, out, err = run_git(["-c", "maintenance.auto=false", "-c", "gc.auto=0", "fetch", "--all", "--tags"], cwd=path)
     if not ok:
         return UpdateResult(name, path, web_url, branch, False, [], [], ["git fetch failed"], error=(err or out).strip())
+
+    fork_ref = fork_upstream_ref(path, branch)
+    if fork_ref:
+        conflicts = predict_conflicts(path, fork_ref)
+        if conflicts:
+            return UpdateResult(
+                name, path, web_url, branch, False, [], [],
+                [f"{fork_ref} conflicts with your patches in:"] + ["  " + f for f in conflicts],
+                skipped="Conflicts with upstream",
+            )
 
     # Local changes: ask what to do before pulling (so we don't spam an error log)
     dirty, status_out, ignored_paths = repo_dirty(path)
@@ -550,15 +560,21 @@ def update_repo(path: str, dry_run: bool = False, on_local: Optional[str] = None
             notes.append("Failed to discard ignored local changes: " + err_msg)
 
     # Pull
-    pull_args = ["pull", "--rebase"]
+    pull_args = ["rebase", fork_ref] if fork_ref else ["pull", "--rebase"]
     if dry_run:
         notes.append("[dry-run] Would run: git " + " ".join(shlex.quote(a) for a in pull_args))
         changed = False
         commit_msgs: List[str] = []
         numstat: List[Tuple[int, int, str]] = []
     else:
+        if fork_ref and run_git(["rev-list", "--count", f"HEAD..{fork_ref}"], cwd=path)[1].strip() != "0":
+            backup = f"pre-upstream-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            run_git(["branch", backup], cwd=path)
+            notes.append(f"Backup branch of your patches: {backup}")
         ok, out, err = run_git(pull_args, cwd=path)
         if not ok:
+            if fork_ref:
+                abort_in_progress_operation(path)
             _, status_out2, _ = repo_dirty(path)
             conflicted2 = find_conflicted_paths(status_out2)
             if conflicted2 and (rebase_in_progress(path) or merge_in_progress(path)):
@@ -604,7 +620,7 @@ def update_repo(path: str, dry_run: bool = False, on_local: Optional[str] = None
                     [],
                     [],
                     tips,
-                    error=f"git pull failed: {(err or out).strip()}",
+                    error=f"git {pull_args[0]} failed: {(err or out).strip()}",
                 )
 
         if stashed:
@@ -663,7 +679,7 @@ def repo_status(path: str, fetch: bool = True) -> Dict[str, object]:
     info["commit_base"] = info["web_url"]  # commits are linked as <commit_base>/commit/<hash>
     info["branch"] = get_current_branch(path) or "DETACHED"
     if fetch:
-        ok, out, err = run_git(["fetch", "--all", "--tags"], cwd=path)
+        ok, out, err = run_git(["-c", "maintenance.auto=false", "-c", "gc.auto=0", "fetch", "--all", "--tags"], cwd=path)
         if not ok:
             info["error"] = (err or out).strip()[-300:]
             info["state"] = "fetch-failed"
@@ -674,10 +690,17 @@ def repo_status(path: str, fetch: bool = True) -> Dict[str, object]:
     ok, out, _ = run_git(["log", "-1", "--format=%cI%x09%s"], cwd=path)
     if ok and "\t" in out:
         info["last_date"], info["last_subject"] = out.strip().split("\t", 1)
-    ok, out, _ = run_git(["rev-list", "--left-right", "--count", "HEAD...@{u}"], cwd=path)
+    fork_ref = fork_upstream_ref(path, info["branch"])
+    info["fork"] = bool(fork_ref)
+    info["upstream"] = fork_ref
+    ok, out, _ = run_git(["rev-list", "--left-right", "--count", f"HEAD...{fork_ref or '@{u}'}"], cwd=path)
     if ok and len(out.split()) == 2:
         info["ahead"], info["behind"] = (int(x) for x in out.split())
-        if info["state"] == "ok":
+        if info["state"] == "ok" and fork_ref:
+            # your patches are always ahead of upstream; only new upstream commits matter
+            info["conflicts"] = predict_conflicts(path, fork_ref) if info["behind"] else []
+            info["state"] = "conflict" if info["conflicts"] else "behind" if info["behind"] else "up-to-date"
+        elif info["state"] == "ok":
             info["state"] = "diverged" if info["ahead"] and info["behind"] else "behind" if info["behind"] else "ahead" if info["ahead"] else "up-to-date"
     elif info["state"] == "ok":
         info["state"] = "no-upstream"
@@ -686,15 +709,18 @@ def repo_status(path: str, fetch: bool = True) -> Dict[str, object]:
 
 def incoming_changes(path: str, limit: int = 60) -> Dict[str, object]:
     """Commits the upstream has that HEAD does not, and the files they touch."""
-    ok, out, err = run_git(["log", f"--max-count={limit}", "--format=%h %cs %s", "HEAD..@{u}"], cwd=path)
+    fork_ref = fork_upstream_ref(path, get_current_branch(path) or "")
+    target = fork_ref or "@{u}"
+    ok, out, err = run_git(["log", f"--max-count={limit}", "--format=%h %cs %s", f"HEAD..{target}"], cwd=path)
     commits = [l for l in out.splitlines() if l.strip()] if ok else []
-    ok2, out2, _ = run_git(["diff", "--numstat", "HEAD...@{u}"], cwd=path)
+    ok2, out2, _ = run_git(["diff", "--numstat", f"HEAD...{target}"], cwd=path)
     files = []
     for l in (out2.splitlines() if ok2 else [])[:200]:
         parts = l.split("\t", 2)
         if len(parts) == 3:
             files.append({"added": parts[0], "deleted": parts[1], "path": parts[2]})
-    return {"commits": commits, "files": files, "error": "" if ok else (err or out).strip()[-300:]}
+    conflicts = predict_conflicts(path, fork_ref) if fork_ref and commits else []
+    return {"commits": commits, "files": files, "conflicts": conflicts, "error": "" if ok else (err or out).strip()[-300:]}
 
 
 def result_to_dict(res: UpdateResult) -> Dict[str, object]:
@@ -719,6 +745,26 @@ def run_git(args: List[str], cwd: str, env: Optional[Dict[str, str]] = None) -> 
         return proc.returncode == 0, out, err
     except FileNotFoundError:
         return False, "", "Git not found in PATH. Install Git."
+
+
+def fork_upstream_ref(path: str, branch: str) -> str:
+    """`upstream/<branch>` when the repository has an `upstream` remote (a fork with your own patches), else ""."""
+    ok, out, _ = run_git(["remote"], cwd=path)
+    if not ok or "upstream" not in out.split():
+        return ""
+    for b in (branch, "main", "master"):
+        if run_git(["rev-parse", "--verify", "--quiet", f"upstream/{b}"], cwd=path)[0]:
+            return f"upstream/{b}"
+    return ""
+
+
+def predict_conflicts(path: str, ref: str) -> List[str]:
+    """Files that would conflict when HEAD is merged with ref; the working tree is not touched."""
+    ok, out, _ = run_git(["merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", ref], cwd=path)
+    if ok:
+        return []
+    lines = out.splitlines()[1:]
+    return lines[:lines.index("")] if "" in lines else lines
 
 
 def repo_dirty(path: str) -> Tuple[bool, str, List[str]]:
