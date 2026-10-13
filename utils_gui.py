@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import traceback
+import socket
 import webbrowser
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -156,7 +157,10 @@ def stream(job: dict, cmd: List[str], cancellable: bool = False, env: dict | Non
     lines = []
     for line in p.stdout:
         lines.append(line.rstrip())
-        job["log"].append(lines[-1])
+        if "%" in line and job["log"] and job["log"][-1].split(":")[0] == line.split(":")[0]:
+            job["log"][-1] = lines[-1]  # git progress ("Receiving objects: 12%") rewrites one line instead of flooding the log
+        else:
+            job["log"].append(lines[-1])
         if cancellable and job["cancel"].is_set():
             p.kill()
             raise JobCancelled()
@@ -663,7 +667,7 @@ def repo_add_job(job: dict, url: str, link: bool) -> dict:
     dest = os.path.join(base, name)
     if os.path.exists(dest) or os.path.exists(os.path.join(custom, name)):
         raise ValueError(f"{name} already exists")
-    code, _ = stream(job, ["git", "clone", url, dest], env=NO_PROMPT_ENV)
+    code, _ = stream(job, ["git", "clone", "--progress", url, dest], env=NO_PROMPT_ENV)
     if code:
         raise RuntimeError(f"git clone failed (exit code {code})")
     if link and base != custom:
@@ -761,7 +765,7 @@ def add_workflow_job(job: dict, url: str) -> dict:
     if dest.exists():
         raise ValueError(f"{dest} already exists")
     if source.mode == "full":
-        code, _ = stream(job, ["git", "clone", source.repo_url, str(dest)], env=NO_PROMPT_ENV)
+        code, _ = stream(job, ["git", "clone", "--progress", source.repo_url, str(dest)], env=NO_PROMPT_ENV)
         if code:
             raise RuntimeError(f"git clone failed (exit code {code})")
     else:
@@ -1078,13 +1082,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": f"{type(e).__name__}: {e}"}, 400)
 
 
+def port_in_use(port: int) -> bool:
+    # connect probe: on Windows SO_REUSEADDR lets bind() succeed on a port that is already listening
+    with socket.socket() as s:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser()
+    ap =argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    url = f"http://127.0.0.1:{args.port}/"
+    port = args.port
+    while port_in_use(port):
+        port += 1
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    url = f"http://127.0.0.1:{port}/"
     print(f"ComfyUI utils GUI: {url}  (Ctrl+C to stop)")
     if not args.no_browser:
         webbrowser.open(url)

@@ -235,6 +235,7 @@ header .spacer { flex: 1; }
       <label>local changes <select id="r-local"></select></label>
       <label><span id="r-conflict-label">conflicts</span> <select id="r-conflict"></select></label>
       <label><input type="checkbox" id="r-dry"> dry run</label>
+      <label title="Ask before updating. Updates that discard local changes or commits always ask."><input type="checkbox" id="r-ask" checked> confirm</label>
       <button class="primary" id="r-update" disabled>Update selected…</button>
       <span class="muted" id="r-selinfo"></span>
     </div>
@@ -309,6 +310,8 @@ header .spacer { flex: 1; }
       <span class="muted" id="count"></span>
     </div>
     <div class="grp"><span class="gl">Install</span>
+      <button id="selnorisk" title="Missing + safe + safe +deps: everything except risky updates and downgrades">Select all non-risky</button>
+      <button id="selmissing" title="Packages that are required but not installed">Select missing</button>
       <button id="selsafe" title="Only the package itself changes">Select safe</button>
       <button id="selsafed" title="Safe, but other packages change too (see the badge tooltip); no requirement is broken">Select safe +deps</button>
       <button id="selwheel" title="Newer prebuilt wheels found in the wheel sources">Select wheel updates</button>
@@ -351,6 +354,7 @@ header .spacer { flex: 1; }
       <span class="sep"></span>
       <label>local changes <select id="w-local"></select></label>
       <label><span id="w-conflict-label">conflicts</span> <select id="w-conflict"></select></label>
+      <label title="Ask before updating. Updates that discard local changes or commits always ask."><input type="checkbox" id="w-ask" checked> confirm</label>
       <button class="primary" id="w-update" disabled>Update selected…</button>
       <span class="muted" id="w-selinfo"></span>
     </div>
@@ -885,7 +889,9 @@ async function doInstall(protect) {
   buildFilters(); render();
 }
 
-$("selsafe").onclick = () => { data.rows.filter(r => r.state === "safe").forEach(r => selected.add(r.name)); render(); };
+$("selnorisk").onclick = () => { data.rows.filter(r => ["missing", "safe", "safe-deps"].includes(r.state)).forEach(r => selected.add(r.name)); render(); };
+$("selmissing").onclick = () => { data.rows.filter(r => r.state === "missing").forEach(r => selected.add(r.name)); render(); };
+$("selsafe").onclick =() => { data.rows.filter(r => r.state === "safe").forEach(r => selected.add(r.name)); render(); };
 $("selsafed").onclick = () => { data.rows.filter(r => r.state === "safe-deps").forEach(r => selected.add(r.name)); render(); };
 $("selwheel").onclick = () => { data.rows.filter(r => r.state === "wheel-update").forEach(r => selected.add(r.name)); render(); };
 $("selvis").onclick = () => { visibleRows().forEach(r => selected.add(r.name)); render(); };
@@ -1011,6 +1017,8 @@ function setRepoOptions() {
   $(p + "-rmmode").innerHTML = (kind === "nodes" ? [["unlink", "unlink (keep the repo folder)"], ["delete", "delete the folder for good"]] : [["delete", "delete the folder for good"]]).map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
 }
 setRepoOptions();
+try { $(p + "-ask").checked = localStorage.getItem(p + "-ask") !== "0"; } catch (e) {}
+$(p + "-ask").onchange = () => { try { localStorage.setItem(p + "-ask", $(p + "-ask").checked ? "1" : "0"); } catch (e) {} };
 let repos = [], rSel = new Set(), rActive = new Set(RSTATES), rJob = null, rSortKey = "state", rSortDir = 1, rPicked = "", rDetailSeq = 0;
 
 $(p + "-scan").onclick = async () => {
@@ -1086,7 +1094,8 @@ async function rPick(path) {
 $(p + "-update").onclick = async () => {
   const paths = [...rSel], local = $(p + "-local").value, conflict = $(p + "-conflict").value, dry = $(p + "-dry") ? $(p + "-dry").checked : false;
   const dirty = paths.map(p => repos.find(r => r.path === p)).filter(r => r.dirty);
-  if (!confirm(`${dry ? "Dry run for" : "Update"} ${paths.length} repositor${paths.length === 1 ? "y" : "ies"}?`
+  const destructive = conflict === "reset" || (dirty.length && (local === "replace" || local === "move_json"));
+  if ((destructive || $(p + "-ask").checked) && !confirm(`${dry ? "Dry run for" : "Update"} ${paths.length} repositor${paths.length === 1 ? "y" : "ies"}?`
     + (dirty.length ? `\n\n${dirty.length} have local changes → ${local === "stash" ? "stash and re-apply after the pull" : local === "skip" ? "they will be skipped" : local === "fetch" ? "only fetched, the working tree stays as it is" : "LOCAL CHANGES WILL BE DISCARDED"}.` : "")
     + (conflict === "reset" ? "\nConflicts → hard reset to the remote (local commits are lost)." : "") + (local === "move_json" ? "\nEdited JSONs are moved to github_edits, other local changes are discarded." : ""))) return;
   showLog(`${dry ? "Dry run" : "Update"}: ${paths.length} repositories`, "", "running");
@@ -1163,8 +1172,10 @@ if ($(p + "-addnodebtn")) $(p + "-addnodebtn").onclick = async () => {
     const {job} = await api("/api/repo_add", {url, link: $(p + "-newlink").checked});
     watch(job, j => {
       if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
-      setStatus("done"); $(p + "-newurl").value = ""; $(p + "-scan").onclick();
-      if (!auditJob) $("run").onclick();  // the new node may bring requirements.txt entries
+      setStatus("done"); $(p + "-newurl").value = "";
+      nLoad();  // the new node shows up in the Nodes tab (links) right away
+      if (afterAdd("scan")) $(p + "-scan").onclick();
+      if (afterAdd("audit") && !auditJob) $("run").onclick();  // the new node may bring requirements.txt entries
     }, logAdd);
   } catch (e) { logAdd([e.message]); setStatus("failed"); }
 };
@@ -1377,6 +1388,7 @@ addClear(document);
 
 // ---- settings dialog
 let S = null;
+const afterAdd = key => { try { return localStorage.getItem("after-add-" + key) !== "0"; } catch (e) { return true; } };
 const PATH_FIELDS = [
   ["comfyui_root", "ComfyUI folder", "the folder with main.py"],
   ["custom_nodes_path", "custom_nodes folder", "where ComfyUI loads nodes from (the junctions live here)"],
@@ -1420,6 +1432,8 @@ function setRender() {
       <td><button type="button" class="link" data-ws-del="${i}">remove</button></td></tr>`).join("")}
     </tbody></table>
     <div class="srow"><button type="button" id="set-ws-add">+ add source</button></div>
+    <h3>After adding a custom node (this browser)</h3>
+    <div class="srow"><label><input type="checkbox" data-after="scan" ${afterAdd("scan") ? "checked" : ""}> refresh the Git list</label><label><input type="checkbox" data-after="audit" ${afterAdd("audit") ? "checked" : ""}> run the Pip audit</label></div>
     <h3>Updates</h3>
     <div class="srow"><label class="sl" title="How many repositories the console updater pulls at once (empty = automatic)">Parallel git jobs</label><input type="text" id="set-jobs" size="4" style="flex:none;width:70px" value="${esc(S.updates.parallel_jobs)}" placeholder="auto"></div>`;
   addClear($("setbody")); setWire(); setMarks();
@@ -1457,6 +1471,7 @@ function setWire() {
   b.querySelectorAll("[data-ws-del]").forEach(x => x.onclick = () => { S.wheels.sources.splice(+x.dataset.wsDel, 1); setRender(); });
   $("set-ws-add").onclick = () => { S.wheels.sources.push({type: "github", repo: "", path: ""}); setRender(); };
   $("set-jobs").oninput = e => S.updates.parallel_jobs = e.target.value;
+  b.querySelectorAll("[data-after]").forEach(i => i.onchange = () => { try { localStorage.setItem("after-add-" + i.dataset.after, i.checked ? "1" : "0"); } catch (e) {} });
 }
 
 async function setMarks() {

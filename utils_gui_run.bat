@@ -31,5 +31,6 @@ if errorlevel 1 if exist "%VENV_PY%" set "PYTHON_EXE=%VENV_PY%"
 @REM echo SCRIPT_DIR = %SCRIPT_DIR%
 @REM echo PYTHON_EXE = %PYTHON_EXE%
 
-"%PYTHON_EXE%" "%SCRIPT_DIR%utils_gui.py" %*
+REM stdin from nul: Ctrl+C ends the script without the "Terminate batch job (Y/N)?" prompt
+"%PYTHON_EXE%" "%SCRIPT_DIR%utils_gui.py" %* <nul
 
