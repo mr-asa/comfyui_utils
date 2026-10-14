@@ -333,7 +333,7 @@ def partial_incoming(path: str) -> dict:
     source = read_metadata(Path(path))
     if source is None or not source.synced_commit:
         return {"commits": [], "files": [], "error": "no sync record yet: update once, later checks can show what changed"}
-    ok, out = run_git(["rev-parse", f"origin/{source.branch or 'main'}"], cwd=str(PARTIAL_CACHE / _partial_cache_key(source)))
+    ok, out, _ = run_git(["rev-parse", f"origin/{source.branch or 'main'}"], cwd=str(PARTIAL_CACHE / _partial_cache_key(source)))
     if not ok:
         return {"commits": [], "files": [], "error": "run a scan with fetch first"}
     commits, stat = partial_changes(source, PARTIAL_CACHE, source.synced_commit, out.strip().splitlines()[0])
