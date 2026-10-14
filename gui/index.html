@@ -397,7 +397,8 @@ header .spacer { flex: 1; }
 <div id="drawer">
   <div id="grip" title="Drag to resize"></div>
   <div class="toolbar"><b>Log</b><span class="badge" id="logstatus"></span><span id="logtitle" class="muted"></span><span class="muted" id="logsummary"></span>
-    <span style="flex:1"></span><button id="logcopy">copy</button><button id="logclear">clear</button><button id="logmin">minimize</button></div>
+    <span style="flex:1"></span><button id="logcopy">copy</button><button id="logclear">clear</button><button id="logmin">minimize</button><span class="sep"></span>
+    <button id="logissue" title="Open a prefilled GitHub issue with the end of this log; you can edit it before sending"><svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" style="vertical-align:-2px;margin-right:4px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>report issue</button></div>
   <pre id="log"></pre>
 </div>
 <dialog id="setdlg">
@@ -619,7 +620,12 @@ function setStatus(st) {
 setStatus("idle");
 $("logmin").onclick = () => { const m = $("drawer").classList.toggle("min"); $("logmin").textContent = m ? "expand" : "minimize"; };
 $("logclear").onclick = () => { $("log").textContent = ""; $("logtitle").textContent = ""; $("logsummary").textContent = ""; setStatus("idle"); };
-$("logcopy").onclick = () => navigator.clipboard.writeText($("log").innerText).catch(() => {});
+$("logissue").onclick = () => {
+  const title = [$("logtitle").textContent, $("logstatus").textContent].filter(Boolean).join(": ") || "GUI problem";
+  const body = `**Action:** ${$("logtitle").textContent}\n**Status:** ${$("logstatus").textContent} ${$("logsummary").textContent}\n\n\`\`\`\n${$("log").innerText.slice(-3500)}\n\`\`\`\n`;
+  window.open(`https://github.com/mr-asa/comfyui_utils/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`, "_blank", "noopener");
+};
+$("logcopy").onclick =() => navigator.clipboard.writeText($("log").innerText).catch(() => {});
 // drag the top edge to change the log height; remembered between sessions
 (() => {
   const set = h => document.documentElement.style.setProperty("--logh", Math.max(60, Math.min(h, window.innerHeight * 0.8)) + "px");
@@ -648,7 +654,7 @@ function isUnchanged(r) { return r.unchanged ?? (r.state === "ok" && !r.issue); 
 function visibleRows() {
   const q = $("search").value.trim().toLowerCase(), node = $("node").value, hide = $("hide").checked;
   const rows = data.rows.filter(r => activeStates.has(r.state)
-    && !(hide && isUnchanged(r) && !r.flash && !r.side)
+    && !(hide && r.state === "ok" && isUnchanged(r) && !r.flash && !r.side)
     && (!q || r.name.includes(q))
     && (!node || r.used_in.some(u => u.repo === node)));
   const key = r => sortKey === "state" ? RANK[r.state] : sortKey === "install" ? plan(r).ver : r[sortKey];
