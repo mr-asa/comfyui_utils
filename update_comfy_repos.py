@@ -748,13 +748,19 @@ def run_git(args: List[str], cwd: str, env: Optional[Dict[str, str]] = None) -> 
 
 
 def fork_upstream_ref(path: str, branch: str) -> str:
-    """`upstream/<branch>` when the repository has an `upstream` remote (a fork with your own patches), else ""."""
+    """`<remote>/<branch>` of the original repository when this is a fork with your own patches, else "".
+    The original is the `upstream` remote, or `origin` when the branch tracks some other remote (e.g. `fork`)."""
     ok, out, _ = run_git(["remote"], cwd=path)
-    if not ok or "upstream" not in out.split():
+    remotes = out.split() if ok else []
+    if "upstream" in remotes:
+        remote = "upstream"
+    elif "origin" in remotes and branch and run_git(["config", "--get", f"branch.{branch}.remote"], cwd=path)[1].strip() not in ("", "origin"):
+        remote = "origin"
+    else:
         return ""
     for b in (branch, "main", "master"):
-        if run_git(["rev-parse", "--verify", "--quiet", f"upstream/{b}"], cwd=path)[0]:
-            return f"upstream/{b}"
+        if run_git(["rev-parse", "--verify", "--quiet", f"{remote}/{b}"], cwd=path)[0]:
+            return f"{remote}/{b}"
     return ""
 
 
