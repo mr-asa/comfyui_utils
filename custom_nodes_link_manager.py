@@ -797,6 +797,15 @@ def _origin_web_url(folder: str) -> str:
     return to_web_url(m[1]) if m else ""
 
 
+def _created(path: str) -> int:
+    """When the folder appeared (epoch seconds, 0 when unknown): for a clone, when it was added."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return 0
+    return int(getattr(st, "st_birthtime", st.st_ctime))
+
+
 def node_inventory(repo_dir: str, custom_nodes_dir: str, tags: Dict[str, List[str]]) -> List[Dict[str, object]]:
     """One row per node folder. kind: linked / unlinked (in the repo), junk (junction to a missing folder),
     external (junction outside the repo), direct (a real folder in custom_nodes that is not in the repo)."""
@@ -818,7 +827,7 @@ def node_inventory(repo_dir: str, custom_nodes_dir: str, tags: Dict[str, List[st
         else:
             kind = "unlinked"
         folder = os.path.join(repo_dir, name) if name in repo_nodes else os.path.join(custom_nodes_dir, name)
-        rows.append({"name": name, "kind": kind, "in_repo": name in repo_nodes, "target": ln.target if ln else "", "tags": tag_map.get(name, []), "web_url": _origin_web_url(folder)})
+        rows.append({"name": name, "kind": kind, "in_repo": name in repo_nodes, "target": ln.target if ln else "", "tags": tag_map.get(name, []), "web_url": _origin_web_url(folder), "added": _created(folder)})
     return rows
 
 

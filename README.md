@@ -50,6 +50,21 @@ What changed in the toolbox and why:
 - **Settings gear.** All folders, venvs (comment, CUDA path, environment variables), global environment variables, wheel sources and updater options in one dialog.
 - **Shared core.** `envtools.py`, `pip_audit_core.py`, `wheels.py` hold the logic used by both the console tools and the GUI. New console flags: `comfyui_pip_update_audit.py --hide-unchanged`, `--pip`. `run_comfyui.bat` now updates the frontend packages with uv when it is on PATH.
 
+### Release notes
+
+<details>
+<summary><b>2026-10-16</b></summary>
+
+- **Pip audit:** "risky" is split into `blocked` and `+deps`, and you can see what holds a newer version back.
+- **Versions window** opens for any package: constraints, per-version `check`, hold / pin.
+- **torch / torchvision / torchaudio** update from the PyTorch index, so the CUDA build is not replaced.
+- **Install preview** explains a refusal and offers to release the packages in the way.
+- **Wheel sources:** Test sources button, search summary in the audit, wheels in the versions window.
+- **Yanked versions** are no longer reported as a downgrade.
+- **Custom nodes:** add several nodes at once, Added column sortable by date.
+
+</details>
+
 ## Shortcuts and launchers
 
 - Windows: `*.bat` files; `powershell -ExecutionPolicy Bypass -File create_windows_links.ps1` creates `.lnk` shortcuts (with the repo icons) in `run_windows`.

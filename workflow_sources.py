@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import filecmp
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -276,6 +278,27 @@ def _checkout_branch(cache_dir: Path, branch: str) -> Tuple[bool, str]:
     return ok, out or "ok"
 
 
+def _backup_edited_jsons(src: Path, dst: Path, target_dir: Path, backup_dir: Path) -> List[str]:
+    """Copy local JSONs that differ from the repo version (or are not in the repo) to backup_dir before dst is overwritten."""
+    local = [dst] if dst.is_file() else sorted(p for p in dst.rglob("*") if p.is_file()) if dst.is_dir() else []
+    saved: List[str] = []
+    for f in local:
+        if f.suffix.lower() != ".json":
+            continue
+        repo_file = src if dst.is_file() else src / f.relative_to(dst)
+        if repo_file.is_file() and filecmp.cmp(f, repo_file, shallow=False):
+            continue
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        base, ext = os.path.splitext(re.sub(r"[\\/]+", "_", f.relative_to(target_dir).as_posix()))
+        out, i = backup_dir / f"{base}{ext}", 1
+        while out.exists():
+            out = backup_dir / f"{base}_{i}{ext}"
+            i += 1
+        shutil.copy2(f, out)
+        saved.append(f"Edited JSON saved: {f.relative_to(target_dir).as_posix()} -> {out}")
+    return saved
+
+
 def _copy_managed_path(src: Path, dst: Path, dry_run: bool) -> str:
     if not src.exists():
         return f"Missing in repo: {src}"
@@ -333,6 +356,8 @@ def sync_partial_source(
     for rel in paths:
         src = cache_dir / Path(rel)
         dst = target_dir / Path(rel)
+        if not dry_run and src.exists():
+            messages += _backup_edited_jsons(src, dst, target_dir, target_dir.parent.parent / "github_edits")
         messages.append(_copy_managed_path(src, dst, dry_run))
     if not dry_run:
         ok, head = run_git(["rev-parse", "HEAD"], cwd=cache_dir)

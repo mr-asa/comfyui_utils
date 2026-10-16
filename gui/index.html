@@ -17,14 +17,14 @@
     --accent: #6d94ff; --ok: #4cc27e; --warn: #e0a64a; --bad: #ef6b5b; --info: #4cc3dc; --chip: #262b35;
   }
 }
-* { box-sizing: border-box; }
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent; }
 [hidden] { display: none !important; }
 html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, "Segoe UI", sans-serif; display: flex; flex-direction: column; overflow: hidden; }
 header { flex: none; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 5px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
 header h1 { font-size: 14px; margin: 0 6px 0 0; }
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 8px 12px 6px; }
-select, input[type=text], button { font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; line-height: 1.35; }
+select, input[type=text], textarea, button { font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; line-height: 1.35; }
 button { cursor: pointer; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
@@ -54,7 +54,7 @@ tr.flash td { background: color-mix(in srgb, var(--ok) 14%, transparent); }
 tr.side td { background: color-mix(in srgb, var(--warn) 16%, transparent); }
 .badge { padding: 0 7px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; white-space: nowrap; }
 .s-safe { color: var(--ok); } .s-safe-deps { color: var(--ok); border-style: dashed; } .s-wheel-update { color: var(--info); } .s-wheel { color: var(--muted); border-style: dashed; } .s-ok { color: var(--muted); } .s-risky, .s-broken { color: var(--bad); } .s-unknown { color: var(--warn); }
-.s-missing { color: var(--info); } .s-downgrade { color: var(--warn); } .s-held, .s-pinned { color: var(--accent); } .s-pin-mismatch { color: var(--bad); }
+.s-missing { color: var(--info); } .s-downgrade { color: var(--warn); } .s-held, .s-pinned { color: var(--accent); } .s-pin-mismatch { color: var(--bad); } .s-risky-blocked { color: var(--bad); } .s-risky-deps { color: var(--bad); border-style: dashed; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 .muted { color: var(--muted); }
 .risk { color: var(--warn); }
@@ -90,9 +90,12 @@ dialog { background: var(--panel); color: var(--text); border: 1px solid var(--l
 #setbody th { cursor: default; }
 #setbody td { padding: 2px 4px; border: none; }
 #setbody td input[type=text], #setbody td select { width: 100%; }
-#verdlg { width: min(1200px, 96vw); }
+#verdlg { width: min(1200px, 96vw); height: 94vh; max-height: 94vh; }
+#verdlg form { height: 100%; max-height: none; }
+#verdlg #verhead, #verdlg .grp, #verfoot { flex: none; }
+#verwhy { flex: 1 1 0; min-height: 0; overflow: auto; padding: 4px 14px; border-bottom: 1px solid var(--line); }
 #verhead { padding: 10px 14px 4px; }
-#verbody { max-height: 56vh; overflow: auto; padding: 0 6px; }
+#verbody { flex: 1 1 0; min-height: 0; overflow: auto; padding: 0 6px; }
 #verfoot { padding: 8px 14px; display: flex; gap: 8px; align-items: center; border-top: 1px solid var(--line); }
 #verbody table { width: 100%; }
 #verbody .badge { white-space: normal; }  /* long verdicts wrap, so the buttons column stays visible */
@@ -219,7 +222,7 @@ header .spacer { flex: 1; }
       <label title="git fetch every repository so ahead/behind is current (slower)"><input type="checkbox" id="r-fetch" checked> fetch from remotes</label>
       <label><input type="checkbox" id="r-disabled"> include disabled folders</label>
       <span class="sep"></span>
-      <span id="r-addnode"><input type="text" id="r-newurl" size="46" placeholder="https://github.com/user/new-node"> <label><input type="checkbox" id="r-newlink" checked> link</label> <button id="r-addnodebtn">Add custom node</button></span>
+      <span id="r-addnode"><textarea id="r-newurl" rows="1" cols="46" style="vertical-align:middle;resize:both" placeholder="https://github.com/user/new-node (several: separate with spaces or new lines)"></textarea> <label><input type="checkbox" id="r-newlink" checked> link</label> <button id="r-addnodebtn">Add custom node(s)</button></span>
     </div>
     <div class="grp"><span class="gl">Filter</span>
       <input type="text" id="r-search" placeholder="Filter…" size="18">
@@ -284,7 +287,7 @@ header .spacer { flex: 1; }
       <button id="n-tagadd">Tag selected</button><button id="n-tagdel">Untag selected</button>
     </div>
     <div class="tablewrap"><table>
-      <thead><tr><th></th><th data-nk="name">Node</th><th data-nk="kind">State</th><th data-nk="tags">Tags</th><th data-nk="target">Target</th></tr></thead>
+      <thead><tr><th></th><th data-nk="name">Node</th><th data-nk="kind">State</th><th data-nk="added" title="When the folder was created: for a clone, when it was added">Added</th><th data-nk="tags">Tags</th><th data-nk="target">Target</th></tr></thead>
       <tbody id="n-rows"></tbody>
     </table></div>
   </div>
@@ -312,7 +315,7 @@ header .spacer { flex: 1; }
       <span class="muted" id="count"></span>
     </div>
     <div class="grp"><span class="gl">Install</span>
-      <button id="selnorisk" title="Missing + safe + safe +deps: everything except risky updates and downgrades">Select all non-risky</button>
+      <button id="selnorisk" title="Missing + safe + safe +deps + wheel updates: everything except risky updates and downgrades">Select all non-risky</button>
       <button id="selmissing" title="Packages that are required but not installed">Select missing</button>
       <button id="selsafe" title="Only the package itself changes">Select safe</button>
       <button id="selsafed" title="Safe, but other packages change too (see the badge tooltip); no requirement is broken">Select safe +deps</button>
@@ -332,6 +335,7 @@ header .spacer { flex: 1; }
     </table></div>
   </div>
   <div class="panel" id="extrapanel" hidden>
+    <details id="whd"><summary>Wheel sources</summary><div id="wheelsearch"></div></details>
     <details id="vcsd"><summary>VCS / URL requirements</summary><div id="vcs"></div></details>
     <details id="envd"><summary>comfy-env isolation</summary><div id="env"></div></details>
   </div>
@@ -410,7 +414,8 @@ header .spacer { flex: 1; }
 </dialog>
 <dialog id="verdlg">
   <form method="dialog" onsubmit="return false">
-    <div id="verhead"><b id="vertitle"></b> <span class="muted" id="verinfo"></span></div>
+    <div id="verhead"><b id="vertitle"></b> <span class="muted" id="verinfo"></span> <span id="verrule"></span></div>
+    <div id="verwhy"></div>
     <div class="grp" style="padding:4px 14px">
       <label title="Versions allowed by every requirements.txt that mentions the package and by the installed packages that depend on it"><input type="checkbox" id="ver-ok" checked> only versions that satisfy the constraints</label>
       <label><input type="checkbox" id="ver-pre"> pre-releases</label>
@@ -429,9 +434,9 @@ header .spacer { flex: 1; }
   <form method="dialog" onsubmit="return false">
     <div id="dlghead">
       <b>Install preview</b>
-      <label title="Other packages stay exactly as they are; the install fails if a dependency would have to change"><input type="radio" name="protect" value="all"> keep all other packages</label>
-      <label title="Packages on this venv's hold list and pins stay as they are"><input type="radio" name="protect" value="held" checked> keep held / pinned</label>
-      <label><input type="radio" name="protect" value="none"> no protection</label>
+      <label title="Other packages stay exactly as they are; the install fails if a dependency would have to change"><input type="radio" name="protect" value="all"> keep all other packages <span data-pm="all"></span></label>
+      <label title="Packages on this venv's hold list and pins stay as they are"><input type="radio" name="protect" value="held" checked> keep held / pinned <span data-pm="held"></span></label>
+      <label><input type="radio" name="protect" value="none"> no protection <span data-pm="none"></span></label>
     </div>
     <div id="dlgbody"></div>
     <div id="dlgfoot"><span class="muted" id="dlgnote" style="flex:1"></span><button type="button" id="dlgcancel">Cancel</button><button type="button" class="primary" id="dlgok" disabled>Install</button></div>
@@ -441,9 +446,9 @@ header .spacer { flex: 1; }
 const TOKEN = "__TOKEN__";
 const $ = id => document.getElementById(id);
 // order = what needs installing first, what needs nothing last
-const STATES = ["broken", "missing", "safe", "safe-deps", "wheel-update", "pin-mismatch", "downgrade", "risky", "unknown", "held", "pinned", "wheel", "ok"];
+const STATES = ["broken", "missing", "safe", "safe-deps", "wheel-update", "pin-mismatch", "downgrade", "risky-deps", "risky-blocked", "risky", "unknown", "held", "pinned", "wheel", "ok"];
 const RANK = Object.fromEntries(STATES.map((s, i) => [s, i]));
-const LABEL = {"broken": "pip check", "safe-deps": "safe +deps", "wheel-update": "wheel update", "wheel": "from wheel"};
+const LABEL = {"broken": "pip check", "safe-deps": "safe +deps", "wheel-update": "wheel update", "wheel": "from wheel", "risky-deps": "risky: +deps", "risky-blocked": "risky: blocked"};
 const sideTip = r => (r.side_changes || []).map(c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`).join("\n");
 let data = null, rules = {hold: new Set(), pins: {}}, selected = new Set(), activeStates = new Set(STATES);
 let sortKey = "state", sortDir = 1, pending = null, previewSeq = 0, auditJob = null, previewJob = null;
@@ -469,7 +474,7 @@ function markSort(sel, attr, key, dir) {
   document.querySelectorAll(sel).forEach(th => { const on = th.dataset[attr] === key; th.classList.toggle("sorted", on); th.dataset.dir = on ? (dir > 0 ? "asc" : "desc") : ""; });
 }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
-const verParts = v => String(v).split(/[^0-9]+/).filter(Boolean).map(Number);
+const verParts = v => String(v).split("+")[0].split(/[^0-9]+/).filter(Boolean).map(Number);
 function cmpVer(a, b) { const x = verParts(a), y = verParts(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; }
 
 async function loadVenvs() {
@@ -485,7 +490,7 @@ async function loadVenvs() {
 }
 async function init() {
   await loadVenvs();
-  try { const s = JSON.parse(localStorage.getItem("audit-ui") || "{}"); if (s.venv && [...$("venv").options].some(o => o.value === s.venv)) $("venv").value = s.venv; $("repo").checked = !!s.repo; $("pip").checked = !!s.pip; $("remotewh").checked = !!s.remotewh; } catch (e) {}
+  try { const s = JSON.parse(localStorage.getItem("audit-ui") || "{}"); if (s.venv && [...$("venv").options].some(o => o.value === s.venv)) $("venv").value = s.venv; $("repo").checked = !!s.repo; $("pip").checked = !!s.pip; $("remotewh").checked = s.v === 2 ? !!s.remotewh : true; } catch (e) {}
 }
 
 function watch(jobId, onDone, sink, tabName) {
@@ -513,7 +518,7 @@ $("run").onclick = async () => {
     return;
   }
   const venv = $("venv").value;
-  localStorage.setItem("audit-ui", JSON.stringify({venv, repo: $("repo").checked, pip: $("pip").checked, remotewh: $("remotewh").checked}));
+  localStorage.setItem("audit-ui", JSON.stringify({v: 2, venv, repo: $("repo").checked, pip: $("pip").checked, remotewh: $("remotewh").checked}));
   selected.clear();
   showLog(`Audit: ${venv}`, "", "running");
   const idle = () => { auditJob = null; $("run").disabled = false; $("run").textContent = "Run audit"; };
@@ -529,7 +534,8 @@ $("run").onclick = async () => {
       $("resultpanel").hidden = false;
       renderExtra();
       const todo = data.rows.filter(r => !isUnchanged(r)).length;
-      logAdd([`Audit done: ${data.rows.length} packages, ${todo} need attention, ${data.vcs.length} VCS/URL entries.`]);
+      logAdd([`Audit done: ${data.rows.length} packages, ${todo} need attention, ${data.vcs.length} VCS/URL entries.`
+        + (data.wheel_search.remote ? ` Wheel sources: ${data.wheel_search.sources.filter(s => s.ok).length} ok, ${data.wheel_search.sources.filter(s => !s.ok).length} failed, ${data.wheel_search.wheels} wheel(s) found.` : " Wheel sources were not checked online.")]);
       setStatus("done");
     }, logAdd, "audit");
   } catch (e) { idle(); logAdd(["Audit failed: " + e.message]); setStatus("failed"); }
@@ -561,7 +567,7 @@ function addCheckRows(problems) {
   for (const [name, list] of Object.entries(byDep)) {
     const text = list.map(p => `pip check: ${p.package} requires ${p.requirement}`).join("\n");
     let row = data.rows.find(r => r.name === name);
-    if (!row) data.rows.push(row = {name, installed: list[0].installed, target: "", safe_update: "", risky_update: "", action: "", state: "broken", side_changes: [], source: "", wheel_update: null, pin: "", used_in: [], issue: "", issue_kind: ""});
+    if (!row) data.rows.push(row = {name, installed: list[0].installed, target: "", safe_update: "", risky_update: "", action: "", state: "broken", side_changes: [], installed_yanked: false, risky_kind: "", risky_why: [], risky_changes: [], newest: "", capped_by: [], source: "", wheel_update: null, pin: "", used_in: [], issue: "", issue_kind: ""});
     const dirs = new Set(list.map(p => p.installed ? reqDirection(p.requirement, p.installed) : "install"));
     row.hint = dirs.size === 1 ? [...dirs][0] : "";
     row.issue = row.issue ? row.issue + "\n" + text : text; row.issue_kind = "warn"; row.check = true; row.unchanged = false;
@@ -664,8 +670,18 @@ function visibleRows() {
 
 const HINT_CLASS = {update: "s-wheel-update", downgrade: "s-unknown", install: "s-safe"};
 function hintBadge(r) {
-  const hint = r.state === "risky" ? (r.risky_update && r.installed ? (cmpVer(r.risky_update, r.installed) < 0 ? "downgrade" : "update") : "") : r.check ? r.hint : "";
+  const hint = r.state.startsWith("risky") ? (r.risky_update && r.installed ? (cmpVer(r.risky_update, r.installed) < 0 ? "downgrade" : "update") : "") : r.check ? r.hint : "";
   return hint ? ` <span class="badge ${HINT_CLASS[hint]}">${hint}</span>` : "";
+}
+
+const pkgLink = (n, tip) => `<button class="link" data-ver="${esc(n)}" title="${esc(tip)}">${esc(n)}</button>`;
+function issueHtml(r) {
+  let h = esc(r.issue);
+  const list = r.state === "risky-deps" ? r.risky_changes : r.side_changes;
+  if (list.length) h += `<div>${r.state === "risky-deps" ? "would also change" : "also changes"}: ${list.map(c => `${pkgLink(c.name, "versions of " + c.name + " and what limits it")} <span class="mono">${esc(c.from || "-")} → ${esc(c.to || "-")}</span>`).join(", ")}`
+    + (r.state === "risky-deps" && r.risky_update ? ` <button class="link" data-resolve="${esc(r.name)}" title="Open the install check for ${esc(r.risky_update)} with the held / pinned packages it needs released">resolve…</button>` : "") + "</div>";
+  if (r.state === "downgrade" && r.capped_by.length) h += `<div class="muted">held back by ${esc(r.capped_by.join(", "))}</div>`;
+  return h;
 }
 
 function render() {
@@ -681,24 +697,25 @@ function render() {
     const inst = p.override ? `<span class="badge s-safe-deps" title="chosen by hand in the versions list">${esc(p.ver)} chosen</span>` : p.ver ? (p.risky ? `<span class="risk" title="No safe version found; this one conflicts with something">${esc(p.ver)} (risky)</span>` : esc(p.ver)) : "—";
     const was = r.was ? ` <span class="${r.side ? "risk" : "muted"}" title="${r.side ? "changed as a side effect of an install" : "updated"}">(was ${esc(r.was)})</span>` : "";
     return `<tr class="${r.flash ? "flash" : r.side ? "side" : ""}"><td><input type="checkbox" data-n="${esc(r.name)}" ${selected.has(r.name) ? "checked" : ""}></td>
-      <td class="mono">${esc(r.name)} <button class="link" data-ver="${esc(r.name)}" title="All versions of this package: pick any, check it, install it">versions</button></td><td class="mono">${esc(r.installed) || "—"}${was}${r.source ? ` <span class="muted" title="${esc(r.source)}">[wheel]</span>` : ""}</td><td class="mono">${r.wheel_update ? `${esc(r.wheel_update.version)} <span class="muted" title="${esc(r.wheel_update.filename)}">(wheel)</span>` : inst}</td><td class="mono muted">${esc(r.target) || "—"}</td>
-      <td><span class="badge s-${r.state}" title="${esc(sideTip(r))}">${LABEL[r.state] || r.state}</span>${hintBadge(r)}</td><td class="used">${used}</td><td class="issue k-${r.issue_kind || "warn"}">${esc(r.issue)}</td>
+      <td class="mono">${esc(r.name)} <button class="link" data-ver="${esc(r.name)}" title="All versions of this package: pick any, check it, install it">versions</button></td><td class="mono">${esc(r.installed) || "—"}${was}${r.source ? ` <span class="muted" title="${esc(r.source)}">[wheel]</span>` : ""}</td><td class="mono">${r.wheel_update ? `${esc(r.wheel_update.version)} <span class="muted" title="${esc(r.wheel_update.filename)}">(wheel)</span>` : inst}</td><td class="mono muted">${esc(r.target) || "—"}${r.capped_by.length ? ` <span class="risk" title="Newest release ${esc(r.newest)} is held back by:\n${esc(r.capped_by.join("\n"))}">↓ ${esc(r.newest)}</span>` : ""}</td>
+      <td><span class="badge s-${r.state}" title="${esc(sideTip(r))}">${LABEL[r.state] || r.state}</span>${hintBadge(r)}</td><td class="used">${used}</td><td class="issue k-${r.issue_kind || "warn"}">${issueHtml(r)}</td>
       <td>${held ? `<button class="link" data-a="unhold" data-n="${esc(r.name)}">unhold</button>` : `<button class="link" data-a="hold" data-n="${esc(r.name)}">hold</button>`}
           ${pin ? `<button class="link" data-a="unpin" data-n="${esc(r.name)}">unpin ${esc(pin)}</button>` : r.installed ? `<button class="link" data-a="pin" data-n="${esc(r.name)}">pin ${esc(r.installed)}</button>` : ""}</td></tr>`;
   }).join("");
   $("rows").querySelectorAll("input[type=checkbox]").forEach(cb => cb.onchange = () => { cb.checked ? selected.add(cb.dataset.n) : selected.delete(cb.dataset.n); updateSel(); });
   $("rows").querySelectorAll("button[data-a]").forEach(b => b.onclick = () => rule(b.dataset.a, b.dataset.n));
   $("rows").querySelectorAll("button[data-ver]").forEach(b => b.onclick = () => openVersions(b.dataset.ver));
+  $("rows").querySelectorAll("button[data-resolve]").forEach(b => b.onclick = () => resolveRisky(b.dataset.resolve));
   updateSel();
 }
 
 function updateSel() { $("selinfo").textContent = selected.size ? `${selected.size} selected` : ""; $("install").disabled = !selected.size || $("install").dataset.busy === "1"; }
 
-async function rule(action, name) {
+async function rule(action, name, installed) {
   const row = data.rows.find(r => r.name === name);
   if (action === "hold") rules.hold.add(name);
   if (action === "unhold") rules.hold.delete(name);
-  if (action === "pin") rules.pins[name] = row.installed;
+  if (action === "pin") rules.pins[name] = row ? row.installed : installed;
   if (action === "unpin") delete rules.pins[name];
   await api("/api/rules", {venv: data.venv, hold: [...rules.hold], pins: rules.pins});
   if (!row) return;  // a dependency that no requirements.txt lists has no table row
@@ -707,7 +724,15 @@ async function rule(action, name) {
   render();
 }
 
+function wheelSearchHtml(w) {
+  const bad = w.sources.filter(s => !s.ok), ok = w.sources.filter(s => s.ok);
+  return `<div>${w.remote ? `Online check: ${ok.length} source(s) answered${bad.length ? `, ${bad.length} failed` : ""}.` : 'Online check is off (the "check wheel sources online" box), only the local wheel folder was searched.'}
+    ${w.wheels} wheel(s) of the ${w.packages} listed package(s) found; fitting this venv: ${w.fit.length ? esc(w.fit.join(", ")) : "none"}.</div>`
+    + ok.map(s => `<div class="muted">${esc(s.repo)}: ${s.wheels} wheel(s)${s.unparsed ? `, ${s.unparsed} with an unreadable filename` : ""}</div>`).join("")
+    + bad.map(s => `<div class="bad">${esc(s.repo)}: ${esc(s.error)}</div>`).join("");
+}
 function renderExtra() {
+  $("wheelsearch").innerHTML = wheelSearchHtml(data.wheel_search);
   const vcs = data.vcs.map(v => `<div class="mono">${esc(v.name || "?")} <span class="muted">${esc(v.repo)}</span> ${esc(v.raw)} — ${v.installed ? "installed " + esc(v.installed) : "missing"}${v.need_install ? " (will install)" : ""}</div>`).join("");
   $("vcs").innerHTML = vcs || '<span class="muted">none</span>';
   const env = data.comfy_env.map(e => `<div><b>${esc(e.repo)}</b> ${e.isolations.map(i => `<span class="badge ${i.built ? (i.stale ? "s-unknown" : "s-safe") : "s-risky"}">${esc(i.env)}: ${i.built ? (i.stale ? "stale" : "ok") : "missing"}</span>`).join(" ")}</div>`).join("");
@@ -716,39 +741,91 @@ function renderExtra() {
 }
 
 // ---- all versions of one package
-let verData = null, verRow = null;
+let verData = null, verRow = null, verChecks = {};
 async function openVersions(name) {
-  verRow = data.rows.find(r => r.name === name);
-  $("vertitle").textContent = name; $("verinfo").textContent = "loading…"; $("verbody").innerHTML = ""; $("ver-typed").value = "";
-  $("verdlg").showModal();
+  verRow = data.rows.find(r => r.name === name) || {name, installed: "", state: "ok", used_in: [], virtual: true};  // a dependency no requirements.txt lists has no table row
+  $("vertitle").textContent = name; $("verinfo").textContent = "loading…"; $("verwhy").innerHTML = ""; $("verrule").innerHTML = ""; $("verbody").innerHTML = ""; $("ver-typed").value = "";
+  $("ver-typed-use").hidden = !!verRow.virtual; verChecks = {};
+  if (!$("verdlg").open) $("verdlg").showModal();
   try {
-    verData = await api("/api/versions", {venv: data.venv, name, specs: verRow.used_in.map(u => u.spec).filter(Boolean)});
-    $("verinfo").textContent = `installed ${verData.installed || "—"}` + (verData.specs.length ? ` · requirements.txt: ${[...new Set(verData.specs)].join(" ; ")}` : "")
-      + (verData.required_by.length ? ` · needed by installed packages: ${verData.required_by.join(" ; ")}` : "")
+    verData = await api("/api/versions", {venv: data.venv, name, specs: verRow.used_in.filter(u => u.spec).map(u => ({repo: u.repo, spec: u.spec}))});
+    if (verRow.virtual) verRow.installed = verData.installed;
+    $("verinfo").textContent = `installed ${verData.installed || "—"} · newest release ${verData.newest || "—"} · newest allowed ${verData.allowed || "none"}`
       + (verData.versions.some(v => !v.pre && v.python_ok && versionOk(v) && cmpVer(v.version, verData.installed || "0") > 0) ? "" : " · no newer release satisfies the constraints");
-    renderVersions();
+    if (verData.error) $("verinfo").textContent += ` · PyPI lookup failed: ${verData.error}`;
+    renderWhy(); renderVersions();
   } catch (e) { $("verinfo").textContent = ""; $("verbody").innerHTML = `<div class="bad" style="padding:8px 14px">${esc(e.message)}</div>`; }
 }
-function versionOk(v) { return !v.blocked_by.length && !v.conflicts.length; }
+// every constraint on the package and the newest release each one allows on its own: the lowest "up to" is what holds it back
+function renderWhy() {
+  const n = verData.name, held = rules.hold.has(n), pin = rules.pins[n];
+  const line = (who, spec, top, limits) => `<div class="${limits ? "risk" : "muted"}"><span class="mono">${esc(who)}</span> <span class="mono">${esc(spec)}</span> — ${top ? "allows up to " + esc(top) : "allows no release"}</div>`;
+  const lines = verData.caps.map(c => line(c.kind === "installed" ? c.who + " (installed)" : c.who + " requirements.txt", c.spec, c.top, !c.top || cmpVer(c.top, verData.newest || "0") < 0));
+  if (verData.index_tag) lines.push(verData.index_error ? `<div class="risk">could not read the PyTorch index for +${esc(verData.index_tag)} (${esc(verData.index_error)}): PyPI releases are other builds</div>`
+    : `<div class="muted">installed build +${esc(verData.index_tag)}: releases come from the PyTorch index; ones only on PyPI are other builds (marked) and are not offered as updates</div>`);
+  if (verData.wheel) lines.push(`<div class="risk">installed from the wheel <span class="mono">${esc(verData.wheel)}</span>: the PyPI releases below are other builds, not updates of it</div>`);
+  if (pin) lines.push(`<div class="risk">pinned to ${esc(pin)} in this venv</div>`);
+  else if (held) lines.push('<div class="risk">held in this venv: audits skip it</div>');
+  if (verData.protected) lines.push('<div class="risk">protected: never changed as a side effect of another install</div>');
+  $("verwhy").innerHTML = lines.join("") || '<div class="muted">No requirement constrains this package: any release can be installed.</div>';
+  $("verrule").innerHTML = (held ? `<button type="button" class="link" data-vr="unhold">unhold</button>` : `<button type="button" class="link" data-vr="hold">hold</button>`)
+    + " " + (pin ? `<button type="button" class="link" data-vr="unpin">unpin ${esc(pin)}</button>` : verData.installed ? `<button type="button" class="link" data-vr="pin">pin ${esc(verData.installed)}</button>` : "");
+  $("verrule").querySelectorAll("button").forEach(b => b.onclick = async () => { await rule(b.dataset.vr, n, verData.installed); renderWhy(); });
+}
+function versionOk(v) { return !v.blocked_by.length && !v.conflicts.length && !v.off_index; }
+function wheelsHtml() {
+  const ws = verData.wheels || [];
+  if (!ws.length) return "";
+  return `<h3 style="margin:10px 8px 2px">Prebuilt wheels <span class="muted">from the wheel sources, installed with --no-deps</span></h3><table><thead><tr><th>Version</th><th>File</th><th>Verdict</th><th></th></tr></thead><tbody>`
+    + ws.map((w, i) => `<tr class="${w.quality ? "" : "muted"}"><td class="mono">${esc(w.version)}</td><td class="mono" title="${esc(w.filename)}">${esc(w.filename)}</td>
+      <td>${w.installed ? '<span class="badge s-ok">installed</span> ' : w.newer && w.quality ? '<span class="badge s-wheel-update">newer than installed</span> ' : ""}<span class="badge ${w.quality >= 2 ? "s-safe" : w.quality === 1 ? "s-unknown" : "s-ok"}">${esc(w.verdict)}</span></td>
+      <td>${w.quality && !w.installed ? `<button class="link" data-whl="${i}" title="Check and install this wheel">install…</button>` : ""}</td></tr>`).join("") + "</tbody></table>";
+}
 function renderVersions() {
   if (!verData) return;
-  const onlyOk = $("ver-ok").checked, pre = $("ver-pre").checked, badPy = $("ver-py").checked;
+  const onlyOk = $("ver-ok").checked, pre = $("ver-pre").checked, badPy = $("ver-py").checked, tag = verData.index_tag;
   const rows = verData.versions.filter(v => (pre || !v.pre) && (badPy || v.python_ok) && (!onlyOk || versionOk(v) || v.installed));
   $("vercount").textContent = `${rows.length} of ${verData.versions.length}`;
-  $("verbody").innerHTML = `<table><thead><tr><th>Version</th><th>Date</th><th>Verdict</th><th></th></tr></thead><tbody>` + rows.map(v => {
-    const tags = [];
-    if (v.installed) tags.push('<span class="badge s-ok">installed</span>');
-    if (versionOk(v)) tags.push('<span class="badge s-safe">satisfies constraints</span>');
+  // installed from a wheel / VCS: that version is not among the PyPI releases, so show it as its own row
+  const own = verData.installed && !verData.versions.some(v => v.installed)
+    ? `<tr><td class="mono">${esc(verData.installed)}</td><td class="mono muted"></td><td><span class="badge s-ok">installed</span> <span class="muted">${verData.wheel ? "from wheel " + esc(verData.wheel) : "not a PyPI release"}</span></td><td></td></tr>` : "";
+  $("verbody").innerHTML = `<table><thead><tr><th>Version</th><th>Date</th><th>Verdict</th><th></th></tr></thead><tbody>` + own + rows.map(v => {
+    const tags = [], needs = v.needs || [];
+    if (v.installed) tags.push(`<span class="badge s-ok">installed${verData.installed !== v.version ? " as " + esc(verData.installed) : ""}</span>`);
+    if (versionOk(v) && !needs.length) tags.push(`<span class="badge s-safe" title="${v.needs ? "Also checked against the release's own requirements" : "Not checked against the release's own requirements: use check"}">satisfies constraints</span>`);
     v.blocked_by.forEach(b => tags.push(`<span class="badge s-risky" title="requirements.txt">requires ${esc(b)}</span>`));
     v.conflicts.forEach(c => tags.push(`<span class="badge s-unknown">${esc(c)}</span>`));
+    if (v.off_index) tags.push(`<span class="badge s-unknown" title="Not on the PyTorch index for +${esc(tag)}: PyPI only has another build of it, which would replace the installed one">other build, not +${esc(tag)}</span>`);
+    needs.forEach(n => tags.push(`<span class="badge s-unknown" title="Its own requirements would change an installed package">also needs ${esc(n)}</span>`));
+    if (verChecks[v.version]) tags.push(verChecks[v.version]);
     if (v.pre) tags.push('<span class="badge s-ok">pre-release</span>');
     if (v.yanked) tags.push('<span class="badge s-risky">yanked</span>');
     if (!v.python_ok) tags.push('<span class="badge s-risky">not for this Python</span>');
     return `<tr><td class="mono">${esc(v.version)}</td><td class="mono muted">${esc(v.date)}</td><td>${tags.join(" ")}</td>
-      <td>${v.installed ? "" : `<button class="link" data-use="${esc(v.version)}" title="Make this the version that Install selected uses">use</button> <button class="link" data-inst="${esc(v.version)}" title="Check what it changes and install it now">install…</button>`}</td></tr>`;
-  }).join("") + "</tbody></table>";
+      <td>${v.installed ? "" : `${verRow.virtual ? "" : `<button class="link" data-use="${esc(v.version)}" title="Make this the version that Install selected uses">use</button> `}<button class="link" data-chk="${esc(v.version)}" title="Dry-run this version now and show what it would change">check</button> <button class="link" data-inst="${esc(v.version)}" title="Check what it changes and install it now">install…</button>`}</td></tr>`;
+  }).join("") + "</tbody></table>" + wheelsHtml();
   $("verbody").querySelectorAll("button[data-use]").forEach(b => b.onclick = () => useVersion(b.dataset.use));
   $("verbody").querySelectorAll("button[data-inst]").forEach(b => b.onclick = () => installVersion(b.dataset.inst));
+  $("verbody").querySelectorAll("button[data-chk]").forEach(b => b.onclick = () => checkVersion(b.dataset.chk));
+  $("verbody").querySelectorAll("button[data-whl]").forEach(b => b.onclick = () => installWheel(+b.dataset.whl));
+}
+// a real dry run of one version under "keep held / pinned": what it needs, shown next to the version
+async function checkVersion(ver) {
+  verChecks[ver] = '<span class="badge s-ok">checking…</span>'; renderVersions();
+  try {
+    const {job} = await api("/api/install", {venv: data.venv, packages: [`${verRow.name}==${ver}`], force_pip: $("pip").checked, protect: "held", dry_run: true, allow: []});
+    watch(job, j => { verChecks[ver] = checkBadge(j); renderVersions(); });
+  } catch (e) { verChecks[ver] = `<span class="badge s-risky">${esc(e.message)}</span>`; renderVersions(); }
+}
+function checkBadge(j) {
+  const res = j.result, fmt = c => `${c.name} ${c.from || "-"} → ${c.to || "-"}`;
+  if (j.status === "error" || !res) return `<span class="badge s-risky">check failed: ${esc(j.error || "")}</span>`;
+  if (res.exit_code === 0) {
+    const side = res.changes.filter(c => c.name !== verRow.name);
+    return side.length ? `<span class="badge s-unknown" title="${esc(side.map(fmt).join("\n"))}">checked: also changes ${side.map(c => esc(c.name)).join(", ")}</span>` : '<span class="badge s-safe">checked: installs cleanly</span>';
+  }
+  if (res.unprotected && res.unprotected.exit_code === 0) return `<span class="badge s-unknown" title="Held / pinned packages the install would have to change">checked: needs released ${esc((res.released || []).map(fmt).join(", "))}</span>`;
+  return `<span class="badge s-risky" title="${esc((res.output || []).join("\n"))}">checked: cannot be resolved</span>`;
 }
 function useVersion(ver) {
   if (!ver) return;
@@ -759,7 +836,19 @@ function useVersion(ver) {
 function installVersion(ver) {
   if (!ver) return;
   pending = {items: [{name: verRow.name, ver, state: verRow.state, from: verRow.installed, wheel: null}], allow: []};
-  $("verdlg").close(); $("dlg").showModal(); preview();
+  $("verdlg").close(); if (!$("dlg").open) $("dlg").showModal(); preview();
+}
+function installWheel(i) {
+  const w = verData.wheels[i];
+  pending = {items: [{name: verRow.name, ver: w.version, state: verRow.state, from: verRow.installed, wheel: {version: w.version, filename: w.filename, url: w.url, path: w.path}}], allow: []};
+  $("verdlg").close(); if (!$("dlg").open) $("dlg").showModal(); preview();
+}
+// a risky update that only needs held / pinned packages released: preview it with those released
+function resolveRisky(name) {
+  const r = data.rows.find(x => x.name === name);
+  pending = {items: [{name, ver: r.risky_update, state: r.state, from: r.installed, wheel: null}], allow: r.risky_changes.map(c => c.name).filter(n => rules.hold.has(n) || rules.pins[n])};
+  if (!$("dlg").open) $("dlg").showModal();
+  preview();
 }
 ["ver-ok", "ver-pre", "ver-py"].forEach(id => $(id).oninput = renderVersions);
 $("verclose").onclick = () => $("verdlg").close();
@@ -798,7 +887,18 @@ $("dlgcancel").onclick = () => { stopPreview(); $("dlg").close(); };
 $("dlg").addEventListener("cancel", stopPreview);
 document.querySelectorAll("input[name=protect]").forEach(r => r.onchange = () => pending && preview());
 
+// ✓ / ✗ next to the protection options that are known to work / to block the current install
+function markModes() {
+  const m = (pending && pending.modes) || {};
+  document.querySelectorAll("[data-pm]").forEach(el => {
+    const r = m[el.dataset.pm];
+    el.textContent = r === "ok" ? "✓" : r === "fail" ? "✗" : ""; el.style.color = r === "ok" ? "var(--ok)" : "var(--bad)";
+    el.title = r === "ok" ? "this protection works for the install" : r === "fail" ? "this protection blocks the install" : "";
+  });
+}
+
 async function preview() {
+  markModes();
   if (previewJob) api("/api/cancel", {job: previewJob}).catch(() => {});
   const seq = ++previewSeq;
   $("dlgok").disabled = true; $("dlgnote").textContent = "";
@@ -813,35 +913,47 @@ async function preview() {
 }
 
 function chgRow(c, extra) {
-  const down = c.from && c.to && cmpVer(c.to, c.from) < 0;
-  const what = !c.from ? "added" : !c.to ? "removed" : down ? "DOWNGRADE" : "";
+  const yanked = (data.rows.find(r => r.name === c.name) || {}).installed_yanked;  // the installed release was withdrawn: a lower number is the way out
+  const down = c.from && c.to && cmpVer(c.to, c.from) < 0 && !yanked;
+  const what = !c.from ? "added" : !c.to ? "removed" : down ? "DOWNGRADE" : yanked && cmpVer(c.to, c.from) < 0 ? "replaces yanked" : "";
   const hold = extra && c.from && !rules.hold.has(c.name) ? ` <button type="button" class="link" data-hold="${esc(c.name)}" title="Add to the hold list and check again">hold</button>` : "";
-  return `<div class="chg"><span class="mono">${esc(c.name)}${hold}</span><span class="mono ${down ? "bad" : extra ? "risk" : ""}">${esc(c.from || "—")} → ${esc(c.to || "—")} ${what ? `<b>${what}</b>` : ""}</span></div>`;
+  const name = extra ? `<button type="button" class="link mono" data-ver="${esc(c.name)}" title="Versions of this package and what limits it">${esc(c.name)}</button>` : esc(c.name);
+  return `<div class="chg"><span class="mono">${name}${hold}</span><span class="mono ${down ? "bad" : extra ? "risk" : ""}">${esc(c.from || "—")} → ${esc(c.to || "—")} ${what ? `<b>${what}</b>` : ""}</span></div>`;
 }
 
 function showPreview(j, buf) {
   const wheels = wheelItems();
   const wheelHtml = wheels.length ? `<h3>Wheels (${wheels.length}) — installed with --no-deps, their dependencies are not touched</h3>`
-    + wheels.map(i => `<div class="chg"><span class="mono">${esc(i.name)}</span><span class="mono">${esc(i.from || "—")} → ${esc(i.ver)} <span class="muted">${esc(i.wheel.filename)}${i.wheel.path ? "" : " — will be downloaded to the wheel folder"}</span></span></div>`).join("") : "";
+    + wheels.map(i => `<div class="chg" style="grid-template-columns:max-content 1fr"><span class="mono">${esc(i.name)}</span><span class="mono">${esc(i.from || "—")} → ${esc(i.ver)} <span class="muted">${esc(i.wheel.filename)}${i.wheel.path ? "" : " — will be downloaded to the wheel folder"}</span></span></div>`).join("") : "";
   if (j.status === "error" || j.result.exit_code !== 0) {
-    $("dlgbody").innerHTML = wheelHtml + '<div class="bad"><b>This cannot be installed with the chosen protection.</b> Pick a weaker option, or hold/pin differently.</div>';
-    const pre = document.createElement("pre"); pre.textContent = (j.error ? j.error + "\n" : "") + buf.slice(-14).join("\n");
-    $("dlgbody").appendChild(pre); $("dlgok").disabled = true;
-    // the lock only protects the other packages: release the ones named in the error for this install only
-    const text = pre.textContent.toLowerCase(), locked = [...new Set([...rules.hold, ...Object.keys(rules.pins)])].filter(n => text.includes(n) && !pending.allow.includes(n));
-    if (protectMode() !== "none" && locked.length) {
+    const res = j.result || {}, un = res.unprotected, mode = protectMode(), released = res.released || [], want = new Set(pypiItems().map(i => i.name));
+    pending.modes = {...pending.modes, [mode]: "fail"};
+    if (un) pending.modes.none = un.exit_code === 0 ? "ok" : "fail";
+    markModes();
+    const head = un && un.exit_code === 0 ? "<b>Blocked by the protection.</b> Without it this install would change:"
+      : un ? "<b>Cannot be installed even without protection:</b> the versions conflict with each other." : "<b>This cannot be installed.</b>";
+    $("dlgbody").innerHTML = wheelHtml + `<div class="bad">${head}</div>` + (un && un.exit_code === 0 ? un.changes.map(c => chgRow(c, !want.has(c.name))).join("") : "");
+    const free = released.filter(c => !pending.allow.includes(c.name));
+    if (free.length) {  // the protection only holds the other packages: release the ones in the way for this install
       const box = document.createElement("div"); box.className = "chg";
-      box.innerHTML = '<span class="muted">Let it change for this install only:</span> ' + locked.map(n => `<button type="button" class="link" data-allow="${esc(n)}">${esc(n)}</button>`).join(" ");
-      box.querySelectorAll("button").forEach(b => b.onclick = () => { pending.allow.push(b.dataset.allow); preview(); });
+      box.innerHTML = '<span class="muted">Held back by the protection, let it change for this install:</span> <span>' + free.map(c => `<button type="button" class="link" data-allow="${esc(c.name)}" title="${esc(c.from)} → ${esc(c.to)}">${esc(c.name)}</button>`).join(" ")
+        + (free.length > 1 ? ` <button type="button" class="link" data-allow="${esc(free.map(c => c.name).join(","))}">release all ${free.length}</button>` : "") + "</span>";
+      box.querySelectorAll("button").forEach(btn => btn.onclick = () => { pending.allow.push(...btn.dataset.allow.split(",")); preview(); });
       $("dlgbody").appendChild(box);
     }
+    $("dlgbody").querySelectorAll("button[data-ver]").forEach(btn => btn.onclick = () => openVersions(btn.dataset.ver));
+    const out = (j.error ? j.error + "\n" : "") + ((un && un.exit_code ? un.output : res.output) || []).join("\n");
+    if (out.trim()) $("dlgbody").insertAdjacentHTML("beforeend", `<details${un && un.exit_code === 0 ? "" : " open"}><summary class="muted">resolver output${un && un.exit_code === 0 ? " (with protection)" : ""}</summary><pre>${esc(un && un.exit_code === 0 ? (res.output || []).join("\n") : out)}</pre></details>`);
+    $("dlgok").disabled = true;
     return;
   }
+  pending.modes = {...pending.modes, [protectMode()]: "ok"}; markModes();
   const want = new Set(pypiItems().map(i => i.name));
   const main = j.result.changes.filter(c => want.has(c.name)), extra = j.result.changes.filter(c => !want.has(c.name));
   $("dlgbody").innerHTML = wheelHtml + (want.size ? `<h3>Selected (${main.length})</h3>${main.map(c => chgRow(c, false)).join("") || '<span class="muted">already installed</span>'}`
     + `<h3 class="${extra.length ? "risk" : ""}">Also changed by dependencies (${extra.length})</h3>`
     + (extra.map(c => chgRow(c, true)).join("") || '<span class="muted">nothing else changes</span>') : "");
+  $("dlgbody").querySelectorAll("button[data-ver]").forEach(b => b.onclick = () => openVersions(b.dataset.ver));
   $("dlgbody").querySelectorAll("button[data-hold]").forEach(b => b.onclick = async () => { await rule("hold", b.dataset.hold); preview(); });
   $("dlgnote").textContent = `${j.result.changes.length + wheels.length} package(s) will change` + (pending.allow.length ? `; unlocked for this install: ${pending.allow.join(", ")}` : "");
   $("dlgok").disabled = !(j.result.changes.length + wheels.length);
@@ -878,7 +990,7 @@ async function doInstall(protect) {
     const row = data.rows.find(x => x.name === c.name), item = want[c.name];
     if (!row) { other.push(c); return; }
     row.was = c.from; row.installed = c.to;
-    const target = plan(row).ver, reached = item ? (item.spec ? !!c.to : c.to === item.ver) : target && c.to && cmpVer(c.to, target) >= 0;  // a side effect may also have done the row's own update
+    const target = plan(row).ver, reached = item ? (item.spec ? !!c.to : cmpVer(c.to || "0", item.ver) === 0 && !!c.to) : target && c.to && cmpVer(c.to, target) >= 0;  // a side effect may also have done the row's own update
     if (reached) {
       delete row.override; row.action = ""; row.safe_update = ""; row.risky_update = ""; row.issue = ""; row.issue_kind = ""; row.unchanged = true; row.flash = true;
       if (item && item.wheel) { row.wheel_update = null; row.source = `wheel ${item.wheel.filename}`; }
@@ -897,7 +1009,7 @@ async function doInstall(protect) {
   buildFilters(); render();
 }
 
-$("selnorisk").onclick = () => { data.rows.filter(r => ["missing", "safe", "safe-deps"].includes(r.state)).forEach(r => selected.add(r.name)); render(); };
+$("selnorisk").onclick = () => { data.rows.filter(r => ["missing", "safe", "safe-deps", "wheel-update"].includes(r.state)).forEach(r => selected.add(r.name)); render(); };
 $("selmissing").onclick = () => { data.rows.filter(r => r.state === "missing").forEach(r => selected.add(r.name)); render(); };
 $("selsafe").onclick =() => { data.rows.filter(r => r.state === "safe").forEach(r => selected.add(r.name)); render(); };
 $("selsafed").onclick = () => { data.rows.filter(r => r.state === "safe-deps").forEach(r => selected.add(r.name)); render(); };
@@ -1014,7 +1126,7 @@ const RLABEL = {untracked: "no sync record"};
 const RRANK = Object.fromEntries(RSTATES.map((x, i) => [x, i]));
 const R_OPTS = {
   nodes: {local: [["stash", "stash and re-apply"], ["skip", "skip the repository"], ["replace", "discard (replace from remote)"]], conflictLabel: "conflicts", conflict: [["skip", "skip"], ["reset", "hard reset to remote"]]},
-  workflows: {local: [["stash", "stash and re-apply"], ["skip", "skip the repository"], ["replace", "discard (replace from remote)"], ["fetch", "fetch only, keep the working tree"], ["move_json", "move edited JSONs to github_edits, discard"]],
+  workflows: {local: [["move_json", "move edited JSONs to github_edits, discard"], ["stash", "stash and re-apply"], ["skip", "skip the repository"], ["replace", "discard (replace from remote)"], ["fetch", "fetch only, keep the working tree"]],
     conflictLabel: "Windows-bad paths", conflict: [["skip", "skip"], ["sparse", "fetch + sparse checkout"]]},
 };
 function setRepoOptions() {
@@ -1176,13 +1288,15 @@ $(p + "-remove").onclick = async (confirmed) => {
   } catch (e) { logAdd([e.message]); setStatus("failed"); }
 };
 if ($(p + "-addnodebtn")) $(p + "-addnodebtn").onclick = async () => {
-  const url = $(p + "-newurl").value.trim(); if (!url) return;
-  showLog("Add custom node", url, "running");
+  const urls = $(p + "-newurl").value.split(/[\s,]+/).filter(Boolean); if (!urls.length) return;
+  showLog(urls.length > 1 ? `Add ${urls.length} custom nodes` : "Add custom node", urls.join("\n"), "running");
   try {
-    const {job} = await api("/api/repo_add", {url, link: $(p + "-newlink").checked});
+    const {job} = await api("/api/repo_add", {urls, link: $(p + "-newlink").checked});
     watch(job, j => {
       if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
-      setStatus("done"); $(p + "-newurl").value = "";
+      const failed = j.result.failed;
+      setStatus(failed.length ? "failed" : "done"); $("logsummary").textContent = `${j.result.added.length} added` + (failed.length ? `, ${failed.length} failed` : "");
+      $(p + "-newurl").value = failed.map(f => f.url).join("\n");  // what failed stays in the box for another try
       nLoad();  // the new node shows up in the Nodes tab (links) right away
       if (afterAdd("scan")) $(p + "-scan").onclick();
       if (afterAdd("audit") && !auditJob) $("run").onclick();  // the new node may bring requirements.txt entries
@@ -1226,7 +1340,7 @@ async function nLoad() {
 function nVisible() {
   const q = $("n-search").value.trim().toLowerCase(), tag = $("n-tag").value;
   const rows = nodes.rows.filter(r => nActive.has(r.kind) && !($("n-hidelinked").checked && r.kind === "linked") && (!q || r.name.toLowerCase().includes(q)) && (!tag || r.tags.includes(tag)));
-  const key = r => nSortKey === "kind" ? NRANK[r.kind] : nSortKey === "tags" ? (r.tags.length ? r.tags.join(",").toLowerCase() : "zzzz") : nSortKey === "target" ? r.target.toLowerCase() : r.name.toLowerCase();
+  const key = r => nSortKey === "kind" ? NRANK[r.kind] : nSortKey === "tags" ? (r.tags.length ? r.tags.join(",").toLowerCase() : "zzzz") : nSortKey === "target" ? r.target.toLowerCase() : nSortKey === "added" ? r.added : r.name.toLowerCase();
   rows.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * nSortDir || a.name.localeCompare(b.name));
   return rows;
 }
@@ -1238,6 +1352,7 @@ function nRender() {
   $("n-count").textContent = `${rows.length} of ${nodes.rows.length}`;
   $("n-rows").innerHTML = rows.map(r => `<tr><td><input type="checkbox" data-n="${esc(r.name)}" ${nSel.has(r.name) ? "checked" : ""}></td>
     <td class="mono">${r.web_url ? `<a href="${esc(r.web_url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name)}${r.in_repo ? "" : ' <span class="muted">(not in repo)</span>'}</td><td><span class="badge s-${r.kind}">${r.kind}</span></td>
+    <td class="mono muted" title="${r.added ? new Date(r.added * 1000).toLocaleString() : ""}">${r.added ? new Date(r.added * 1000).toLocaleDateString("sv") : "—"}</td>
     <td>${r.tags.map(t => `<button class="tag" data-tag="${esc(t)}" title="Show only nodes with this tag">${esc(t)}</button>`).join("")}</td><td class="muted trunc" title="${esc(r.target)}">${esc(r.target)}</td></tr>`).join("");
   $("n-rows").querySelectorAll("button[data-tag]").forEach(b => b.onclick = () => { $("n-tag").value = b.dataset.tag; nRender(); });
   $("n-rows").querySelectorAll("input[type=checkbox]").forEach(cb => cb.onchange = () => { cb.checked ? nSel.add(cb.dataset.n) : nSel.delete(cb.dataset.n); $("n-selinfo").textContent = nSel.size ? `${nSel.size} selected` : ""; });
@@ -1288,7 +1403,7 @@ for (const [id, action] of [["r-tagadd", "tag_add"], ["r-tagdel", "tag_remove"]]
 $("n-selvis").onclick = () => { nVisible().forEach(r => nSel.add(r.name)); nRender(); };
 $("n-selnone").onclick = () => { nSel.clear(); nRender(); };
 ["n-search", "n-tag", "n-hidelinked"].forEach(id => $(id).oninput = nRender);
-document.querySelectorAll("th[data-nk]").forEach(th => th.onclick = () => { nSortDir = nSortKey === th.dataset.nk ? -nSortDir : 1; nSortKey = th.dataset.nk; nRender(); });
+document.querySelectorAll("th[data-nk]").forEach(th => th.onclick = () => { nSortDir = nSortKey === th.dataset.nk ? -nSortDir : th.dataset.nk === "added" ? -1 : 1; nSortKey = th.dataset.nk; nRender(); });  // dates start newest first
 document.querySelector('nav button[data-tab="repos"]').addEventListener("click", () => { if (!nodes) nLoad(); });
 document.querySelectorAll("button[data-sub]").forEach(b => b.onclick = () => {
   const links = b.dataset.sub === "links";
@@ -1440,13 +1555,15 @@ function setRender() {
     <table><tbody>${kv(S.env_vars, "env")}</tbody></table>
     <div class="srow"><button type="button" id="set-env-add">+ add variable</button></div>
     <h3>Wheel sources</h3>
+    <div class="srow"><span class="muted" style="font-size:12px">Prebuilt wheels (sageattention, flash-attn, …) that PyPI does not have. <b>Packages</b> is a filter: only wheels of these packages are used, from every source below. <b>Folder in repo</b> narrows a Hugging Face repo to one folder. To follow another author, add their GitHub (owner/name, releases) or Hugging Face repo and press Test. Sources are searched during an audit only when "check wheel sources online" is ticked; the Wheel folder is always searched.</span></div>
     <div class="srow"><label class="sl" title="Package names whose prebuilt wheels are looked up">Packages</label><input type="text" id="set-wpk" value="${esc(S.wheels.packages.join(", "))}" placeholder="sageattention, flash_attn, ..."></div>
     <table><thead><tr><th style="width:140px">Type</th><th>Repository</th><th style="width:160px">Folder in repo</th><th></th></tr></thead><tbody>
     ${S.wheels.sources.map((x, i) => `<tr><td><select data-ws-t="${i}"><option value="github" ${x.type === "github" ? "selected" : ""}>GitHub</option><option value="hf" ${x.type === "hf" ? "selected" : ""}>Hugging Face</option></select></td>
       <td><input type="text" data-ws-r="${i}" value="${esc(x.repo || "")}" placeholder="owner/name"></td><td><input type="text" data-ws-p="${i}" value="${esc(x.path || "")}" placeholder="(optional)"></td>
       <td><button type="button" class="link" data-ws-del="${i}">remove</button></td></tr>`).join("")}
     </tbody></table>
-    <div class="srow"><button type="button" id="set-ws-add">+ add source</button></div>
+    <div class="srow"><button type="button" id="set-ws-add">+ add source</button><button type="button" id="set-ws-test" title="Scan every source above (unsaved edits included) and check which wheels fit the venv selected on the Pip audit tab">Test sources</button><span id="set-ws-msg" class="muted"></span></div>
+    <div id="set-ws-res"></div>
     <h3>After adding a custom node (this browser)</h3>
     <div class="srow"><label><input type="checkbox" data-after="scan" ${afterAdd("scan") ? "checked" : ""}> refresh the Git list</label><label><input type="checkbox" data-after="audit" ${afterAdd("audit") ? "checked" : ""}> run the Pip audit</label></div>
     <h3>Updates</h3>
@@ -1485,8 +1602,24 @@ function setWire() {
   b.querySelectorAll("[data-ws-p]").forEach(i => i.oninput = () => S.wheels.sources[+i.dataset.wsP].path = i.value);
   b.querySelectorAll("[data-ws-del]").forEach(x => x.onclick = () => { S.wheels.sources.splice(+x.dataset.wsDel, 1); setRender(); });
   $("set-ws-add").onclick = () => { S.wheels.sources.push({type: "github", repo: "", path: ""}); setRender(); };
+  $("set-ws-test").onclick = wheelsTest;
   $("set-jobs").oninput = e => S.updates.parallel_jobs = e.target.value;
   b.querySelectorAll("[data-after]").forEach(i => i.onchange = () => { try { localStorage.setItem("after-add-" + i.dataset.after, i.checked ? "1" : "0"); } catch (e) {} });
+}
+
+async function wheelsTest() {
+  $("set-ws-msg").textContent = "scanning…"; $("set-ws-res").innerHTML = "";
+  try {
+    const r = await api("/api/wheels_check", {venv: $("venv").value, wheel_dir: S.paths.wheel_dir, packages: S.wheels.packages, sources: S.wheels.sources});
+    $("set-ws-msg").textContent = `venv ${$("venv").value}: Python ${r.env.python}, torch ${r.env.torch || "—"}, CUDA ${r.env.cuda || "—"}`;
+    const fits = x => x.quality >= 2 ? "s-safe" : x.quality === 1 ? "s-unknown" : "s-ok";
+    $("set-ws-res").innerHTML = '<table><thead><tr><th>Source</th><th>Result</th></tr></thead><tbody>'
+      + r.sources.map(s => `<tr><td class="mono">${esc(s.source)}</td><td>${s.ok ? `${s.wheels} wheel(s), ${s.listed} of listed packages` + (s.unparsed_count ? ` <span class="risk" title="${esc(s.unparsed.join("\n"))}">${s.unparsed_count} unreadable filename(s)</span>` : "") : `<span class="bad">${esc(s.error)}</span>`}</td></tr>`).join("") + "</tbody></table>"
+      + (r.suggest.length ? `<div class="srow">Sources have wheels for installed packages not in the list: ${r.suggest.map(n => `<button type="button" class="link" data-ws-sug="${esc(n)}">+ ${esc(n)}</button>`).join(" ")}</div>` : "")
+      + r.packages.map(p => `<details><summary><b>${esc(p.name)}</b> <span class="muted">installed ${esc(p.installed) || "—"} · ${p.wheels.length} wheel(s), ${p.wheels.filter(x => x.quality >= 2).length} fit</span></summary><table><tbody>`
+        + p.wheels.map(x => `<tr><td class="mono">${esc(x.version)}</td><td class="mono" title="${esc(x.filename)}">${esc(x.filename)}</td><td><span class="badge ${fits(x)}">${esc(x.verdict)}</span></td><td class="muted">${esc(x.source)}</td></tr>`).join("") + "</tbody></table></details>").join("");
+    $("set-ws-res").querySelectorAll("[data-ws-sug]").forEach(b => b.onclick = () => { S.wheels.packages.push(b.dataset.wsSug); $("set-wpk").value = S.wheels.packages.join(", "); b.remove(); });
+  } catch (e) { $("set-ws-msg").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 }
 
 async function setMarks() {

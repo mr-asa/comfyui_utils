@@ -5,6 +5,8 @@ sources listed in wheel_sources.json, and the rules for which wheel fits a Pytho
 from __future__ import annotations
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -72,62 +74,109 @@ def scan_local(wheel_dir: Path) -> List[Wheel]:
     return out
 
 
-def scan_remote(sources: List[dict]) -> List[Wheel]:
-    out = []
-    for src in sources:
+SCAN_CACHE: Dict[Tuple[str, str, str], Tuple[float, List[Wheel], List[str]]] = {}  # an hour of remote scans, so each audit / dialog does not hit GitHub and Hugging Face again
+
+
+def scan_source(src: dict, max_age: int = 0) -> Tuple[List[Wheel], List[str]]:
+    """Wheels of one GitHub / Hugging Face source and the .whl names whose filename could not be parsed.
+    A scan younger than max_age seconds is reused; the result is always remembered."""
+    key = (src["type"], src["repo"], src.get("path", ""))
+    hit = SCAN_CACHE.get(key)
+    if hit and time.time() - hit[0] < max_age:
+        return hit[1], hit[2]
+    wheels, unparsed = _scan_source(src)
+    SCAN_CACHE[key] = (time.time(), wheels, unparsed)
+    return wheels, unparsed
+
+
+def _scan_source(src: dict) -> Tuple[List[Wheel], List[str]]:
+    if src["type"] == "github":
+        r = requests.get(f"https://api.github.com/repos/{src['repo']}/releases?per_page=100", timeout=30)
+        r.raise_for_status()
+        items = [(a["name"], a["browser_download_url"]) for rel in r.json() for a in rel.get("assets", [])]
+    elif src["type"] == "hf":
+        r = requests.get(f"https://huggingface.co/api/models/{src['repo']}/tree/main/{src.get('path', '')}?recursive=true", timeout=30)
+        r.raise_for_status()
+        items = [(Path(f["path"]).name, f"https://huggingface.co/{src['repo']}/resolve/main/{f['path']}") for f in r.json() if f["path"].endswith(".whl")]
+    else:
+        raise ValueError(f"unknown source type {src['type']}")
+    wheels, unparsed = [], []
+    for name, url in items:
+        w = parse_wheel(name, url=url)
+        if w:
+            wheels.append(w)
+        elif name.endswith(".whl"):
+            unparsed.append(name)
+    return wheels, unparsed
+
+
+def scan_remote(sources: List[dict], status: Optional[List[dict]] = None) -> List[Wheel]:
+    """status, when given, gets one entry per source: repo, ok, error / wheels / unparsed."""
+    def scan(src: dict) -> tuple:
         try:
-            if src["type"] == "github":
-                r = requests.get(f"https://api.github.com/repos/{src['repo']}/releases?per_page=100", timeout=30)
-                r.raise_for_status()
-                items = [(a["name"], a["browser_download_url"]) for rel in r.json() for a in rel.get("assets", [])]
-            elif src["type"] == "hf":
-                r = requests.get(f"https://huggingface.co/api/models/{src['repo']}/tree/main/{src.get('path', '')}?recursive=true", timeout=30)
-                r.raise_for_status()
-                items = [(Path(f["path"]).name, f"https://huggingface.co/{src['repo']}/resolve/main/{f['path']}") for f in r.json() if f["path"].endswith(".whl")]
-            else:
-                continue
+            return src, *scan_source(src, max_age=3600), ""
         except (requests.RequestException, KeyError, ValueError) as e:
-            print(f"  ! source {src.get('repo')} failed: {e}")
-            continue
-        for name, url in items:
-            w = parse_wheel(name, url=url)
-            if w:
-                out.append(w)
+            return src, [], [], str(e)
+
+    out = []
+    with ThreadPoolExecutor(max_workers=max(len(sources), 1)) as ex:
+        for src, wheels, unparsed, error in ex.map(scan, sources):
+            if error:
+                print(f"  ! source {src.get('repo')} failed: {error}")
+                if status is not None:
+                    status.append({"repo": src.get("repo", ""), "ok": False, "error": error})
+                continue
+            out += wheels
+            if status is not None:
+                status.append({"repo": src["repo"], "ok": True, "wheels": len(wheels), "unparsed": len(unparsed)})
     return out
 
 
-def load_catalog(remote: bool) -> Tuple[List[Wheel], Path, List[str]]:
+def listed_packages() -> List[str]:
+    cfg = json.loads(SOURCES_PATH.read_text(encoding="utf-8")) if SOURCES_PATH.exists() else {}
+    return [canonicalize_name(p) for p in cfg.get("packages", [])]
+
+
+def load_catalog(remote: bool, status: Optional[List[dict]] = None) -> Tuple[List[Wheel], Path, List[str]]:
     cfg = json.loads(SOURCES_PATH.read_text(encoding="utf-8")) if SOURCES_PATH.exists() else {}
     wheel_dir = Path(cfg.get("wheel_dir", HERE / "whl"))
     wanted = [canonicalize_name(p) for p in cfg.get("packages", [])]
     catalog = scan_local(wheel_dir)
     if remote:
         have = {w.filename for w in catalog}
-        catalog += [w for w in scan_remote(cfg.get("sources", [])) if w.filename not in have]
+        catalog += [w for w in scan_remote(cfg.get("sources", []), status) if w.filename not in have]
     return [w for w in catalog if w.name in wanted], wheel_dir, wanted
 
 
-def match_quality(w: Wheel, py: str, torch_mm: Tuple[int, int], cuda: Tuple[int, int]) -> int:
-    """0 = incompatible, 3 = exact tags, 2 = same CUDA major, 1 = untagged (unverified)."""
+def mismatch(w: Wheel, py: str, torch_mm: Tuple[int, int], cuda: Tuple[int, int]) -> str:
+    """Why the wheel does not fit this Python / torch / CUDA, or "" when it does."""
     if w.plat not in ("win_amd64", "any"):
-        return 0
+        return f"platform {w.plat}"
     pyv = py.replace(".", "")
     if w.py.startswith("cp"):
         if w.abi == "abi3":
             if int(pyv) < int(w.py[2:]):
-                return 0
+                return f"needs Python {w.py}+"
         elif w.py != f"cp{pyv}":
-            return 0
+            return f"built for Python {w.py}"
     if w.torch:
+        want = ".".join(map(str, w.torch[:2]))
         if w.torch_min:
             if torch_mm < w.torch[:2]:
-                return 0
+                return f"needs torch {want}+"
         elif w.torch[:2] != torch_mm:
-            return 0
+            return f"built for torch {want}"
+    if w.cuda and w.cuda != cuda and not (w.cuda[0] == cuda[0] and w.torch):
+        return f"built for CUDA {w.cuda[0]}.{w.cuda[1]}"
+    return ""
+
+
+def match_quality(w: Wheel, py: str, torch_mm: Tuple[int, int], cuda: Tuple[int, int]) -> int:
+    """0 = incompatible, 3 = exact tags, 2 = same CUDA major, 1 = untagged (unverified)."""
+    if mismatch(w, py, torch_mm, cuda):
+        return 0
     if w.cuda:
-        if w.cuda == cuda:
-            return 3
-        return 2 if w.cuda[0] == cuda[0] and w.torch else 0
+        return 3 if w.cuda == cuda else 2
     return 3 if w.torch else 1
 
 

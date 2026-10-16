@@ -29,7 +29,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List
+from urllib.parse import unquote
 
+import requests
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import Version
@@ -44,8 +46,8 @@ from comfyui_root import default_workflows_dir
 from workflow_sources import parse_workflow_url, partial_changes, partial_remote_status, read_metadata, sync_partial_source, write_metadata
 from workflow_sources import _cache_key as _partial_cache_key
 from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, run_git, to_web_url, update_repo
-from wheels import download_wheel, load_catalog
-from pip_audit_core import audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, find_reverse_conflicts, load_installed_dists, need_vcs_install, parse_install_changes, run_audit
+from wheels import download_wheel, listed_packages, load_catalog, match_quality, mismatch, scan_local, scan_source
+from pip_audit_core import SIDE_EFFECT_PROTECTED, TORCH_INDEX_PACKAGES, TORCH_INDEX_URL, _torch_cuda, audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, fetch_requires_dist, fetch_torch_index, find_reverse_conflicts, forward_needs, load_installed_dists, need_vcs_install, parse_install_changes, run_audit, target_marker_env, torch_index_tag
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = str(HERE / "config.json")
@@ -138,6 +140,7 @@ def audit_job(job: dict, name: str, include_repo: bool, force_pip: bool, remote_
             for r in res.comfy_env_reports
         ],
         "install_cmd": res.install_cmd,
+        "wheel_search": res.wheel_search,
         "venv": name,
         "hold": sorted(hold_set),
         "pins": pin_map,
@@ -195,6 +198,10 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
     stamp = time.strftime("%Y%m%d_%H%M%S")
     LOG_DIR.mkdir(exist_ok=True)
     requested = {canonicalize_name(re.split(r"[=<>!~ ]", p, maxsplit=1)[0]) for p in packages} | {canonicalize_name(a) for a in allow}
+    tag = next((t for t in (torch_index_tag({"version": before[n]}) for n in requested & TORCH_INDEX_PACKAGES if n in before) if t), "")
+    if tag:  # a torch-family build comes from the PyTorch index, PyPI only has other builds of it
+        cmd += ["--extra-index-url", TORCH_INDEX_URL + tag]
+    plain = list(cmd)
     keep: Dict[str, str] = {}
     if protect == "all":
         keep = {n: v for n, v in before.items() if n not in requested}
@@ -210,7 +217,13 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
         cmd += ["-c", str(con)]
     code, lines = stream(job, cmd + packages, cancellable=dry_run)
     if dry_run:
-        return {"exit_code": code, "changes": parse_install_changes(lines) if code == 0 else []}
+        result = {"exit_code": code, "changes": parse_install_changes(lines) if code == 0 else [], "output": lines[-14:]}
+        if code and keep:  # run again without the protection: what it would change is what stands in the way
+            code2, lines2 = stream(job, plain + packages, cancellable=True)
+            changes2 = parse_install_changes(lines2) if code2 == 0 else []
+            result["unprotected"] = {"exit_code": code2, "changes": changes2, "output": lines2[-14:]}
+            result["released"] = [c for c in changes2 if c["name"] in keep]
+        return result
     return record_install(job, name, stamp, before, installed_versions(py), code)
 
 
@@ -423,6 +436,7 @@ def repos_update_job(job: dict, paths: List[str], on_local: str, on_conflict: st
         tag = "ERROR " + r["error"][:200] if r["error"] else "skipped: " + r["skipped"] if r["skipped"] else f"updated, {len(r['commits'])} commit(s)" if r["changed"] else "no changes"
         job["log"].append(f"{r['name']}: {tag}")
         job["log"] += [f"    · {c}" for c in r["commits"][:8]]
+        job["log"] += [f"    {n}" for n in r["notes"][:30]]
 
     for p in root_first:  # ComfyUI itself goes first and alone
         results.append(one(p))
@@ -649,13 +663,9 @@ def compare_venvs(names: List[str], scope: str) -> dict:
 REPO_URL_RE = re.compile(r"(https://[\w.\-]+/[\w.\-]+/[\w.\-]+|git@[\w.\-]+:[\w.\-]+/[\w.\-]+?)(\.git)?/?")
 
 
-def repo_add_job(job: dict, url: str, link: bool) -> dict:
-    """Clone a custom node. With custom_nodes_repo_path configured it goes there and (optionally) gets a junction in custom_nodes."""
-    url = url.strip()
-    m = REPO_URL_RE.fullmatch(url)
-    if not m:
-        raise ValueError("expected a repository URL like https://github.com/user/name or git@github.com:user/name")
-    name = re.sub(r"\.git$", "", re.split(r"[/:]", url.rstrip("/"))[-1])
+def repo_add_job(job: dict, urls: List[str], link: bool) -> dict:
+    """Clone custom nodes one after another; one bad URL does not stop the rest.
+    With custom_nodes_repo_path configured they go there and (optionally) get a junction in custom_nodes."""
     with CONFIG_LOCK:
         cfg, _ = config_schema.load_legacy_compat(CONFIG_PATH)
     root = resolve_comfyui_root(CONFIG_PATH)
@@ -664,6 +674,23 @@ def repo_add_job(job: dict, url: str, link: bool) -> dict:
     base = repo if repo and os.path.isdir(repo) else custom
     if not base:
         raise ValueError("custom_nodes folder not found")
+    added, failed = [], []
+    for url in dict.fromkeys(u.strip() for u in urls if u.strip()):
+        try:
+            added.append(repo_add_one(job, url, link, base, custom))
+        except (ValueError, RuntimeError) as e:
+            job["log"].append(f"Failed: {url}: {e}")
+            failed.append({"url": url, "error": str(e)})
+    if failed and not added:
+        raise RuntimeError(f"nothing was added ({len(failed)} failed)")
+    job["log"].append(f"Added {len(added)}" + (f", failed {len(failed)}" if failed else ""))
+    return {"added": added, "failed": failed}
+
+
+def repo_add_one(job: dict, url: str, link: bool, base: str, custom: str) -> dict:
+    if not REPO_URL_RE.fullmatch(url):
+        raise ValueError("expected a repository URL like https://github.com/user/name or git@github.com:user/name")
+    name = re.sub(r"\.git$", "", re.split(r"[/:]", url.rstrip("/"))[-1])
     dest = os.path.join(base, name)
     if os.path.exists(dest) or os.path.exists(os.path.join(custom, name)):
         raise ValueError(f"{name} already exists")
@@ -780,21 +807,115 @@ def add_workflow_job(job: dict, url: str) -> dict:
     return {"path": str(dest), "mode": source.mode}
 
 
-def versions_info(venv: str, name: str, specs: List[str]) -> dict:
-    """All releases of a package with the verdict of the requirements files and of the installed packages that depend on it."""
+def wheel_env(venv_path: str, installed: Dict[str, dict]) -> tuple:
+    """Python (3.12), torch (major, minor) and CUDA (major, minor) of a venv, the three things a wheel has to match."""
+    py = ".".join(venv_python_version(venv_path).split(".")[:2])
+    torch_mm, cuda = _torch_cuda(installed["torch"]["version"]) if "torch" in installed else (None, None)
+    return py, torch_mm, cuda
+
+
+def judge_wheel(w, env: tuple) -> tuple:
+    """(quality, verdict text) of a wheel for the venv env from wheel_env."""
+    py, torch_mm, cuda = env
+    if not (torch_mm and cuda):
+        return 0, "this venv has no CUDA torch to compare with"
+    q = match_quality(w, py, torch_mm, cuda)
+    return q, mismatch(w, py, torch_mm, cuda) or {3: "fits", 2: "fits (other CUDA minor, same major)", 1: "untagged, not verified"}[q]
+
+
+def versions_info(venv: str, name: str, specs: List[dict]) -> dict:
+    """All releases of a package with the verdict of the requirements files, of the installed packages that depend on it
+    and of the release's own requirements, plus every constraint on the package, the newest release each one alone
+    would allow and the prebuilt wheels of the package."""
     row = venv_entry(venv)
     canon = canonicalize_name(name)
-    releases = fetch_release_list(canon, venv_python_version(row["path"]) or None)
+    py_ver = venv_python_version(row["path"])
+    releases, error = fetch_release_list(canon, py_ver or None)
     installed_map = load_installed_dists({"env_type": "venv", "venv_path": row["path"]})
-    current = (installed_map.get(canon) or {}).get("version", "")
-    reverse = build_reverse_constraints([canon], installed_map)
-    spec_sets = [(s, SpecifierSet(s)) for s in specs if s.strip()]
+    info = installed_map.get(canon) or {}
+    current = info.get("version", "")
+    current_public = Version(Version(current).public) if current else None  # 0.26.0+cu130 is release 0.26.0
+    direct = info.get("direct_url") or ""
+    wheel = unquote(direct.rsplit("/", 1)[-1]) if direct.lower().endswith(".whl") else ""
+    marker_env = target_marker_env(py_ver or ".".join(map(str, sys.version_info[:3])))
+    reverse = build_reverse_constraints([canon], installed_map, marker_env)
+    caps = [{"kind": "requirements.txt", "who": x["repo"], "spec": x["spec"]} for x in specs if x["spec"].strip()]
+    caps += [{"kind": "installed", "who": d, "spec": str(s)} for d, s in reverse.get(canon, [])]
+    spec_sets = [(s, SpecifierSet(s)) for s in dict.fromkeys(c["spec"] for c in caps if c["kind"] == "requirements.txt")]
+    tag = torch_index_tag(info) if canon in TORCH_INDEX_PACKAGES else ""
+    index_versions, index_error = fetch_torch_index(canon, tag, py_ver or ".".join(map(str, sys.version_info[:2]))) if tag else ([], "")
     for rel in releases:
         v = Version(rel["version"])
         rel["blocked_by"] = [s for s, ss in spec_sets if not ss.contains(v, prereleases=True)]
         rel["conflicts"] = find_reverse_conflicts(reverse, canon, v)
-        rel["installed"] = rel["version"] == current
-    return {"name": canon, "installed": current, "specs": specs, "required_by": [f"{d} {s}" for d, s in reverse.get(canon, [])], "versions": releases[:400]}
+        rel["installed"] = v == current_public
+        rel["off_index"] = bool(index_versions) and Version(v.public) not in index_versions  # only another build of it exists on PyPI
+        rel["needs"] = None
+    stable = [r for r in releases if not r["pre"] and r["python_ok"] and not r["yanked"]]
+    for c in caps:
+        ss = SpecifierSet(c["spec"])
+        c["top"] = next((r["version"] for r in stable if ss.contains(Version(r["version"]), prereleases=True)), "")
+    allowed = next((r["version"] for r in stable if not r["blocked_by"] and not r["conflicts"] and not r["off_index"]), "")
+    # the newest candidates: which installed packages their own requirements would force to change
+    cands = [r for r in stable if not r["blocked_by"] and not r["conflicts"] and not r["off_index"] and (current_public is None or Version(r["version"]) > current_public)][:12]
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for rel, requires in zip(cands, ex.map(lambda r: fetch_requires_dist(canon, r["version"]), cands)):
+            if requires is not None:
+                rel["needs"] = forward_needs(requires, installed_map, marker_env)
+    wheels = []
+    if canon in listed_packages():
+        env = wheel_env(row["path"], installed_map)
+        seen = set()
+        for w in load_catalog(True)[0]:
+            if w.name != canon or w.filename in seen:
+                continue
+            seen.add(w.filename)
+            q, verdict = judge_wheel(w, env)
+            wheels.append({"version": str(w.pep_version()), "filename": w.filename, "url": w.url or "", "path": str(w.path) if w.path else "", "quality": q, "verdict": verdict,
+                           "installed": bool(current) and w.version == current, "newer": bool(current) and w.pep_version() > current_public})
+        wheels.sort(key=lambda x: (x["quality"] >= 2, Version(x["version"])), reverse=True)
+    return {"name": canon, "installed": current, "newest": stable[0]["version"] if stable else "", "allowed": allowed, "wheel": wheel, "protected": canon in SIDE_EFFECT_PROTECTED,
+            "index_tag": tag, "index_error": index_error, "error": error, "caps": caps, "versions": releases[:400], "wheels": wheels[:60]}
+
+
+def wheels_check(venv: str, wheel_dir: str, packages: List[str], sources: List[dict]) -> dict:
+    """Scan every wheel source (the settings as typed, saved or not) and judge each wheel against the venv's Python / torch / CUDA."""
+    row = venv_entry(venv)
+    installed = load_installed_dists({"env_type": "venv", "venv_path": row["path"]})
+    env = wheel_env(row["path"], installed)
+    py, torch_mm, cuda = env
+    wanted = [canonicalize_name(p) for p in packages]
+
+    def scan(src: dict) -> tuple:
+        try:
+            return src, *scan_source(src), ""
+        except (requests.RequestException, KeyError, ValueError) as e:
+            return src, [], [], str(e)
+
+    found = [(f"local: {wheel_dir}", w) for w in (scan_local(Path(wheel_dir)) if wheel_dir else [])]
+    report = []
+    with ThreadPoolExecutor(max_workers=max(len(sources), 1)) as ex:
+        for src, wheels, unparsed, error in ex.map(scan, sources):
+            label = src["repo"] + (f"/{src['path']}" if src.get("path") else "")
+            found += [(label, w) for w in wheels]
+            report.append({"source": label, "ok": not error, "error": error, "wheels": len(wheels), "unparsed": unparsed[:20], "unparsed_count": len(unparsed),
+                           "listed": len([w for w in wheels if w.name in wanted]), "names": sorted({w.name for w in wheels})})
+
+    per_pkg = {n: [] for n in wanted}
+    seen = set()
+    for label, w in found:
+        if w.name in per_pkg and (w.filename, label) not in seen:
+            seen.add((w.filename, label))
+            q, verdict = judge_wheel(w, env)
+            per_pkg[w.name].append({"filename": w.filename, "version": str(w.pep_version()), "source": label, "quality": q, "verdict": verdict})
+    packages_out = []
+    for n, ws in per_pkg.items():
+        ws.sort(key=lambda x: (x["quality"] >= 2, Version(x["version"])), reverse=True)
+        packages_out.append({"name": n, "installed": (installed.get(n) or {}).get("version", ""), "wheels": ws})
+    listed = set(wanted)
+    suggest = sorted({n for r in report for n in r["names"] if n not in listed and n in installed})
+    return {"env": {"python": py, "torch": f"{torch_mm[0]}.{torch_mm[1]}" if torch_mm else "", "cuda": f"{cuda[0]}.{cuda[1]}" if cuda else ""},
+            "sources": [{k: v for k, v in r.items() if k != "names"} for r in report], "packages": packages_out, "suggest": suggest}
 
 
 UPDATE_CONFIG = HERE / "update_comfy_repos_config.json"
@@ -1032,7 +1153,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repo_add":
                 job = new_job("repos")
-                run_in_thread(job, repo_add_job, str(body["url"]), bool(body.get("link", True)))
+                run_in_thread(job, repo_add_job, [str(u) for u in body["urls"]], bool(body.get("link", True)))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repo_delete":
                 if str(body.get("mode")) not in ("unlink", "delete"):
@@ -1054,7 +1175,10 @@ class Handler(BaseHTTPRequestHandler):
                 run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/versions":
-                self.send_json(versions_info(str(body["venv"]), str(body["name"]), [str(x) for x in body.get("specs", [])]))
+                self.send_json(versions_info(str(body["venv"]), str(body["name"]), [{"repo": str(x["repo"]), "spec": str(x["spec"])} for x in body.get("specs", [])]))
+            elif self.path == "/api/wheels_check":
+                sources = [{"type": x["type"], "repo": x["repo"].strip(), "path": (x.get("path") or "").strip()} for x in body["sources"] if x.get("repo", "").strip()]
+                self.send_json(wheels_check(str(body["venv"]), str(body.get("wheel_dir") or "").strip(), [str(p) for p in body["packages"]], sources))
             elif self.path == "/api/settings":
                 self.send_json(save_settings(body))
             elif self.path == "/api/path_check":

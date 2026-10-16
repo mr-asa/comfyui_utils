@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from packaging.markers import Marker
 from packaging.requirements import Requirement
@@ -120,11 +120,11 @@ def _marker_allows_raw(raw: str) -> bool:
         return True
 
 
-def parse_requirements_file(path: str, evaluate_markers: bool = True) -> Tuple[List[Requirement], List[str], List[str]]:
+def parse_requirements_file(path: str, evaluate_markers: bool = True, marker_env: Optional[dict] = None) -> Tuple[List[Requirement], List[str], List[str]]:
     """Return (requirements, unparsed lines such as VCS/URL entries, commented lines).
 
-    With evaluate_markers the host interpreter decides which entries apply;
-    pass False when the target Python differs and the markers must be kept.
+    With evaluate_markers the host interpreter decides which entries apply (marker_env overrides parts of
+    its environment, such as the Python version of another venv); pass False to keep the markers.
     """
     try:
         txt = open(path, encoding="utf-8").read()
@@ -155,7 +155,7 @@ def parse_requirements_file(path: str, evaluate_markers: bool = True) -> Tuple[L
                 continue
         try:
             req = Requirement(s)
-            if evaluate_markers and req.marker and not req.marker.evaluate():
+            if evaluate_markers and req.marker and not req.marker.evaluate(marker_env):
                 continue
             reqs.append(req)
         except Exception:

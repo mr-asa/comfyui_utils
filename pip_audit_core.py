@@ -15,9 +15,10 @@ from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 import requests
+from packaging.markers import default_environment
 from packaging.requirements import Requirement
 from packaging.specifiers import Specifier, SpecifierSet
-from packaging.utils import canonicalize_name
+from packaging.utils import InvalidWheelFilename, canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
 from wheels import best_wheels, load_catalog
@@ -135,6 +136,19 @@ class PackageReport:
     source: str = ""  # human readable origin when it is not plain PyPI
     wheel_update: Optional[dict] = None  # newer matching wheel found in the wheel sources
     wheel_note: str = ""
+    pypi_error: str = ""  # why the release list could not be read
+    index_tag: str = ""  # torch-family build tag (cu130): versions come from the PyTorch index, not PyPI
+    newest: Optional[Version] = None  # newest stable release on PyPI, whatever the requirements allow
+    risky_kind: str = ""  # blocked (an installed package forbids it) | side-effects (resolves, but changes other packages) | unresolvable
+    risky_why: List[str] = field(default_factory=list)
+    risky_changes: List[dict] = field(default_factory=list)  # other packages the risky update would change
+    search_truncated: bool = False  # the search for an older safe version stopped at its limit
+    installed_yanked: bool = False  # the installed release was withdrawn on PyPI: it is replaced even by a lower version number
+
+    @property
+    def installed_public(self) -> Optional[Version]:
+        """Installed version without the local tag (0.26.0+cu130 -> 0.26.0): what PyPI releases are compared with."""
+        return Version(self.installed.public) if self.installed else None
 
 
 @dataclass
@@ -422,64 +436,72 @@ def _resolve_vcs_installed(installed: Dict[str, dict], v: VcsReport) -> Tuple[Op
     return None, None, None, None
 
 
-def fetch_pypi(name: str, py_ver: Optional[str] = None) -> Tuple[List[Version], List[str], List[str]]:
-    """Return (stable versions compatible with current Python, skipped_incompatible_descriptions, filtered_prereleases)."""
-    try:
-        r = requests.get(f"https://pypi.org/pypi/{name}/json", timeout=12)
+def _pypi_json(path: str) -> Tuple[Optional[dict], str]:
+    """(json, "") or (None, reason); network trouble gets one retry."""
+    reason = ""
+    for _ in range(2):
+        try:
+            r = requests.get(f"https://pypi.org/pypi/{path}/json", timeout=12)
+        except requests.RequestException as e:
+            reason = f"network error ({e.__class__.__name__})"
+            continue
+        if r.status_code == 404:
+            return None, "not on PyPI"
         if r.status_code != 200:
-            return [], [], []
-        data = r.json()
-        if not py_ver:
-            py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-        vs: List[Version] = []
-        skipped: List[str] = []
-        filtered: List[str] = []
-        for v in data.get("releases", {}):
-            try:
-                ver = Version(v)
-            except Exception:
-                pass
-            else:
-                if ver.is_prerelease or ver.is_devrelease:
-                    filtered.append(v)
-                    continue
-                files = data.get("releases", {}).get(v) or []
-                compatible = False
-                reason = None
-                for f in files:
-                    rp = f.get("requires_python")
-                    if not rp:
-                        compatible = True
-                        break
-                    try:
-                        spec = SpecifierSet(rp)
-                    except Exception:
-                        compatible = True
-                        break
-                    if spec.contains(py_ver, prereleases=True):
-                        compatible = True
-                        break
-                if not files:
-                    compatible = True  # keep unknown entries just in case
-                if compatible:
-                    vs.append(ver)
-                else:
-                    reason = files[0].get("requires_python") if files else "Requires-Python mismatch"
-                    skipped.append(f"{ver} ({reason})")
-        return sorted(set(vs)), skipped, sorted(set(filtered))
-    except Exception:
-        return [], [], []
+            reason = f"PyPI answered HTTP {r.status_code}"
+            continue
+        try:
+            return r.json(), ""
+        except ValueError:
+            return None, "unreadable answer from PyPI"
+    return None, reason
 
 
-def fetch_release_list(name: str, py_ver: Optional[str] = None) -> List[dict]:
-    """Every release on PyPI, newest first: version, date, pre-release / yanked flags and Python compatibility."""
-    try:
-        r = requests.get(f"https://pypi.org/pypi/{name}/json", timeout=12)
-        if r.status_code != 200:
-            return []
-        data = r.json()
-    except (requests.RequestException, ValueError):
-        return []
+def _files_compatible(files: list, py_ver: str) -> bool:
+    if not files:
+        return True  # keep unknown entries just in case
+    for f in files:
+        rp = f.get("requires_python")
+        try:
+            if not rp or SpecifierSet(rp).contains(py_ver, prereleases=True):
+                return True
+        except Exception:
+            return True
+    return False
+
+
+def fetch_pypi(name: str, py_ver: Optional[str] = None) -> Tuple[List[Version], List[str], List[str], str, List[Version]]:
+    """Return (stable versions compatible with the Python, skipped_incompatible_descriptions, filtered_prereleases, error, yanked versions).
+    Yanked releases are left out of the first list."""
+    data, error = _pypi_json(name)
+    if data is None:
+        return [], [], [], error, []
+    py_ver = py_ver or f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    vs: List[Version] = []
+    skipped: List[str] = []
+    filtered: List[str] = []
+    yanked: List[Version] = []
+    for v, files in (data.get("releases") or {}).items():
+        try:
+            ver = Version(v)
+        except Exception:
+            continue
+        if ver.is_prerelease or ver.is_devrelease:
+            filtered.append(v)
+        elif files and all(f.get("yanked") for f in files):
+            yanked.append(ver)
+        elif _files_compatible(files, py_ver):
+            vs.append(ver)
+        else:
+            skipped.append(f"{ver} ({files[0].get('requires_python') or 'Requires-Python mismatch'})")
+    return sorted(set(vs)), skipped, sorted(set(filtered)), "", yanked
+
+
+def fetch_release_list(name: str, py_ver: Optional[str] = None) -> Tuple[List[dict], str]:
+    """Every release on PyPI, newest first: version, date, pre-release / yanked flags and Python compatibility. Second value: the error, if any."""
+    data, error = _pypi_json(name)
+    if data is None:
+        return [], error
     py_ver = py_ver or f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     out: List[dict] = []
     for v, files in (data.get("releases") or {}).items():
@@ -487,29 +509,85 @@ def fetch_release_list(name: str, py_ver: Optional[str] = None) -> List[dict]:
             ver = Version(v)
         except Exception:
             continue
-        compatible = not files
-        for f in files or []:
-            rp = f.get("requires_python")
-            try:
-                if not rp or SpecifierSet(rp).contains(py_ver, prereleases=True):
-                    compatible = True
-                    break
-            except Exception:
-                compatible = True
-                break
         out.append({
             "version": v, "pre": ver.is_prerelease or ver.is_devrelease, "yanked": bool(files) and all(f.get("yanked") for f in files),
-            "python_ok": compatible, "date": ((files[0].get("upload_time_iso_8601") or "")[:10] if files else ""), "_v": ver,
+            "python_ok": _files_compatible(files, py_ver), "date": ((files[0].get("upload_time_iso_8601") or "")[:10] if files else ""), "_v": ver,
         })
     out.sort(key=lambda x: x["_v"], reverse=True)
     for x in out:
         del x["_v"]
+    return out, ""
+
+
+def target_marker_env(py_ver: str) -> Dict[str, str]:
+    """Marker environment of the target venv: the host's, with the venv's Python version."""
+    return {**default_environment(), "python_full_version": py_ver, "python_version": ".".join(py_ver.split(".")[:2]), "implementation_version": py_ver}
+
+
+def fetch_requires_dist(name: str, version: str) -> Optional[List[str]]:
+    """The requirements of one release as PyPI lists them, None when PyPI could not be read."""
+    data, _ = _pypi_json(f"{name}/{version}")
+    return None if data is None else (data.get("info") or {}).get("requires_dist") or []
+
+
+def forward_needs(requires: List[str], installed: Dict[str, dict], marker_env: Dict[str, str]) -> List[str]:
+    """Installed packages that a release's own requirements would force to change."""
+    out: List[str] = []
+    for raw in requires:
+        try:
+            req = Requirement(raw)
+        except Exception:
+            continue
+        if req.marker and not req.marker.evaluate({**marker_env, "extra": ""}):
+            continue
+        info = installed.get(canonicalize_name(req.name))
+        if info and str(req.specifier) and not req.specifier.contains(info["version"], prereleases=True):
+            out.append(f"{req.name}{req.specifier} (installed {info['version']})")
     return out
+
+
+# Builds of these come from the PyTorch index (the +cu130 / +cpu tag), PyPI only has other builds of them
+TORCH_INDEX_PACKAGES = {"torch", "torchvision", "torchaudio"}
+TORCH_INDEX_URL = "https://download.pytorch.org/whl/"
+
+
+def torch_index_tag(info: Optional[dict]) -> str:
+    """Local tag of an installed torch-family build (cu130, cpu, rocm6.4), "" for anything else."""
+    try:
+        return (Version(info["version"]).local or "").lower() if info else ""
+    except Exception:
+        return ""
+
+
+def _platform_ok(plat: str) -> bool:
+    if plat == "any":
+        return True
+    return plat.startswith("win") if os.name == "nt" else plat.startswith("macosx") if sys.platform == "darwin" else "linux" in plat
+
+
+def fetch_torch_index(name: str, tag: str, py_ver: str) -> Tuple[List[Version], str]:
+    """Releases of a torch-family package on the PyTorch index for this build tag, Python and platform. Second value: the error, if any."""
+    try:
+        r = requests.get(f"{TORCH_INDEX_URL}{tag}/{name}/", timeout=15)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        return [], f"{e.__class__.__name__}"
+    cp = "cp" + "".join(py_ver.split(".")[:2])
+    out = set()
+    for href in re.findall(r'href="([^"#]+\.whl)', r.text):
+        try:
+            _name, ver, _build, tags = parse_wheel_filename(unquote(href.rsplit("/", 1)[-1]))
+        except InvalidWheelFilename:
+            continue
+        if any((t.interpreter == cp or t.abi == "abi3" or t.interpreter.startswith("py3")) and _platform_ok(t.platform) for t in tags):
+            out.add(Version(ver.public))
+    return sorted(out), ""
 
 
 def build_reverse_constraints(
     target_names: List[str],
     installed: Dict[str, dict],
+    marker_env: Optional[Dict[str, str]] = None,
 ) -> Dict[str, List[Tuple[str, SpecifierSet]]]:
     target_set = {canonicalize_name(n) for n in target_names}
     out: Dict[str, List[Tuple[str, SpecifierSet]]] = {}
@@ -521,7 +599,7 @@ def build_reverse_constraints(
                 req = Requirement(raw)
             except Exception:
                 continue
-            if req.marker and not req.marker.evaluate():
+            if req.marker and not req.marker.evaluate(marker_env):
                 continue
             dep_name = canonicalize_name(req.name)
             if dep_name not in target_set:
@@ -640,7 +718,7 @@ def _find_safe_upgrade_fallback(
     direct_specs = [c.spec for c in rpt.constraints if str(c.spec)]
     checks = 0
     for cand in versions:
-        if cand <= rpt.installed:
+        if cand <= rpt.installed_public and not rpt.installed_yanked:
             continue
         if upper_exclusive and cand >= upper_exclusive:
             continue
@@ -655,6 +733,7 @@ def _find_safe_upgrade_fallback(
         if cls == "safe":
             return cand
         if checks >= max_dry_run_checks:
+            rpt.search_truncated = True
             break
     return None
 
@@ -754,22 +833,9 @@ def classify_dry_run(ok: bool, out: str) -> Tuple[str, str]:
         "cannot install",
         "is incompatible with",
         "depends on",
-        "requires",
-    )
-    net_markers = (
-        "timeout",
-        "timed out",
-        "connection",
-        "temporary failure",
-        "ssl",
-        "certificate",
-        "name or service not known",
-        "proxy",
     )
     if any(m in lowered for m in conflict_markers):
         return "risky", clean_output(out)
-    if any(m in lowered for m in net_markers):
-        return "unknown", clean_output(out)
     return "unknown", clean_output(out)
 
 
@@ -950,6 +1016,7 @@ class AuditResult:
     pinned_ok: List[Tuple[str, str]]
     pinned_mismatch: List[Tuple[str, str]]
     install_cmd: List[str]
+    wheel_search: dict = field(default_factory=dict)
 
 
 def package_action(r: PackageReport) -> Optional[str]:
@@ -959,9 +1026,9 @@ def package_action(r: PackageReport) -> Optional[str]:
         return None
     if not r.installed and tgt:
         return "install"
-    if tgt and r.installed and r.installed < tgt:
+    if tgt and r.installed and (r.installed_public < tgt or (r.installed_yanked and r.installed_public != tgt)):
         return "upgrade"
-    if tgt and r.installed and r.installed > tgt:
+    if tgt and r.installed and r.installed_public > tgt:
         return "downgrade"
     return None
 
@@ -969,6 +1036,9 @@ def package_action(r: PackageReport) -> Optional[str]:
 def package_unchanged(r: PackageReport, pin_off: bool) -> bool:
     """Nothing to do and nothing to report for this package."""
     return not (package_action(r) or r.update_error or r.availability_issue or pin_off or r.wheel_update)
+
+
+RISKY_STATES = {"blocked": "risky-blocked", "side-effects": "risky-deps"}
 
 
 def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> List[dict]:
@@ -994,17 +1064,25 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
         elif action == "downgrade":
             state = "downgrade"
         elif action == "upgrade":
-            state = ("safe-deps" if r.side_changes else "safe") if n in safe else "risky" if n in risky else "unknown" if n in unknown else "upgrade"
+            state = ("safe-deps" if r.side_changes else "safe") if n in safe else RISKY_STATES.get(r.risky_kind, "risky") if n in risky else "unknown" if n in unknown else "upgrade"
         else:
             state = "ok"
         extra_info = []
         if r.wheel_note:
             extra_info.append(r.wheel_note)
+        tgt = r.installable_max or r.max_allowed
+        if state in ("held", "pinned") and action == "upgrade":
+            extra_info.append(f"{state.capitalize()}; {tgt} is available")
+        if r.search_truncated:
+            extra_info.append("Stopped after 12 trial installs without finding a safe older version")
+        if r.installed_yanked:
+            extra_info.append(f"The installed {r.installed} was yanked on PyPI (withdrawn by its author)" + (f"; {tgt} replaces it, even though the number is lower" if action == "upgrade" and tgt and tgt < r.installed_public else ""))
+        capped_by = [f"{c.repo} {c.spec}" for c in r.constraints if str(c.spec) and r.newest and r.newest not in c.spec] if tgt and r.newest and tgt < r.newest else []
         if state == "safe-deps":
             extra_info.append("Also changes: " + ", ".join(f"{c['name']} {c['from'] or '-'} -> {c['to'] or '-'}" for c in r.side_changes))
         problem = r.update_error or r.availability_issue or ""
         if problem and not (state == "wheel" and not r.update_error):
-            kind = "error" if state == "risky" else "warn"
+            kind = "error" if state in ("risky", "risky-blocked", "risky-deps") else "warn"
             issue = problem + ("\n" + "\n".join(extra_info) if extra_info else "")
         else:
             kind = "info" if extra_info else ""
@@ -1012,13 +1090,19 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
         rows.append({
             "name": n,
             "installed": str(r.installed) if r.installed else "",
-            "target": str(r.installable_max or r.max_allowed or ""),
+            "target": "" if r.from_wheel else str(r.installable_max or r.max_allowed or ""),
             "safe_update": str(safe.get(n) or r.safe_update or ""),
             "risky_update": str(risky.get(n) or r.risky_update or ""),
             "action": action or "",
             "state": state,
             "unchanged": package_unchanged(r, pin_off),
             "side_changes": r.side_changes,
+            "installed_yanked": r.installed_yanked,
+            "risky_kind": r.risky_kind,
+            "risky_why": r.risky_why,
+            "risky_changes": r.risky_changes,
+            "newest": str(r.newest or ""),
+            "capped_by": capped_by,
             "issue": issue,
             "issue_kind": kind,
             "source": r.source,
@@ -1035,9 +1119,11 @@ def _torch_cuda(torch_version: str) -> Tuple[Optional[Tuple[int, int]], Optional
     return ((int(m[1]), int(m[2])) if m else None), ((int(cu[1]), int(cu[2])) if cu else None)
 
 
-def mark_wheel_packages(reports: Dict[str, PackageReport], installed_map: Dict[str, dict], target_py_ver: str, remote: bool) -> None:
-    """Flag packages installed from a .whl file and look for a newer matching wheel in the wheel sources."""
-    catalog, _wheel_dir, wanted = load_catalog(remote)
+def mark_wheel_packages(reports: Dict[str, PackageReport], installed_map: Dict[str, dict], target_py_ver: str, remote: bool) -> dict:
+    """Flag packages installed from a .whl file and look for a newer matching wheel in the wheel sources.
+    Returns what the search covered: online or not, per-source result, wheel count and the packages with a fitting wheel."""
+    sources: List[dict] = []
+    catalog, _wheel_dir, wanted = load_catalog(remote, sources)
     torch_info = installed_map.get("torch")
     torch_mm, cuda = _torch_cuda(torch_info["version"]) if torch_info else (None, None)
     best = best_wheels(catalog, wanted, ".".join(target_py_ver.split(".")[:2]), torch_mm, cuda) if torch_mm and cuda else {}
@@ -1052,12 +1138,15 @@ def mark_wheel_packages(reports: Dict[str, PackageReport], installed_map: Dict[s
             fn = unquote(durl.rsplit("/", 1)[-1])
             r.source = f"wheel {fn}"
             pypi = r.available_versions[-1] if r.available_versions else None
-            notes.append(f"Installed from wheel {fn}" + (f"; PyPI has {pypi}" + (" (older)" if r.installed and pypi < r.installed else "") if pypi else "; not on PyPI"))
-        if found and found[1] >= 2 and r.installed and found[0].pep_version() > r.installed:
+            notes.append(f"Installed from wheel {fn}" + (f"; PyPI has {pypi}" + (" (older)" if r.installed and pypi < r.installed_public else "") if pypi else "; not on PyPI"))
+        if r.from_wheel and not remote:
+            notes.append("Wheel sources were not checked online (tick \"check wheel sources online\"): newer wheels are not shown")
+        if found and found[1] >= 2 and r.installed and found[0].pep_version() > r.installed_public:
             w = found[0]
             r.wheel_update = {"version": str(w.pep_version()), "filename": w.filename, "url": w.url or "", "path": str(w.path) if w.path else ""}
             notes.append(f"Newer matching wheel {w.filename}: uv pip install --no-deps \"{w.path or w.url}\"")
         r.wheel_note = "\n".join(notes)
+    return {"remote": remote, "sources": sources, "wheels": len(catalog), "packages": len(wanted), "fit": sorted(n for n, (_w, q) in best.items() if q >= 2)}
 
 
 def run_audit(
@@ -1079,12 +1168,14 @@ def run_audit(
     pip = install_prefix(cfg, force_pip=force_pip)
     if installed_map is None:
         installed_map = load_installed_dists(cfg)
+    target_py_ver = _target_python_version(cfg)
+    marker_env = target_marker_env(target_py_ver)
     # Collect constraints from requirements
     allc: Dict[str, List[SourceConstraint]] = {}
     extra_reqs: List[VcsReport] = []
     commented_reqs: List[Tuple[str, str, str]] = []
     for reqf in find_requirements_files(comfy_root):
-        reqs, extras, commented = parse_requirements_file(reqf)
+        reqs, extras, commented = parse_requirements_file(reqf, marker_env=marker_env)
         for r in reqs:
             n = canonicalize_name(r.name)
             allc.setdefault(n, []).append(SourceConstraint("ComfyUI", reqf, r.specifier))
@@ -1106,7 +1197,7 @@ def run_audit(
         if ce_report:
             comfy_env_reports.append(ce_report)
         for reqf in find_requirements_files(pl):
-            reqs, extras, commented = parse_requirements_file(reqf)
+            reqs, extras, commented = parse_requirements_file(reqf, marker_env=marker_env)
             for r in reqs:
                 n = canonicalize_name(r.name)
                 allc.setdefault(n, []).append(SourceConstraint(os.path.basename(pl), reqf, r.specifier))
@@ -1135,26 +1226,48 @@ def run_audit(
         v.installed_commit = inst_commit
         report("Installed (VCS)", i, len(extra_reqs))
 
-    # PyPI info
-    target_py_ver = _target_python_version(cfg)
-    for i, n in enumerate(names, 1):
-        vs, skipped, filtered = fetch_pypi(n, py_ver=target_py_ver)
+    # PyPI info (and the PyTorch index for torch-family builds), looked up in parallel
+    def lookup(n: str) -> tuple:
+        tag = torch_index_tag(installed_map.get(n)) if n in TORCH_INDEX_PACKAGES else ""
+        return fetch_pypi(n, py_ver=target_py_ver), tag, (fetch_torch_index(n, tag, target_py_ver) if tag else ([], ""))
+
+    looked: Dict[str, tuple] = {}
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(names)))) as ex:
+        futs = {ex.submit(lookup, n): n for n in names}
+        try:
+            for i, fut in enumerate(as_completed(futs), 1):
+                looked[futs[fut]] = fut.result()
+                report("PyPI", i, len(names), futs[fut])
+        except BaseException:  # the progress callback aborts the run (cancel): drop the queued lookups
+            ex.shutdown(wait=False, cancel_futures=True)
+            raise
+    for n in names:
+        (vs, skipped, filtered, error, yanked), tag, (index_vs, index_error) = looked[n]
         rpt = reports[n]
+        rpt.installed_yanked = bool(rpt.installed) and rpt.installed_public in yanked
+        rpt.pypi_error = error
+        if tag and index_vs:
+            rpt.index_tag = tag
+            vs = index_vs  # PyPI only has other builds of these
+        elif tag:
+            rpt.availability_issue = f"Could not read the PyTorch index for +{tag} ({index_error}); PyPI versions are other builds and would replace the installed one"
+        rpt.newest = vs[-1] if vs else None
         rpt.available_versions = vs
         rpt.py_incompatible = skipped
         rpt.prerelease_filtered = filtered
         specs = [c.spec for c in rpt.constraints if str(c.spec)]
         rpt.max_allowed = choose_max(vs, specs)
         rpt.installable_max = rpt.max_allowed
-        if specs and not rpt.max_allowed:
+        if error and error != "not on PyPI":
+            rpt.update_error = f"PyPI lookup failed: {error}. Updates cannot be judged; re-run the audit"
+        elif specs and not rpt.max_allowed:
             uniq_specs = _simplify_constraint_specs(specs)
             if not vs:
-                rpt.update_error = f"No releases found on PyPI; constraint(s): {uniq_specs}"
+                rpt.update_error = f"Not on PyPI; constraint(s): {uniq_specs}" if error else f"No releases found on PyPI; constraint(s): {uniq_specs}"
             else:
                 rpt.update_error = f"No release satisfies {uniq_specs}; latest available is {vs[-1]}"
         elif not vs and skipped:
             rpt.update_error = "All available releases require a different Python version"
-        report("PyPI", i, len(names), n)
 
     # VCS refs check
     for i, v in enumerate(extra_reqs, 1):
@@ -1171,7 +1284,7 @@ def run_audit(
     vcs_reports = extra_reqs
 
     # Packages installed from a prebuilt wheel: PyPI versions say nothing about them, the wheel sources do
-    mark_wheel_packages(reports, installed_map, target_py_ver, remote_wheels)
+    wheel_search = mark_wheel_packages(reports, installed_map, target_py_ver, remote_wheels)
 
     # Candidates
     cand: List[Tuple[str, Version]] = []
@@ -1198,22 +1311,25 @@ def run_audit(
             continue
         if not r.installed:
             missing.append((n, tgt))
-        elif r.installed < tgt:
+        elif r.installed_public < tgt or (r.installed_yanked and r.installed_public != tgt):
             cand.append((n, tgt))
-        elif r.installed > tgt:
+        elif r.installed_public > tgt:
             downgrades.append((n, tgt))
 
-    reverse_map = build_reverse_constraints(list(installed_map), installed_map)
+    reverse_map = build_reverse_constraints(list(installed_map), installed_map, marker_env)
     specs_by_name = {n: [c.spec for c in allc[n] if str(c.spec)] for n in allc}
     side_changes: Dict[Tuple[str, str], List[dict]] = {}
+    side_issues: Dict[Tuple[str, str], List[str]] = {}
 
     def evaluate(name: str, ver: Version) -> Tuple[bool, str, str, str]:
         """Dry-run one install and judge the other packages it would change."""
-        ok_e, out_e = dry_run(pip, [(name, ver)])
+        tag = reports[name].index_tag if name in reports else ""
+        ok_e, out_e = dry_run(pip + (["--extra-index-url", TORCH_INDEX_URL + tag] if tag else []), [(name, ver)])
         cls_e, err_e = classify_dry_run(ok_e, out_e)
         if ok_e:
             extras, issues = side_effect_issues(name, parse_install_changes(out_e.splitlines()), specs_by_name, reverse_map, hold_set, pin_map)
             side_changes[(name, str(ver))] = extras
+            side_issues[(name, str(ver))] = issues
             if issues:
                 cls_e, err_e = "risky", "Side effects: " + "; ".join(issues)
         return ok_e, out_e, cls_e, err_e
@@ -1289,7 +1405,7 @@ def run_audit(
                     f"{n}=={v} not available for this Python/platform; "
                     f"highest installable is {fallback}"
                 )
-                if rpt.installed and rpt.installed >= fallback:
+                if rpt.installed and rpt.installed_public >= fallback:
                     rpt.update_ok = True
                     rpt.update_error = None
                     continue
@@ -1317,6 +1433,13 @@ def run_audit(
                 rpt.side_changes = side_changes.get((n, str(v)), [])
             elif cls == "risky":
                 rpt.risky_update = v
+                if conflicts:
+                    rpt.risky_kind, rpt.risky_why = "blocked", conflicts
+                elif ok:
+                    rpt.risky_kind, rpt.risky_why = "side-effects", side_issues.get((n, str(v)), [])
+                    rpt.risky_changes = side_changes.get((n, str(v)), [])
+                else:
+                    rpt.risky_kind, rpt.risky_why = "unresolvable", [err]
         if cls == "safe":
             safe.append((n, v))
         elif cls == "risky":
@@ -1342,5 +1465,5 @@ def run_audit(
     return AuditResult(
         names, reports, extra_reqs, comfy_env_reports, commented_reqs,
         dedupe_pkg_versions(safe), dedupe_pkg_versions(risky), dedupe_pkg_versions(unknown),
-        missing, downgrades, held, pinned_ok, pinned_mismatch, pip,
+        missing, downgrades, held, pinned_ok, pinned_mismatch, pip, wheel_search,
     )
