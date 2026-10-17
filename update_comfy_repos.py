@@ -679,7 +679,7 @@ def repo_status(path: str, fetch: bool = True) -> Dict[str, object]:
     info["commit_base"] = info["web_url"]  # commits are linked as <commit_base>/commit/<hash>
     info["branch"] = get_current_branch(path) or "DETACHED"
     if fetch:
-        ok, out, err = run_git(["-c", "maintenance.auto=false", "-c", "gc.auto=0", "fetch", "--all", "--tags"], cwd=path)
+        ok, out, err = run_git(["-c", "maintenance.auto=false", "-c", "gc.auto=0", "fetch", "--all", "--tags"], cwd=path, env=NO_PROMPT_ENV, timeout=90)
         if not ok:
             info["error"] = (err or out).strip()[-300:]
             info["state"] = "fetch-failed"
@@ -733,18 +733,23 @@ def result_to_dict(res: UpdateResult) -> Dict[str, object]:
 
 # ------------------------- Git helpers -------------------------
 
-def run_git(args: List[str], cwd: str, env: Optional[Dict[str, str]] = None) -> Tuple[bool, str, str]:
+NO_PROMPT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}  # a missing / private repo must fail, not wait for a password
+
+
+def run_git(args: List[str], cwd: str, env: Optional[Dict[str, str]] = None, timeout: Optional[int] = None) -> Tuple[bool, str, str]:
     try:
         proc = subprocess.run(
             ["git", *args], cwd=cwd,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-            env=env, check=False,
+            env=env, check=False, timeout=timeout,
         )
         out = proc.stdout.decode("utf-8", errors="replace")
         err = proc.stderr.decode("utf-8", errors="replace")
         return proc.returncode == 0, out, err
     except FileNotFoundError:
         return False, "", "Git not found in PATH. Install Git."
+    except subprocess.TimeoutExpired:
+        return False, "", f"git did not finish in {timeout}s"
 
 
 def fork_upstream_ref(path: str, branch: str) -> str:

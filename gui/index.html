@@ -346,7 +346,7 @@ header .spacer { flex: 1; }
       <button class="primary" id="w-scan">Scan</button>
       <label title="git fetch every repository so ahead/behind is current (slower)"><input type="checkbox" id="w-fetch" checked> fetch from remotes</label>
       <span class="sep"></span>
-      <span id="w-add"><input type="text" id="w-url" size="50" placeholder="GitHub / Hugging Face URL (repository or folder)"> <button id="w-addbtn">Add workflow source</button></span>
+      <span id="w-add"><textarea id="w-url" rows="1" cols="50" style="vertical-align:middle;resize:both" placeholder="GitHub / Hugging Face URL, repository or folder (several: separate with spaces or new lines)"></textarea> <button id="w-addbtn">Add workflow source(s)</button></span>
     </div>
     <div class="grp"><span class="gl">Filter</span>
       <input type="text" id="w-search" placeholder="Filter…" size="18">
@@ -502,6 +502,7 @@ function watch(jobId, onDone, sink, tabName) {
     since = j.next;
     if (sink && j.log.length) sink(j.log);
     tab.classList.add("busy"); tab.classList.toggle("indet", !j.progress);
+    $("logsummary").textContent = j.status === "running" && j.progress && j.progress.suffix ? j.progress.suffix : $("logsummary").textContent;
     if (j.progress) { tab.querySelector(".tn").textContent = `${j.progress.i}/${j.progress.n}`; tab.querySelector(".tp i").style.width = (j.progress.n ? 100 * j.progress.i / j.progress.n : 0) + "%"; }
     if (j.status === "running") return setTimeout(tick, 500);
     tab.classList.remove("busy", "indet");
@@ -1251,13 +1252,15 @@ $(p + "-update").onclick = async () => {
 };
 
 if ($(p + "-addbtn")) $(p + "-addbtn").onclick = async () => {
-  const url = $(p + "-url").value.trim(); if (!url) return;
-  showLog("Add workflow source", url, "running");
+  const urls = $(p + "-url").value.split(/[\s,]+/).filter(Boolean); if (!urls.length) return;
+  showLog(urls.length > 1 ? `Add ${urls.length} workflow sources` : "Add workflow source", urls.join("\n"), "running");
   try {
-    const {job} = await api("/api/add_workflow", {url});
+    const {job} = await api("/api/add_workflow", {urls});
     watch(job, j => {
       if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
-      setStatus("done"); $(p + "-url").value = ""; $(p + "-scan").onclick();
+      const failed = j.result.failed;
+      setStatus(failed.length ? "failed" : "done"); $("logsummary").textContent = `${j.result.added.length} added` + (failed.length ? `, ${failed.length} failed` : "");
+      $(p + "-url").value = failed.map(f => f.url).join("\n"); $(p + "-scan").onclick();
     }, logAdd);
   } catch (e) { logAdd([e.message]); setStatus("failed"); }
 };

@@ -25,7 +25,7 @@ import traceback
 import socket
 import webbrowser
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List
@@ -45,7 +45,7 @@ import update_workflow_repos as wf
 from comfyui_root import default_workflows_dir
 from workflow_sources import parse_workflow_url, partial_changes, partial_remote_status, read_metadata, sync_partial_source, write_metadata
 from workflow_sources import _cache_key as _partial_cache_key
-from update_comfy_repos import collect_repos, incoming_changes, repo_status, result_to_dict, run_git, to_web_url, update_repo
+from update_comfy_repos import NO_PROMPT_ENV, collect_repos, incoming_changes, repo_status, result_to_dict, run_git, to_web_url, update_repo
 from wheels import download_wheel, listed_packages, load_catalog, match_quality, mismatch, scan_local, scan_source
 from pip_audit_core import SIDE_EFFECT_PROTECTED, TORCH_INDEX_PACKAGES, TORCH_INDEX_URL, _torch_cuda, audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, fetch_requires_dist, fetch_torch_index, find_reverse_conflicts, forward_needs, load_installed_dists, need_vcs_install, parse_install_changes, run_audit, target_marker_env, torch_index_tag
 
@@ -53,7 +53,6 @@ HERE = Path(__file__).resolve().parent
 CONFIG_PATH = str(HERE / "config.json")
 LOG_DIR = HERE / "install_logs"
 PARTIAL_CACHE = (HERE / ".partial_repo_cache").resolve()
-NO_PROMPT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}  # a clone of a missing / private repo must fail, not wait for a password
 PRESETS_PATH = str(HERE / "run_comfyui_presets_config.json")
 TOKEN = secrets.token_urlsafe(16)
 CONFIG_LOCK = threading.Lock()
@@ -66,9 +65,35 @@ class JobCancelled(Exception):
     pass
 
 
+def console(text: str) -> None:
+    """Print to the server window; a console that cannot show a character gets a ? instead of killing the job."""
+    enc = sys.stdout.encoding or "utf-8"
+    print(text.encode(enc, "replace").decode(enc), flush=True)
+
+
+class JobLog(list):
+    """The log a job shows in the GUI; every line is also printed in the server window."""
+
+    def __init__(self, tag: str):
+        super().__init__()
+        self.tag = tag
+
+    def append(self, line: str) -> None:
+        super().append(line)
+        for part in str(line).splitlines() or [""]:
+            console(f"[{self.tag}] {part}")
+
+    def __iadd__(self, lines):
+        for line in lines:
+            self.append(line)
+        return self
+
+
 def new_job(kind: str) -> dict:
-    job = {"id": secrets.token_hex(4), "kind": kind, "status": "running", "progress": None, "log": [], "result": None, "error": "", "cancel": threading.Event()}
-    JOBS[job["id"]] = job
+    job_id = secrets.token_hex(4)
+    job = {"id": job_id, "kind": kind, "status": "running", "progress": None, "log": JobLog(f"{kind} {job_id}"), "result": None, "error": "", "cancel": threading.Event()}
+    JOBS[job_id] = job
+    console(f"[{kind} {job_id}] started")
     return job
 
 
@@ -84,6 +109,7 @@ def run_in_thread(job: dict, fn, *args) -> None:
             job["error"] = f"{type(e).__name__}: {e}"
             job["log"].append(traceback.format_exc())
             job["status"] = "error"
+        console(f"[{job['kind']} {job['id']}] {job['status']}")
 
     threading.Thread(target=target, daemon=True).start()
 
@@ -386,14 +412,25 @@ def repos_scan_job(job: dict, kind: str, fetch: bool, include_disabled: bool) ->
     for old in [p for p, k in REPO_KIND.items() if k == kind]:  # each tab rescans only its own kind
         del REPO_KIND[old]
     REPO_KIND.update({r: kind for r in repos})
-    rows, done = [], 0
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        futs = {ex.submit(source_status, r, fetch): r for r in repos}
+    rows, done, running = [], 0, set()
+
+    def scan(path: str) -> dict:
+        running.add(path)
         try:
-            for fut in as_completed(futs):
-                rows.append(fut.result())
-                done += 1
-                job["progress"] = {"label": "Repositories", "i": done, "n": len(repos), "suffix": rows[-1]["name"]}
+            return source_status(path, fetch)
+        finally:
+            running.discard(path)
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        pending = {ex.submit(scan, r) for r in repos}
+        try:
+            while pending:
+                finished, pending = wait(pending, timeout=1, return_when=FIRST_COMPLETED)
+                for fut in finished:
+                    rows.append(fut.result())
+                    done += 1
+                waiting = sorted(os.path.basename(p) for p in running)
+                job["progress"] = {"label": "Repositories", "i": done, "n": len(repos), "suffix": ("waiting for " + ", ".join(waiting[:4])) if pending and waiting else ""}
                 if job["cancel"].is_set():
                     raise JobCancelled()
         except BaseException:
@@ -781,9 +818,24 @@ def repo_delete_job(job: dict, paths: List[str], mode: str, force: bool) -> dict
     return {"results": results}
 
 
-def add_workflow_job(job: dict, url: str) -> dict:
-    """Add a workflow source by URL: a whole repository is cloned, a folder URL becomes a partial (sparse) source."""
-    source = parse_workflow_url(url.strip())
+def add_workflow_job(job: dict, urls: List[str]) -> dict:
+    """Add workflow sources one after another; one bad URL does not stop the rest."""
+    added, failed = [], []
+    for url in dict.fromkeys(u.strip() for u in urls if u.strip()):
+        try:
+            added.append(add_workflow_one(job, url))
+        except (ValueError, RuntimeError) as e:
+            job["log"].append(f"Failed: {url}: {e}")
+            failed.append({"url": url, "error": str(e)})
+    if failed and not added:
+        raise RuntimeError(f"nothing was added ({len(failed)} failed)")
+    job["log"].append(f"Added {len(added)}" + (f", failed {len(failed)}" if failed else ""))
+    return {"added": added, "failed": failed}
+
+
+def add_workflow_one(job: dict, url: str) -> dict:
+    """A whole repository is cloned, a folder URL becomes a partial (sparse) source."""
+    source = parse_workflow_url(url)
     if source is None:
         raise ValueError("invalid or unsupported URL (GitHub repository / folder or Hugging Face)")
     wdir = default_workflows_dir(resolve_comfyui_root(CONFIG_PATH))
@@ -1163,7 +1215,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/add_workflow":
                 job = new_job("repos")
-                run_in_thread(job, add_workflow_job, str(body["url"]))
+                run_in_thread(job, add_workflow_job, [str(u) for u in body["urls"]])
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repo_detail":
                 if str(body["path"]) not in REPO_KIND:

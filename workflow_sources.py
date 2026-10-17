@@ -11,7 +11,9 @@ import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
+
+import requests
 
 
 METADATA_FILE = ".workflow_source.json"
@@ -44,6 +46,7 @@ def run_git(args: List[str], cwd: Optional[Path] = None) -> Tuple[bool, str]:
             encoding="utf-8",
             errors="replace",
             check=False,
+            env={**os.environ, "GIT_LFS_SKIP_SMUDGE": "1"},  # big files (LFS) outside the tracked folders are not downloaded on checkout
         )
     except FileNotFoundError:
         return False, "git command not found"
@@ -240,10 +243,15 @@ def _to_posix(path: str) -> str:
 
 
 def _ensure_cache(cache_dir: Path, repo_url: str) -> Tuple[bool, str]:
+    hf = urlparse(repo_url).netloc.lower() == "huggingface.co"  # Hugging Face accepts a blob-less clone but then cannot serve the missing blobs
     if (cache_dir / ".git").exists():
-        return True, "ok"
+        if not (hf and run_git(["config", "--get", "remote.origin.promisor"], cwd=cache_dir)[1] == "true"):
+            return True, "ok"
+        shutil.rmtree(cache_dir, onerror=lambda func, p, _exc: (os.chmod(p, 0o700), func(p)))  # a cache made by the blob-less clone is useless there
     cache_dir.parent.mkdir(parents=True, exist_ok=True)
-    ok, out = run_git(["clone", "--filter=blob:none", "--no-checkout", repo_url, str(cache_dir)])
+    ok, out = False, ""
+    if not hf:
+        ok, out = run_git(["clone", "--filter=blob:none", "--no-checkout", repo_url, str(cache_dir)])
     if not ok:
         ok, out = run_git(["clone", "--no-checkout", repo_url, str(cache_dir)])
     return ok, out or "ok"
@@ -317,6 +325,48 @@ def _copy_managed_path(src: Path, dst: Path, dry_run: bool) -> str:
     return f"Synced: {src} -> {dst}"
 
 
+LFS_MAGIC = b"version https://git-lfs.github.com/spec"
+
+
+def _hf_token() -> str:
+    """The Hugging Face token the user already has (env var or `huggingface-cli login`), needed for gated repositories."""
+    for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        if os.environ.get(var, "").strip():
+            return os.environ[var].strip()
+    token_file = Path(os.environ.get("HF_HOME") or Path.home() / ".cache" / "huggingface") / "token"
+    return token_file.read_text(encoding="utf-8").strip() if token_file.is_file() else ""
+
+
+def _download_lfs_files(source: WorkflowSource, target_dir: Path, paths: List[str]) -> List[str]:
+    """The checkout does not fetch big (LFS) files, it leaves 130-byte pointers: replace each pointer in the copied paths with the real file."""
+    host = {"huggingface": f"{source.repo_url}/resolve/{{branch}}/{{path}}", "github": f"https://github.com/{source.owner}/{source.repo}/raw/{{branch}}/{{path}}"}.get(source.provider)
+    headers = {"Authorization": f"Bearer {_hf_token()}"} if source.provider == "huggingface" and _hf_token() else {}
+    messages: List[str] = []
+    for rel in paths:
+        base = target_dir / Path(rel)
+        for f in [base] if base.is_file() else sorted(p for p in base.rglob("*") if p.is_file()):
+            if f.stat().st_size > 200 or not f.read_bytes().startswith(LFS_MAGIC):
+                continue
+            repo_path = f.relative_to(target_dir).as_posix()
+            if host is None:
+                messages.append(f"LFS pointer left as is (no download source for {source.provider}): {repo_path}")
+                continue
+            part = f.with_name(f.name + ".part")
+            try:
+                with requests.get(host.format(branch=quote(source.branch or "main"), path=quote(repo_path)), headers=headers, stream=True, timeout=60) as r:
+                    r.raise_for_status()
+                    with open(part, "wb") as out:
+                        for chunk in r.iter_content(1 << 20):
+                            out.write(chunk)
+                part.replace(f)
+                messages.append(f"Downloaded LFS file: {repo_path} ({f.stat().st_size >> 10} KB)")
+            except requests.RequestException as e:
+                part.unlink(missing_ok=True)
+                gated = " (gated repository: accept its license on the model page and log in with `huggingface-cli login` or set HF_TOKEN)" if source.provider == "huggingface" and "40" in str(e)[:3] else ""
+                messages.append(f"LFS download failed, pointer left: {repo_path}: {e}{gated}")
+    return messages
+
+
 def sync_partial_source(
     source: WorkflowSource,
     target_dir: Path,
@@ -360,6 +410,7 @@ def sync_partial_source(
             messages += _backup_edited_jsons(src, dst, target_dir, target_dir.parent.parent / "github_edits")
         messages.append(_copy_managed_path(src, dst, dry_run))
     if not dry_run:
+        messages += _download_lfs_files(source, target_dir, paths)
         ok, head = run_git(["rev-parse", "HEAD"], cwd=cache_dir)
         if ok and head.strip():
             source.synced_commit = head.strip().splitlines()[0]
