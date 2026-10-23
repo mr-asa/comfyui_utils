@@ -96,15 +96,18 @@ def _format_python_script_cmd(py: List[str], script_path: str) -> str:
     return " ".join([quote_cmd_part(p) for p in py + [script_path]])
 
 
-def format_comfy_env_workspace_install_cmd(py: List[str], comfy_root: str, node_dir: str) -> str:
-    code = (
+def comfy_env_install_code(comfy_root: str, node_dir: str) -> str:
+    return (
         "import sys; "
         f"sys.path.insert(0, r'{comfy_root}'); "
         "from pathlib import Path; "
         "from comfy_env import install; "
         f"install(node_dir=Path(r'{node_dir}'))"
     )
-    return " ".join([quote_cmd_part(p) for p in py + ["-c", code]])
+
+
+def format_comfy_env_workspace_install_cmd(py: List[str], comfy_root: str, node_dir: str) -> str:
+    return " ".join([quote_cmd_part(p) for p in py + ["-c", comfy_env_install_code(comfy_root, node_dir)]])
 
 
 
@@ -255,6 +258,7 @@ def _load_installed_from_python(py: List[str]) -> Optional[Dict[str, dict]]:
         "\nout={};"
         "\nfor d in m.distributions():"
         "\n name=(d.metadata.get('Name') or d.name);"
+        "\n if not name: continue;"
         "\n key=canon(name);"
         "\n direct=d.read_text('direct_url.json');"
         "\n direct_url=None; direct_commit=None;"
@@ -291,6 +295,8 @@ def load_installed_dists(cfg: dict) -> Dict[str, dict]:
     out: Dict[str, dict] = {}
     for dist in importlib_metadata.distributions():
         name = dist.metadata.get("Name") or dist.name
+        if not name:  # leftover dist-info without METADATA from an interrupted install
+            continue
         key = canonicalize_name(name)
         direct_url = None
         direct_commit = None

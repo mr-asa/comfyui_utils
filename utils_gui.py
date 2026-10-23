@@ -47,7 +47,7 @@ from workflow_sources import parse_workflow_url, partial_changes, partial_remote
 from workflow_sources import _cache_key as _partial_cache_key
 from update_comfy_repos import NO_PROMPT_ENV, collect_repos, incoming_changes, repo_status, result_to_dict, run_git, to_web_url, update_repo
 from wheels import download_wheel, listed_packages, load_catalog, match_quality, mismatch, scan_local, scan_source
-from pip_audit_core import SIDE_EFFECT_PROTECTED, TORCH_INDEX_PACKAGES, TORCH_INDEX_URL, _torch_cuda, audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, fetch_requires_dist, fetch_torch_index, find_reverse_conflicts, forward_needs, load_installed_dists, need_vcs_install, parse_install_changes, run_audit, target_marker_env, torch_index_tag
+from pip_audit_core import SIDE_EFFECT_PROTECTED, comfy_env_install_code, TORCH_INDEX_PACKAGES, TORCH_INDEX_URL, _torch_cuda, audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, fetch_requires_dist, fetch_torch_index, find_reverse_conflicts, forward_needs, load_installed_dists, need_vcs_install, parse_install_changes, run_audit, target_marker_env, torch_index_tag
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = str(HERE / "config.json")
@@ -89,9 +89,10 @@ class JobLog(list):
         return self
 
 
-def new_job(kind: str) -> dict:
+def new_job(kind: str, scope: str = "", changes: tuple = ()) -> dict:
+    """`scope` names the page view a reload can pick the job up in, `changes` the views whose results it makes outdated."""
     job_id = secrets.token_hex(4)
-    job = {"id": job_id, "kind": kind, "status": "running", "progress": None, "log": JobLog(f"{kind} {job_id}"), "result": None, "error": "", "cancel": threading.Event()}
+    job = {"id": job_id, "kind": kind, "scope": scope, "changes": changes, "status": "running", "progress": None, "log": JobLog(f"{kind} {job_id}"), "result": None, "error": "", "cancel": threading.Event()}
     JOBS[job_id] = job
     console(f"[{kind} {job_id}] started")
     return job
@@ -112,6 +113,15 @@ def run_in_thread(job: dict, fn, *args) -> None:
         console(f"[{job['kind']} {job['id']}] {job['status']}")
 
     threading.Thread(target=target, daemon=True).start()
+
+
+def last_job(scope: str) -> dict:
+    """The newest job of a view, so a reloaded page can pick it up. Not offered once a later job changed what it scanned: its rows would be outdated."""
+    jobs = list(JOBS.values())
+    i = next((n for n in range(len(jobs) - 1, -1, -1) if jobs[n]["scope"] == scope), None)
+    if i is None:
+        return {}
+    return {"job": jobs[i]["id"], "venv": jobs[i].get("venv", ""), "stale": any(scope in j["changes"] for j in jobs[i + 1:])}
 
 
 def venv_rows() -> dict:
@@ -164,8 +174,7 @@ def audit_job(job: dict, name: str, include_repo: bool, force_pip: bool, remote_
         "comfy_env": [
             {"repo": r.repo, "isolations": [{"env": i.env_name, "built": i.built, "stale": i.stale} for i in r.isolations]}
             for r in res.comfy_env_reports
-        ],
-        "install_cmd": res.install_cmd,
+        ],        "install_cmd": res.install_cmd,
         "wheel_search": res.wheel_search,
         "venv": name,
         "hold": sorted(hold_set),
@@ -208,6 +217,21 @@ def record_install(job: dict, name: str, stamp: str, before: Dict[str, str], aft
     return {"exit_code": code, "installed": after, "changes": changes}
 
 
+LOCKED_FILE = re.compile(r"failed to remove file `(?P<site>[^`]*?site-packages)[\\/](?P<rel>[^`]*)`: Access is denied")
+
+
+def locked_file_owner(lines: List[str]) -> str:
+    """The distribution owning the file uv could not remove: the module name differs from it (_brotli.pyd belongs to brotli), so look it up in the RECORD files."""
+    m = LOCKED_FILE.search("\n".join(lines))
+    if not m:
+        return ""
+    rel = m["rel"].replace("\\", "/")
+    for record in Path(m["site"]).glob("*.dist-info/RECORD"):
+        if any(l.replace("\\", "/").startswith(rel + ",") for l in record.read_text(encoding="utf-8", errors="replace").splitlines()):
+            return canonicalize_name(record.parent.name.split("-", 1)[0])
+    return ""
+
+
 def install_job(job: dict, name: str, packages: List[str], force_pip: bool, protect: str, dry_run: bool, allow: List[str]) -> dict:
     """Install (or only simulate) the packages.
 
@@ -242,6 +266,16 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
         con.write_text("".join(f"{n}=={v}\n" for n, v in sorted(keep.items())), encoding="utf-8")
         cmd += ["-c", str(con)]
     code, lines = stream(job, cmd + packages, cancellable=dry_run)
+    locked: List[str] = []
+    while code and not dry_run:  # a file held by a running process (this GUI included) fails the whole install: leave that package out and install the rest
+        owner = locked_file_owner(lines)
+        hit = next((p for p in packages if canonicalize_name(re.split(r"[=<>!~ ]", p, maxsplit=1)[0]) == owner), None)
+        if not hit or len(packages) == 1:
+            break
+        packages = [p for p in packages if p != hit]
+        locked.append(hit)
+        job["log"].append(f"{hit} is locked by a running process, installing the others without it")
+        code, lines = stream(job, cmd + packages)
     if dry_run:
         result = {"exit_code": code, "changes": parse_install_changes(lines) if code == 0 else [], "output": lines[-14:]}
         if code and keep:  # run again without the protection: what it would change is what stands in the way
@@ -250,7 +284,22 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
             result["unprotected"] = {"exit_code": code2, "changes": changes2, "output": lines2[-14:]}
             result["released"] = [c for c in changes2 if c["name"] in keep]
         return result
-    return record_install(job, name, stamp, before, installed_versions(py), code)
+    if locked:
+        job["log"].append(f"not updated, files in use (close the process that uses the venv, e.g. restart this GUI from another Python): {', '.join(locked)}")
+    return {**record_install(job, name, stamp, before, installed_versions(py), code), "output": lines[-3:], "locked": locked}
+
+
+def comfy_env_job(job: dict, name: str, repo: str) -> dict:
+    """(Re)build the comfy-env isolation of one custom node: the same call the audit prints as "comfy-env workspace install/rerun"."""
+    py = config_schema.venv_python_path(venv_entry(name)["path"])
+    with CONFIG_LOCK:
+        cfg, _ = config_schema.load_legacy_compat(CONFIG_PATH)
+    root = str(resolve_comfyui_root(CONFIG_PATH))
+    node_dir = next((os.path.join(p, repo) for p in custom_nodes_paths(cfg, root) if os.path.isdir(os.path.join(p, repo))), None)
+    if not node_dir or os.path.basename(repo) != repo:
+        raise ValueError(f"custom node '{repo}' not found")
+    code, _ = stream(job, [py, "-c", comfy_env_install_code(root, node_dir)])
+    return {"exit_code": code}
 
 
 CHECK_UV = re.compile(r"The package `(?P<pkg>[^`]+)` requires `(?P<req>[^`]+)`, but (?:`(?P<ver>[^`]+)` is installed|it's not installed)")
@@ -1153,6 +1202,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(e)}, 400)
         elif path == "/api/state":
             self.send_json(venv_rows())
+        elif path == "/api/last_job":
+            self.send_json(last_job(dict(q.split("=", 1) for q in query.split("&") if "=" in q).get("scope", "")))
         elif path.startswith("/api/job/"):
             job = JOBS.get(path.rsplit("/", 1)[1])
             if not job:
@@ -1172,15 +1223,20 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             if self.path == "/api/audit":
-                job = new_job("audit")
+                job = new_job("audit", "audit")
+                job["venv"] = body["venv"]
                 run_in_thread(job, audit_job, body["venv"], bool(body.get("include_repo")), bool(body.get("force_pip")), bool(body.get("remote_wheels")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/install":
                 packages = [str(p) for p in body["packages"] if str(p).strip()]
                 if not packages:
                     return self.send_json({"error": "no packages"}, 400)
-                job = new_job("install")
+                job = new_job("install", changes=() if body.get("dry_run") else ("audit",))
                 run_in_thread(job, install_job, body["venv"], packages, bool(body.get("force_pip")), str(body.get("protect", "held")), bool(body.get("dry_run")), [str(a) for a in body.get("allow", [])])
+                self.send_json({"job": job["id"]})
+            elif self.path == "/api/comfy_env":
+                job = new_job("comfy_env", changes=("audit",))
+                run_in_thread(job, comfy_env_job, body["venv"], str(body["repo"]))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/pip_tool":
                 job = new_job("pip_tool")
@@ -1188,7 +1244,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/install_wheels":
                 names = [str(w["filename"]) for w in body["wheels"]]
-                job = new_job("install")
+                job = new_job("install", changes=("audit",))
                 run_in_thread(job, wheel_install_job, body["venv"], names, bool(body.get("force_pip")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/plan":
@@ -1200,21 +1256,21 @@ class Handler(BaseHTTPRequestHandler):
                 run_in_thread(job, build_job, str(body["plan_id"]), int(body["index"]), str(body["name"]).strip(), bool(body.get("select")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repos_scan":
-                job = new_job("repos")
+                job = new_job("repos", "scan-" + str(body.get("kind", "nodes")))
                 run_in_thread(job, repos_scan_job, str(body.get("kind", "nodes")), bool(body.get("fetch", True)), bool(body.get("include_disabled")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repo_add":
-                job = new_job("repos")
+                job = new_job("repos", changes=("scan-nodes", "scan-workflows"))
                 run_in_thread(job, repo_add_job, [str(u) for u in body["urls"]], bool(body.get("link", True)))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repo_delete":
                 if str(body.get("mode")) not in ("unlink", "delete"):
                     return self.send_json({"error": "bad mode"}, 400)
-                job = new_job("repos")
+                job = new_job("repos", changes=("scan-nodes", "scan-workflows"))
                 run_in_thread(job, repo_delete_job, [str(x) for x in body["paths"]], str(body["mode"]), bool(body.get("force")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/add_workflow":
-                job = new_job("repos")
+                job = new_job("repos", changes=("scan-nodes", "scan-workflows"))
                 run_in_thread(job, add_workflow_job, [str(u) for u in body["urls"]])
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repo_detail":
@@ -1223,7 +1279,7 @@ class Handler(BaseHTTPRequestHandler):
                 path = str(body["path"])
                 self.send_json(incoming_changes(path) if os.path.isdir(os.path.join(path, ".git")) else partial_incoming(path))
             elif self.path == "/api/repos_update":
-                job = new_job("repos")
+                job = new_job("repos", changes=() if body.get("dry_run") else ("scan-nodes", "scan-workflows"))
                 run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/versions":
@@ -1264,6 +1320,13 @@ def port_in_use(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+def is_this_gui(port: int) -> bool:
+    try:
+        return "venvs" in requests.get(f"http://127.0.0.1:{port}/api/state", timeout=2).json()
+    except (requests.RequestException, ValueError):
+        return False
+
+
 def main() -> None:
     ap =argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
@@ -1271,6 +1334,12 @@ def main() -> None:
     args = ap.parse_args()
     port = args.port
     while port_in_use(port):
+        if is_this_gui(port):  # a second instance would have its own jobs: results of a scan started in one are invisible in the other
+            url = f"http://127.0.0.1:{port}/"
+            print(f"ComfyUI utils GUI is already running: {url}")
+            if not args.no_browser:
+                webbrowser.open(url)
+            return
         port += 1
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"

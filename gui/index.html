@@ -142,6 +142,7 @@ nav button.done::after { content: ""; width: 7px; height: 7px; border-radius: 50
 .detail { flex: none; width: var(--detw, 380px); min-width: 220px; max-width: 70vw; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; padding: 8px 12px; font-size: 13px; }
 .detail h4 { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
 .detail .crow { display: grid; grid-template-columns: 9ch 10ch 1fr; gap: 0 10px; padding: 1px 0; font-size: 12.5px; }
+.detail .crow .subj { grid-column: 1 / -1; }
 .detail .crow span:last-child { overflow-wrap: anywhere; font-family: system-ui, "Segoe UI", sans-serif; }
 .detail .frow { display: flex; gap: 0 8px; padding: 1px 0; font-size: 12px; white-space: nowrap; }
 .detail .frow > span { flex: none; text-align: right; }
@@ -305,6 +306,11 @@ header .spacer { flex: 1; }
       <button id="pipcheck" title="Check the installed packages of this venv for broken dependencies (pip check)">Check deps</button>
       <button id="pipcache" title="Delete the downloaded package cache (uv cache clean, or pip cache purge with pip)">Purge cache</button>
     </div>
+    <div class="grp"><span class="gl">Install</span>
+      <input type="text" id="manual" placeholder="packages: name, name==1.2, name&gt;=1 … (several, separated by spaces)" size="60" title="Several packages separated by spaces. Works without running the audit.">
+      <button id="manual-go" title="Check what it would change, then install">Install…</button>
+      <button id="manual-ver" title="Versions of the packages typed in the field (switch between them in the window)">Versions…</button>
+    </div>
   </div>
   <div class="panel" id="resultpanel" hidden>
     <div class="grp"><span class="gl">Filter</span>
@@ -325,9 +331,6 @@ header .spacer { flex: 1; }
       <span class="sep"></span>
       <button class="primary" id="install">Install selected…</button>
       <span class="muted" id="selinfo"></span>
-      <span class="sep"></span>
-      <input type="text" id="manual" placeholder="any package: name, name==1.2, name&gt;=1" size="30" title="Several packages separated by spaces">
-      <button id="manual-go" title="Check what it would change, then install">Install…</button>
     </div>
     <div class="tablewrap"><table>
       <thead><tr><th></th><th data-k="name">Package</th><th data-k="installed">Installed</th><th data-k="install">Will install</th><th data-k="target" title="Highest version the requirements allow">Latest allowed</th><th data-k="state">State</th><th>Used in</th><th>Issue</th><th>Rule</th></tr></thead>
@@ -415,6 +418,7 @@ header .spacer { flex: 1; }
 <dialog id="verdlg">
   <form method="dialog" onsubmit="return false">
     <div id="verhead"><b id="vertitle"></b> <span class="muted" id="verinfo"></span> <span id="verrule"></span></div>
+    <div id="vernames" class="grp" style="padding:4px 14px" hidden></div>
     <div id="verwhy"></div>
     <div class="grp" style="padding:4px 14px">
       <label title="Versions allowed by every requirements.txt that mentions the package and by the installed packages that depend on it"><input type="checkbox" id="ver-ok" checked> only versions that satisfy the constraints</label>
@@ -491,6 +495,12 @@ async function loadVenvs() {
 async function init() {
   await loadVenvs();
   try { const s = JSON.parse(localStorage.getItem("audit-ui") || "{}"); if (s.venv && [...$("venv").options].some(o => o.value === s.venv)) $("venv").value = s.venv; $("repo").checked = !!s.repo; $("pip").checked = !!s.pip; $("remotewh").checked = s.v === 2 ? !!s.remotewh : true; } catch (e) {}
+  const last = await api("/api/last_job?scope=audit");
+  if (last.job && !last.stale && [...$("venv").options].some(o => o.value === last.venv)) {
+    $("venv").value = last.venv;
+    showLog(`Audit: ${last.venv}`, "", "running");
+    watchAudit(last.job);
+  }
 }
 
 function watch(jobId, onDone, sink, tabName) {
@@ -512,6 +522,24 @@ function watch(jobId, onDone, sink, tabName) {
   tick();
 }
 
+// the audit job outlives the page: a reload reattaches to it (see init)
+function watchAudit(job) {
+  auditJob = job; $("run").textContent = "Cancel audit";
+  watch(job, j => {
+    auditJob = null; $("run").disabled = false; $("run").textContent = "Run audit";
+    if (j.status === "cancelled") { logAdd(["Audit cancelled."]); setStatus("cancelled"); return; }
+    if (j.status === "error") { logAdd(["Audit failed: " + j.error]); setStatus("failed"); return; }
+    data = j.result; rules.hold = new Set(data.hold); rules.pins = {...data.pins};
+    buildFilters(); render();
+    $("resultpanel").hidden = false;
+    renderExtra();
+    const todo = data.rows.filter(r => !isUnchanged(r)).length;
+    logAdd([`Audit done: ${data.rows.length} packages, ${todo} need attention, ${data.vcs.length} VCS/URL entries.`
+      + (data.wheel_search.remote ? ` Wheel sources: ${data.wheel_search.sources.filter(s => s.ok).length} ok, ${data.wheel_search.sources.filter(s => !s.ok).length} failed, ${data.wheel_search.wheels} wheel(s) found.` : " Wheel sources were not checked online.")]);
+    setStatus("done");
+  }, logAdd, "audit");
+}
+
 $("run").onclick = async () => {
   if (auditJob) {  // running: this button cancels
     $("run").disabled = true; $("run").textContent = "Cancelling…";
@@ -525,20 +553,7 @@ $("run").onclick = async () => {
   const idle = () => { auditJob = null; $("run").disabled = false; $("run").textContent = "Run audit"; };
   try {
     const {job} = await api("/api/audit", {venv, include_repo: $("repo").checked, force_pip: $("pip").checked, remote_wheels: $("remotewh").checked});
-    auditJob = job; $("run").textContent = "Cancel audit";
-    watch(job, j => {
-      idle();
-      if (j.status === "cancelled") { logAdd(["Audit cancelled."]); setStatus("cancelled"); return; }
-      if (j.status === "error") { logAdd(["Audit failed: " + j.error]); setStatus("failed"); return; }
-      data = j.result; rules.hold = new Set(data.hold); rules.pins = {...data.pins};
-      buildFilters(); render();
-      $("resultpanel").hidden = false;
-      renderExtra();
-      const todo = data.rows.filter(r => !isUnchanged(r)).length;
-      logAdd([`Audit done: ${data.rows.length} packages, ${todo} need attention, ${data.vcs.length} VCS/URL entries.`
-        + (data.wheel_search.remote ? ` Wheel sources: ${data.wheel_search.sources.filter(s => s.ok).length} ok, ${data.wheel_search.sources.filter(s => !s.ok).length} failed, ${data.wheel_search.wheels} wheel(s) found.` : " Wheel sources were not checked online.")]);
-      setStatus("done");
-    }, logAdd, "audit");
+    watchAudit(job);
   } catch (e) { idle(); logAdd(["Audit failed: " + e.message]); setStatus("failed"); }
 };
 
@@ -705,7 +720,7 @@ function render() {
   }).join("");
   $("rows").querySelectorAll("input[type=checkbox]").forEach(cb => cb.onchange = () => { cb.checked ? selected.add(cb.dataset.n) : selected.delete(cb.dataset.n); updateSel(); });
   $("rows").querySelectorAll("button[data-a]").forEach(b => b.onclick = () => rule(b.dataset.a, b.dataset.n));
-  $("rows").querySelectorAll("button[data-ver]").forEach(b => b.onclick = () => openVersions(b.dataset.ver));
+  $("rows").querySelectorAll("button[data-ver]").forEach(b => b.onclick = () => openVersions(b.dataset.ver, data.venv));
   $("rows").querySelectorAll("button[data-resolve]").forEach(b => b.onclick = () => resolveRisky(b.dataset.resolve));
   updateSel();
 }
@@ -734,22 +749,48 @@ function wheelSearchHtml(w) {
 }
 function renderExtra() {
   $("wheelsearch").innerHTML = wheelSearchHtml(data.wheel_search);
-  const vcs = data.vcs.map(v => `<div class="mono">${esc(v.name || "?")} <span class="muted">${esc(v.repo)}</span> ${esc(v.raw)} — ${v.installed ? "installed " + esc(v.installed) : "missing"}${v.need_install ? " (will install)" : ""}</div>`).join("");
+  const vcs = data.vcs.map((v, n) => `<div class="mono">${esc(v.name || "?")} <span class="muted">${esc(v.repo)}</span> ${esc(v.raw)} — ${v.installed ? "installed " + esc(v.installed) : "missing"}${v.need_install ? ` (will install) <button data-vcs="${n}">Install…</button>` : ""}</div>`).join("");
   $("vcs").innerHTML = vcs || '<span class="muted">none</span>';
-  const env = data.comfy_env.map(e => `<div><b>${esc(e.repo)}</b> ${e.isolations.map(i => `<span class="badge ${i.built ? (i.stale ? "s-unknown" : "s-safe") : "s-risky"}">${esc(i.env)}: ${i.built ? (i.stale ? "stale" : "ok") : "missing"}</span>`).join(" ")}</div>`).join("");
+  const env = data.comfy_env.map((e, n) => `<div><b>${esc(e.repo)}</b> ${e.isolations.map(i => `<span class="badge ${i.built ? (i.stale ? "s-unknown" : "s-safe") : "s-risky"}">${esc(i.env)}: ${i.built ? (i.stale ? "stale" : "ok") : "missing"}</span>`).join(" ")}${e.isolations.some(i => !i.built || i.stale) ? ` <button data-env="${n}" title="Runs comfy_env.install for this node in the selected venv">${e.isolations.some(i => !i.built) ? "Build" : "Rebuild"}</button>` : ""}</div>`).join("");
   $("env").innerHTML = env || '<span class="muted">none</span>';
   $("extrapanel").hidden = false;
 }
+$("vcs").onclick = e => {
+  const v = data.vcs[e.target.dataset.vcs];
+  if (!v) return;
+  const name = canon(v.name || v.raw.replace(/[@#].*$/, "").replace(/\.git$/, "").split("/").pop());
+  pending = {venv: data.venv, items: [{name, spec: v.raw, ver: "", from: v.installed, wheel: null}], allow: []};
+  $("dlg").showModal();
+  preview();
+};
+$("env").onclick = async e => {
+  const env = data.comfy_env[e.target.dataset.env];
+  if (!env || !confirm(`Build the comfy-env isolation of ${env.repo} in the venv "${data.venv}"?\n\nThis can download a lot and take a while.`)) return;
+  showLog(`comfy-env: ${env.repo}`, "", "running");
+  try {
+    const {job} = await api("/api/comfy_env", {venv: data.venv, repo: env.repo});
+    watch(job, j => {
+      if (j.status !== "done") { logAdd([j.error || "Failed."]); setStatus("failed"); return; }
+      setStatus(j.result.exit_code ? "failed" : "done");
+      $("logsummary").textContent = j.result.exit_code ? "comfy-env install failed" : "comfy-env built, re-run the audit to re-check";
+      if (!j.result.exit_code) { env.isolations.forEach(i => { i.built = true; i.stale = false; }); renderExtra(); }
+    }, logAdd);
+  } catch (err) { logAdd([err.message]); setStatus("failed"); }
+};
 
 // ---- all versions of one package
-let verData = null, verRow = null, verChecks = {};
-async function openVersions(name) {
-  verRow = data.rows.find(r => r.name === name) || {name, installed: "", state: "ok", used_in: [], virtual: true};  // a dependency no requirements.txt lists has no table row
+let verData = null, verRow = null, verChecks = {}, verVenv = "", verAudited = false;
+async function openVersions(name, venv, names = []) {
+  $("vernames").hidden = names.length < 2;
+  $("vernames").innerHTML = names.map(n => `<button type="button" class="${n === name ? "primary" : ""}" data-vn="${esc(n)}">${esc(n)}</button>`).join(" ");
+  $("vernames").querySelectorAll("button").forEach(b => b.onclick = () => openVersions(b.dataset.vn, venv, names));
+  verVenv = venv; verAudited = !!data && data.venv === venv;
+  verRow = (verAudited && data.rows.find(r => r.name === name)) || {name, installed: "", state: "ok", used_in: [], virtual: true};  // a dependency no requirements.txt lists has no table row
   $("vertitle").textContent = name; $("verinfo").textContent = "loading…"; $("verwhy").innerHTML = ""; $("verrule").innerHTML = ""; $("verbody").innerHTML = ""; $("ver-typed").value = "";
   $("ver-typed-use").hidden = !!verRow.virtual; verChecks = {};
   if (!$("verdlg").open) $("verdlg").showModal();
   try {
-    verData = await api("/api/versions", {venv: data.venv, name, specs: verRow.used_in.filter(u => u.spec).map(u => ({repo: u.repo, spec: u.spec}))});
+    verData = await api("/api/versions", {venv: verVenv, name, specs: verRow.used_in.filter(u => u.spec).map(u => ({repo: u.repo, spec: u.spec}))});
     if (verRow.virtual) verRow.installed = verData.installed;
     $("verinfo").textContent = `installed ${verData.installed || "—"} · newest release ${verData.newest || "—"} · newest allowed ${verData.allowed || "none"}`
       + (verData.versions.some(v => !v.pre && v.python_ok && versionOk(v) && cmpVer(v.version, verData.installed || "0") > 0) ? "" : " · no newer release satisfies the constraints");
@@ -769,7 +810,7 @@ function renderWhy() {
   else if (held) lines.push('<div class="risk">held in this venv: audits skip it</div>');
   if (verData.protected) lines.push('<div class="risk">protected: never changed as a side effect of another install</div>');
   $("verwhy").innerHTML = lines.join("") || '<div class="muted">No requirement constrains this package: any release can be installed.</div>';
-  $("verrule").innerHTML = (held ? `<button type="button" class="link" data-vr="unhold">unhold</button>` : `<button type="button" class="link" data-vr="hold">hold</button>`)
+  $("verrule").innerHTML = !verAudited ? "" : (held ? `<button type="button" class="link" data-vr="unhold">unhold</button>` : `<button type="button" class="link" data-vr="hold">hold</button>`)
     + " " + (pin ? `<button type="button" class="link" data-vr="unpin">unpin ${esc(pin)}</button>` : verData.installed ? `<button type="button" class="link" data-vr="pin">pin ${esc(verData.installed)}</button>` : "");
   $("verrule").querySelectorAll("button").forEach(b => b.onclick = async () => { await rule(b.dataset.vr, n, verData.installed); renderWhy(); });
 }
@@ -814,7 +855,7 @@ function renderVersions() {
 async function checkVersion(ver) {
   verChecks[ver] = '<span class="badge s-ok">checking…</span>'; renderVersions();
   try {
-    const {job} = await api("/api/install", {venv: data.venv, packages: [`${verRow.name}==${ver}`], force_pip: $("pip").checked, protect: "held", dry_run: true, allow: []});
+    const {job} = await api("/api/install", {venv: verVenv, packages: [`${verRow.name}==${ver}`], force_pip: $("pip").checked, protect: "held", dry_run: true, allow: []});
     watch(job, j => { verChecks[ver] = checkBadge(j); renderVersions(); });
   } catch (e) { verChecks[ver] = `<span class="badge s-risky">${esc(e.message)}</span>`; renderVersions(); }
 }
@@ -836,18 +877,18 @@ function useVersion(ver) {
 }
 function installVersion(ver) {
   if (!ver) return;
-  pending = {items: [{name: verRow.name, ver, state: verRow.state, from: verRow.installed, wheel: null}], allow: []};
+  pending = {venv: verVenv, items: [{name: verRow.name, ver, state: verRow.state, from: verRow.installed, wheel: null}], allow: []};
   $("verdlg").close(); if (!$("dlg").open) $("dlg").showModal(); preview();
 }
 function installWheel(i) {
   const w = verData.wheels[i];
-  pending = {items: [{name: verRow.name, ver: w.version, state: verRow.state, from: verRow.installed, wheel: {version: w.version, filename: w.filename, url: w.url, path: w.path}}], allow: []};
+  pending = {venv: verVenv, items: [{name: verRow.name, ver: w.version, state: verRow.state, from: verRow.installed, wheel: {version: w.version, filename: w.filename, url: w.url, path: w.path}}], allow: []};
   $("verdlg").close(); if (!$("dlg").open) $("dlg").showModal(); preview();
 }
 // a risky update that only needs held / pinned packages released: preview it with those released
 function resolveRisky(name) {
   const r = data.rows.find(x => x.name === name);
-  pending = {items: [{name, ver: r.risky_update, state: r.state, from: r.installed, wheel: null}], allow: r.risky_changes.map(c => c.name).filter(n => rules.hold.has(n) || rules.pins[n])};
+  pending = {venv: data.venv, items: [{name, ver: r.risky_update, state: r.state, from: r.installed, wheel: null}], allow: r.risky_changes.map(c => c.name).filter(n => rules.hold.has(n) || rules.pins[n])};
   if (!$("dlg").open) $("dlg").showModal();
   preview();
 }
@@ -863,14 +904,20 @@ const wheelItems = () => pending.items.filter(i => i.wheel);
 const pypiPkgs = () => pypiItems().map(i => i.spec || `${i.name}==${i.ver}`);
 
 $("manual-go").onclick = () => {
+  const venv = $("venv").value;
   const items = $("manual").value.trim().split(/\s+/).filter(Boolean).map(spec => {
-    const name = canon(spec.match(/^[A-Za-z0-9._-]+/)?.[0] || ""), row = data.rows.find(r => r.name === name);
+    const name = canon(spec.match(/^[A-Za-z0-9._-]+/)?.[0] || ""), row = data && data.venv === venv && data.rows.find(r => r.name === name);
     return {name, spec, ver: "", from: row ? row.installed : "", wheel: null};
   });
   if (!items.length || items.some(i => !i.name)) return alert("Type a package name, optionally with a version specifier, e.g. numpy==2.1.0");
-  pending = {items, allow: []};
+  pending = {venv, items, allow: []};
   $("dlg").showModal();
   preview();
+};
+$("manual-ver").onclick = () => {
+  const names = [...new Set($("manual").value.trim().split(/\s+/).map(t => canon(t.match(/^[A-Za-z0-9._-]+/)?.[0] || "")).filter(Boolean))];
+  if (!names.length) return alert("Type a package name first.");
+  openVersions(names[0], $("venv").value, names);
 };
 $("manual").onkeydown = e => { if (e.key === "Enter") $("manual-go").click(); };
 $("install").onclick = () => {
@@ -879,7 +926,7 @@ $("install").onclick = () => {
     return {name: n, ver: p.ver, state: r.state, from: r.installed, wheel: p.wheel ? r.wheel_update : null};
   }).filter(i => i.ver);
   if (!items.length) return alert("Nothing to install for the selected rows.");
-  pending = {items, allow: []};
+  pending = {venv: data.venv, items, allow: []};
   $("dlg").showModal();
   preview();
 };
@@ -907,14 +954,14 @@ async function preview() {
   $("dlgbody").innerHTML = '<span class="muted">Checking what would change…</span>';
   const buf = [];
   try {
-    const {job} = await api("/api/install", {venv: data.venv, packages: pypiPkgs(), force_pip: $("pip").checked, protect: protectMode(), dry_run: true, allow: pending.allow});
+    const {job} = await api("/api/install", {venv: pending.venv, packages: pypiPkgs(), force_pip: $("pip").checked, protect: protectMode(), dry_run: true, allow: pending.allow});
     previewJob = job;
     watch(job, j => { if (seq === previewSeq && j.status !== "cancelled") showPreview(j, buf); }, lines => buf.push(...lines));
   } catch (e) { $("dlgbody").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 }
 
 function chgRow(c, extra) {
-  const yanked = (data.rows.find(r => r.name === c.name) || {}).installed_yanked;  // the installed release was withdrawn: a lower number is the way out
+  const yanked = ((data && data.rows.find(r => r.name === c.name)) || {}).installed_yanked;  // the installed release was withdrawn: a lower number is the way out
   const down = c.from && c.to && cmpVer(c.to, c.from) < 0 && !yanked;
   const what = !c.from ? "added" : !c.to ? "removed" : down ? "DOWNGRADE" : yanked && cmpVer(c.to, c.from) < 0 ? "replaces yanked" : "";
   const hold = extra && c.from && !rules.hold.has(c.name) ? ` <button type="button" class="link" data-hold="${esc(c.name)}" title="Add to the hold list and check again">hold</button>` : "";
@@ -942,7 +989,7 @@ function showPreview(j, buf) {
       box.querySelectorAll("button").forEach(btn => btn.onclick = () => { pending.allow.push(...btn.dataset.allow.split(",")); preview(); });
       $("dlgbody").appendChild(box);
     }
-    $("dlgbody").querySelectorAll("button[data-ver]").forEach(btn => btn.onclick = () => openVersions(btn.dataset.ver));
+    $("dlgbody").querySelectorAll("button[data-ver]").forEach(btn => btn.onclick = () => openVersions(btn.dataset.ver, pending.venv));
     const out = (j.error ? j.error + "\n" : "") + ((un && un.exit_code ? un.output : res.output) || []).join("\n");
     if (out.trim()) $("dlgbody").insertAdjacentHTML("beforeend", `<details${un && un.exit_code === 0 ? "" : " open"}><summary class="muted">resolver output${un && un.exit_code === 0 ? " (with protection)" : ""}</summary><pre>${esc(un && un.exit_code === 0 ? (res.output || []).join("\n") : out)}</pre></details>`);
     $("dlgok").disabled = true;
@@ -951,10 +998,11 @@ function showPreview(j, buf) {
   pending.modes = {...pending.modes, [protectMode()]: "ok"}; markModes();
   const want = new Set(pypiItems().map(i => i.name));
   const main = j.result.changes.filter(c => want.has(c.name)), extra = j.result.changes.filter(c => !want.has(c.name));
-  $("dlgbody").innerHTML = wheelHtml + (want.size ? `<h3>Selected (${main.length})</h3>${main.map(c => chgRow(c, false)).join("") || '<span class="muted">already installed</span>'}`
+  $("dlgbody").innerHTML = wheelHtml + (want.size ? `<h3>Selected (${main.length})</h3>${main.map(c => chgRow(c, false)).join("")}`
+    + pypiItems().filter(i => !main.some(c => c.name === i.name)).map(i => `<div class="chg"><span class="mono">${esc(i.spec || i.name)}</span><span class="muted">${i.from ? `already satisfied by the installed ${esc(i.from)}, nothing to do (use ==version to force another one)` : "already installed, nothing to do (use ==version to force another one)"}</span></div>`).join("")
     + `<h3 class="${extra.length ? "risk" : ""}">Also changed by dependencies (${extra.length})</h3>`
     + (extra.map(c => chgRow(c, true)).join("") || '<span class="muted">nothing else changes</span>') : "");
-  $("dlgbody").querySelectorAll("button[data-ver]").forEach(b => b.onclick = () => openVersions(b.dataset.ver));
+  $("dlgbody").querySelectorAll("button[data-ver]").forEach(b => b.onclick = () => openVersions(b.dataset.ver, pending.venv));
   $("dlgbody").querySelectorAll("button[data-hold]").forEach(b => b.onclick = async () => { await rule("hold", b.dataset.hold); preview(); });
   $("dlgnote").textContent = `${j.result.changes.length + wheels.length} package(s) will change` + (pending.allow.length ? `; unlocked for this install: ${pending.allow.join(", ")}` : "");
   $("dlgok").disabled = !(j.result.changes.length + wheels.length);
@@ -966,25 +1014,36 @@ const runJob = (path, body) => new Promise((resolve, reject) => api(path, body).
 const jobFailed = j => j.status === "error" || j.result.exit_code !== 0;
 
 async function doInstall(protect) {
-  const {items} = pending, pk = pypiPkgs(), wheels = wheelItems();
-  showLog(`Installing ${items.length} package(s) into ${data.venv}`, "", "running");
+  const {items, venv} = pending, pk = pypiPkgs(), wheels = wheelItems();
+  showLog(`Installing ${items.length} package(s) into ${pending.venv}`, "", "running");
   $("install").dataset.busy = "1"; $("install").disabled = true; $("install").textContent = "Installing…";
   const finish = () => { $("install").dataset.busy = "0"; $("install").textContent = "Install selected…"; updateSel(); };
   const results = [];
   try {
-    if (pk.length) results.push(await runJob("/api/install", {venv: data.venv, packages: pk, force_pip: $("pip").checked, protect, dry_run: false, allow: pending.allow}));
-    if (wheels.length && !results.some(jobFailed)) results.push(await runJob("/api/install_wheels", {venv: data.venv, wheels: wheels.map(i => ({filename: i.wheel.filename})), force_pip: $("pip").checked}));
+    if (pk.length) results.push(await runJob("/api/install", {venv, packages: pk, force_pip: $("pip").checked, protect, dry_run: false, allow: pending.allow}));
+    if (wheels.length && !results.some(jobFailed)) results.push(await runJob("/api/install_wheels", {venv, wheels: wheels.map(i => ({filename: i.wheel.filename})), force_pip: $("pip").checked}));
   } catch (e) { finish(); setStatus("failed"); logAdd([e.message]); return; }
   finish();
   const failed = results.some(jobFailed);
+  const inTable = data && data.venv === venv;
+  if (!failed && inTable) { data.vcs.forEach(v => { if (pk.includes(v.raw)) { v.need_install = false; v.installed = "now"; } }); renderExtra(); }
   results.filter(jobFailed).forEach(j => { if (j.error) logAdd([j.error]); });
+  const locked = results.flatMap(j => (j.result && j.result.locked) || []);
+  if (locked.length) logAdd([`\nNOT updated, files in use by a running process (this GUI runs from the same venv): ${locked.join(", ")}\nRun the GUI with another Python, or stop whatever uses the venv, then update these again.`]);
   const changes = results.filter(j => !jobFailed(j)).flatMap(j => j.result.changes);
   if (!changes.length) {
     setStatus(failed ? "failed" : "done");
-    $("logsummary").textContent = failed ? "the table was not changed, check the output" : "nothing changed";
+    $("logsummary").textContent = failed ? "install failed, no package was changed" : "nothing changed";
+    if (!locked.length && results.some(j => ((j.result && j.result.output) || []).some(l => /Access is denied|being used by another process/i.test(l)))) logAdd(["\nNothing was installed: a file in the venv is locked. Stop whatever uses this venv (this GUI included) and retry."]);
     return;
   }
   const want = Object.fromEntries(items.map(i => [i.name, i]));
+  if (!inTable) {
+    setStatus(failed ? "failed" : "done");
+    logAdd(["\nChanged:\n  " + changes.map(c => `${c.name} ${c.from || "-"} -> ${c.to || "-"}`).join("\n  ") + "\nRun the audit to refresh the table."]);
+    $("logsummary").textContent = `${changes.length} package(s) changed` + (failed ? ", some steps failed" : "");
+    return;
+  }
   data.rows.forEach(r => { delete r.flash; delete r.side; });
   const done = [], side = [], other = [];
   changes.forEach(c => {
@@ -1116,6 +1175,7 @@ const prLinks = (text, base) => !base ? text : text.replace(/#(\d+)/g, (m, n) =>
   return `<a href="${url}" target="_blank" rel="noopener" title="Open pull request #${n}">#${n}</a>`;
 });
 const commitsHtml = (commits, title, base) => commits.length ? `<h4>${title} (${commits.length}${commits.length >= 60 ? "+" : ""})</h4>` + commits.map(c => {
+  if (!/^[0-9a-f]{7,} \d{4}-\d\d-\d\d /.test(c)) return `<div class="crow mono"><span class="subj">${prLinks(esc(c), base)}</span></div>`; // pulled commits are bare subjects
   const [hash, date, ...subject] = c.split(" ");
   const url = base ? `${base.replace(/\/$/, "")}${/gitlab/i.test(base) ? "/-" : ""}/commit/${hash}` : "";
   return `<div class="crow mono"><span>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="Open this commit on the web">${esc(hash)}</a>` : esc(hash)}</span><span class="muted">${esc(date)}</span><span>${prLinks(esc(subject.join(" ")), base)}</span></div>`;
@@ -1152,15 +1212,25 @@ $(p + "-scan").onclick = async () => {
   const idle = () => { rJob = null; $(p + "-scan").disabled = false; $(p + "-scan").textContent = "Scan"; };
   try {
     const {job} = await api("/api/repos_scan", {kind, fetch: $(p + "-fetch").checked, include_disabled: $(p + "-disabled") ? $(p + "-disabled").checked : false});
-    rJob = job; $(p + "-scan").textContent = "Cancel scan"; rSel.clear();
-    watch(job, j => {
-      idle();
-      if (j.status === "cancelled") { logAdd(["Scan cancelled."]); setStatus("cancelled"); return; }
-      if (j.status === "error") { logAdd(["Scan failed: " + j.error]); setStatus("failed"); return; }
-      repos = j.result.rows; setStatus("done"); rBuildChips(); rRender();
-    }, logAdd);
+    rSel.clear(); watchScan(job);
   } catch (e) { idle(); logAdd(["Scan failed: " + e.message]); setStatus("failed"); }
 };
+
+// the scan job outlives the page: a reload reattaches to it
+function watchScan(job) {
+  rJob = job; $(p + "-scan").textContent = "Cancel scan";
+  watch(job, j => {
+    rJob = null; $(p + "-scan").disabled = false; $(p + "-scan").textContent = "Scan";
+    if (j.status === "cancelled") { logAdd(["Scan cancelled."]); setStatus("cancelled"); return; }
+    if (j.status === "error") { logAdd(["Scan failed: " + j.error]); setStatus("failed"); return; }
+    repos = j.result.rows; setStatus("done"); rBuildChips(); rRender();
+  }, logAdd, tabId);
+}
+api("/api/last_job?scope=scan-" + kind).then(last => {
+  if (!last.job || last.stale) return;
+  showLog("Scan: " + (kind === "nodes" ? "ComfyUI & custom nodes" : "workflow sources"), "", "running");
+  watchScan(last.job);
+}).catch(() => {});
 
 function rBuildChips() {
   const counts = {}; repos.forEach(r => counts[r.state] = (counts[r.state] || 0) + 1);
