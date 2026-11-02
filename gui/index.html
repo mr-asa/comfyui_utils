@@ -1199,7 +1199,7 @@ const commitsHtml = (commits, title, base) => commits.length ? `<h4>${title} (${
 
 // branch graph: one lane per line of history, each row is an svg cell (dot + lines) next to the commit
 const GRAPH_COLORS = ["#6d94ff", "#4cc27e", "#e0a64a", "#ef6b5b", "#4cc3dc", "#b58aff"];
-function graphHtml(commits) {
+function graphHtml(commits, base) {
   const H = 22, W = 14, lanes = [], rows = [];
   for (const c of commits) {
     const before = lanes.slice();
@@ -1224,7 +1224,7 @@ function graphHtml(commits) {
       + r.out.map(j => line(r.col, mid, j, H, j === r.col ? r.col : j)).join("")
       + `<circle cx="${x(r.col)}" cy="${mid}" r="${r.c.parents.length > 1 ? 3 : 4}" fill="${r.c.parents.length > 1 ? "var(--panel)" : color(r.col)}" stroke="${color(r.col)}" stroke-width="1.6"/>`;
     const refs = r.c.refs.map(t => `<span class="badge gref">${esc(t.replace("HEAD -> ", "● "))}</span>`).join("");
-    return `<div class="grow" title="${esc(r.c.hash + " " + r.c.date + "  " + r.c.subject)}"><svg width="${width}" height="${H}">${svg}</svg><span class="gtext">${refs}<span class="muted mono">${esc(r.c.hash)}</span> ${esc(r.c.subject)}</span></div>`;
+    return `<div class="grow" title="${esc(r.c.hash + " " + r.c.date + "  " + r.c.subject)}"><svg width="${width}" height="${H}">${svg}</svg><span class="gtext">${refs}<span class="mono">${base ? `<a href="${esc(`${base.replace(/\/$/, "")}${/gitlab/i.test(base) ? "/-" : ""}/commit/${r.c.hash}`)}" target="_blank" rel="noopener" title="Open this commit on the web">${esc(r.c.hash)}</a>` : esc(r.c.hash)}</span> ${prLinks(esc(r.c.subject), base)}</span></div>`;
   }).join("");
 }
 
@@ -1324,7 +1324,7 @@ async function rPick(path) {
     const box = e.target.parentElement; box.innerHTML = '<span class="muted">Loading…</span>';
     try {
       const g = await api("/api/repo_graph", {path});
-      if (seq === rDetailSeq) box.innerHTML = g.error ? `<span class="bad">${esc(g.error)}</span>` : graphHtml(g.commits);
+      if (seq === rDetailSeq) box.innerHTML = g.error ? `<span class="bad">${esc(g.error)}</span>` : graphHtml(g.commits, r.commit_base);
     } catch (err) { if (seq === rDetailSeq) box.innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
   };
   if (r.updated) { $(p + "-detail").innerHTML = r.updated + graphBox; bindGraph(); return; }
