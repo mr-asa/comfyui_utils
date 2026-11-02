@@ -26,6 +26,9 @@ header h1 { font-size: 14px; margin: 0 6px 0 0; }
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 8px 12px 6px; }
 select, input[type=text], textarea, button { font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; line-height: 1.35; }
 button { cursor: pointer; }
+#tagsuggest { position: fixed; z-index: 50; display: none; max-height: 240px; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 2px; box-shadow: 0 4px 14px rgba(0,0,0,.3); }
+#tagsuggest div { padding: 1px 8px; font-size: 13px; line-height: 1.3; cursor: pointer; border-radius: 3px; }
+#tagsuggest div:hover, #tagsuggest div.on { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
 label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); }
@@ -76,6 +79,8 @@ dialog { background: var(--panel); color: var(--text); border: 1px solid var(--l
 #setdlg .clr { display: flex; flex: 1; } #setdlg .clr input { width: 100%; }
 .iconbtn { padding: 3px 6px; display: inline-flex; align-items: center; background: transparent; border-color: transparent; color: var(--muted); }
 .iconbtn:hover { color: var(--text); border-color: var(--line); }
+#quit { color: var(--bad); }
+#quit:hover { color: var(--bad); border-color: var(--bad); }
 #setdlg { width: min(1340px, 97vw); }
 #sethead { padding: 10px 16px 6px; border-bottom: 1px solid var(--line); }
 #setbody { padding: 4px 16px 12px; max-height: 68vh; overflow: auto; }
@@ -147,6 +152,10 @@ nav button.done::after { content: ""; width: 7px; height: 7px; border-radius: 50
 .detail .frow { display: flex; gap: 0 8px; padding: 1px 0; font-size: 12px; white-space: nowrap; }
 .detail .frow > span { flex: none; text-align: right; }
 .detail .frow > span.path { flex: 1 1 auto; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+.detail .grow { display: flex; align-items: center; height: 22px; font-size: 12.5px; white-space: nowrap; }
+.detail .grow svg { flex: none; }
+.detail .gtext { overflow: hidden; text-overflow: ellipsis; margin-left: 4px; }
+.detail .gref { padding: 0 6px; margin-right: 4px; font-size: 11px; color: var(--accent); }
 .detail .add { color: var(--ok); } .detail .del { color: var(--bad); }
 .vgrip { flex: none; width: 8px; cursor: ew-resize; margin: 0 1px 6px; border-radius: 4px; }
 .vgrip:hover, .vgrip.drag { background: color-mix(in srgb, var(--accent) 45%, transparent); }
@@ -178,12 +187,13 @@ header .spacer { flex: 1; }
   <span class="spacer"></span>
   <span class="muted" id="info"></span>
   <button id="settings" class="iconbtn" title="Settings: folders, venvs, environment variables, wheel sources"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+  <button id="quit" class="iconbtn" title="Quit: stop the server and close this window"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v9"/><path d="M6.4 6.6a8 8 0 1 0 11.2 0"/></svg></button>
 </header>
 <main>
 <section id="tab-build" class="tabsec" hidden>
   <div class="panel">
     <div class="grp"><span class="gl">Target</span>
-      <label>Python <select id="b-py"><option value="">all installed</option></select></label>
+      <label>Python <select id="b-py"><option value="">all</option></select></label>
       <label>CUDA <select id="b-cuda"><option value="">all</option></select></label>
       <label title="Optional, major.minor">torch <input type="text" id="b-torch" size="5" placeholder="2.11"></label>
       <label title="How many Python/CUDA/torch combinations are fully resolved">candidates <input type="text" id="b-top" size="2" value="6"></label>
@@ -228,7 +238,7 @@ header .spacer { flex: 1; }
     <div class="grp"><span class="gl">Filter</span>
       <input type="text" id="r-search" placeholder="Filter…" size="18">
       <select id="r-tag" title="Only nodes with this tag"><option value="">all tags</option></select>
-      <input type="text" id="r-tagname" size="10" list="n-taglist" placeholder="tag" title="Tag to add to or remove from the selected repositories">
+      <input type="text" id="r-tagname" size="10" placeholder="tag" title="Tag to add to or remove from the selected repositories">
       <button id="r-tagadd" title="Add this tag to the selected repositories">Tag selected</button><button id="r-tagdel" title="Remove this tag from the selected repositories">Untag selected</button>
       <label><input type="checkbox" id="r-hide" checked> hide up-to-date</label>
       <label><input type="checkbox" id="r-dirtyonly"> only with local changes</label>
@@ -283,7 +293,7 @@ header .spacer { flex: 1; }
       <label>preset <select id="n-preset"></select></label>
       <button id="n-papply">Apply…</button><button id="n-psave">Save current as…</button><button id="n-pdel" class="danger">Delete</button>
       <span class="sep"></span>
-      <label>tag <input type="text" id="n-tagname" size="12" list="n-taglist"></label><datalist id="n-taglist"></datalist>
+      <label>tag <input type="text" id="n-tagname" size="12"></label>
       <button id="n-tagsel" title="Select every node that has this tag (the field above, or the tag filter)">Select by tag</button>
       <button id="n-tagadd">Tag selected</button><button id="n-tagdel">Untag selected</button>
     </div>
@@ -488,7 +498,7 @@ async function loadVenvs() {
   if (keep && [...$("venv").options].some(o => o.value === keep)) $("venv").value = keep;
   $("info").textContent = st.uv ? "uv found" : "uv not found, pip will be used";
   cFillVenvs();
-  $("b-py").innerHTML = '<option value="">all installed</option>' + st.pythons.map(v => `<option>${v}</option>`).join("");
+  $("b-py").innerHTML = '<option value="">all</option>' + st.pythons.map(v => `<option value="${v}">${v}${st.pythons_installed.includes(v) ? "" : " (uv will download)"}</option>`).join("");
   $("b-cuda").innerHTML = '<option value="">all</option>' + st.cuda.map(v => `<option>${v}</option>`).join("");
   return st;
 }
@@ -642,6 +652,12 @@ function setStatus(st) {
 setStatus("idle");
 $("logmin").onclick = () => { const m = $("drawer").classList.toggle("min"); $("logmin").textContent = m ? "expand" : "minimize"; };
 $("logclear").onclick = () => { $("log").textContent = ""; $("logtitle").textContent = ""; $("logsummary").textContent = ""; setStatus("idle"); };
+$("quit").onclick = async () => {
+  if (!confirm("Stop the server and close this window? Running jobs will be interrupted.")) return;
+  await fetch("/api/shutdown", {method: "POST", headers: {"X-Token": TOKEN, "Content-Type": "application/json"}, body: "{}"}).catch(() => {});
+  window.close();
+  document.body.innerHTML = '<p style="padding:24px;font:16px sans-serif">Server stopped. You can close this tab.</p>';
+};
 $("logissue").onclick = () => {
   const title = [$("logtitle").textContent, $("logstatus").textContent].filter(Boolean).join(": ") || "GUI problem";
   const body = `**Action:** ${$("logtitle").textContent}\n**Status:** ${$("logstatus").textContent} ${$("logsummary").textContent}\n\n\`\`\`\n${$("log").innerText.slice(-3500)}\n\`\`\`\n`;
@@ -1181,6 +1197,37 @@ const commitsHtml = (commits, title, base) => commits.length ? `<h4>${title} (${
   return `<div class="crow mono"><span>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="Open this commit on the web">${esc(hash)}</a>` : esc(hash)}</span><span class="muted">${esc(date)}</span><span>${prLinks(esc(subject.join(" ")), base)}</span></div>`;
 }).join("") : "";
 
+// branch graph: one lane per line of history, each row is an svg cell (dot + lines) next to the commit
+const GRAPH_COLORS = ["#6d94ff", "#4cc27e", "#e0a64a", "#ef6b5b", "#4cc3dc", "#b58aff"];
+function graphHtml(commits) {
+  const H = 22, W = 14, lanes = [], rows = [];
+  for (const c of commits) {
+    const before = lanes.slice();
+    let col = before.indexOf(c.hash);
+    if (col < 0) { col = before.indexOf(null); if (col < 0) col = lanes.length; }
+    const into = before.map((h, j) => h === c.hash ? j : -1).filter(j => j >= 0);
+    into.forEach(j => lanes[j] = null);
+    const out = [];
+    c.parents.forEach((ph, k) => {
+      let to = lanes.indexOf(ph);
+      if (to < 0) { to = k === 0 ? col : lanes.indexOf(null); if (to < 0) to = lanes.length; lanes[to] = ph; }
+      out.push(to);
+    });
+    while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop();
+    rows.push({c, col, into, out, pass: before.map((h, j) => h && h !== c.hash ? j : -1).filter(j => j >= 0)});
+  }
+  const width = (Math.max(1, ...rows.map(r => Math.max(r.col, ...r.into, ...r.out, ...r.pass) + 1))) * W + 4;
+  const x = j => j * W + W / 2 + 2, color = j => GRAPH_COLORS[j % GRAPH_COLORS.length], mid = H / 2;
+  return rows.map(r => {
+    const line = (x1, y1, x2, y2, j) => `<line x1="${x(x1)}" y1="${y1}" x2="${x(x2)}" y2="${y2}" stroke="${color(j)}" stroke-width="1.6"/>`;
+    const svg = r.pass.map(j => line(j, 0, j, H, j)).join("") + r.into.map(j => line(j, 0, r.col, mid, j)).join("")
+      + r.out.map(j => line(r.col, mid, j, H, j === r.col ? r.col : j)).join("")
+      + `<circle cx="${x(r.col)}" cy="${mid}" r="${r.c.parents.length > 1 ? 3 : 4}" fill="${r.c.parents.length > 1 ? "var(--panel)" : color(r.col)}" stroke="${color(r.col)}" stroke-width="1.6"/>`;
+    const refs = r.c.refs.map(t => `<span class="badge gref">${esc(t.replace("HEAD -> ", "● "))}</span>`).join("");
+    return `<div class="grow" title="${esc(r.c.hash + " " + r.c.date + "  " + r.c.subject)}"><svg width="${width}" height="${H}">${svg}</svg><span class="gtext">${refs}<span class="muted mono">${esc(r.c.hash)}</span> ${esc(r.c.subject)}</span></div>`;
+  }).join("");
+}
+
 function repoTab(p, kind, tabId) {
 const RSTATES = ["conflict", "behind", "diverged", "fetch-failed", "not-git", "ahead", "untracked", "partial", "no-upstream", "up-to-date"];
 const RLABEL = {untracked: "no sync record"};
@@ -1272,7 +1319,15 @@ function rUpdateSel() { $(p + "-selinfo").textContent = rSel.size ? `${rSel.size
 async function rPick(path) {
   rPicked = path; const seq = ++rDetailSeq, r = repos.find(x => x.path === path);
   document.querySelectorAll("#" + p + "-rows tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.p === path && !tr.classList.contains("flash")));
-  if (r.updated) { $(p + "-detail").innerHTML = r.updated; return; }
+  const graphBox = '<h4>History graph</h4><div class="graph"><button class="link" data-graph>Load graph</button></div>';
+  const bindGraph = () => $(p + "-detail").querySelector("[data-graph]").onclick = async e => {
+    const box = e.target.parentElement; box.innerHTML = '<span class="muted">Loading…</span>';
+    try {
+      const g = await api("/api/repo_graph", {path});
+      if (seq === rDetailSeq) box.innerHTML = g.error ? `<span class="bad">${esc(g.error)}</span>` : graphHtml(g.commits);
+    } catch (err) { if (seq === rDetailSeq) box.innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+  };
+  if (r.updated) { $(p + "-detail").innerHTML = r.updated + graphBox; bindGraph(); return; }
   $(p + "-detail").innerHTML = '<span class="muted">Loading…</span>';
   try {
     const d = await api("/api/repo_detail", {path});
@@ -1280,7 +1335,8 @@ async function rPick(path) {
     const head = `<b>${esc(r.name)}</b> <span class="muted">${esc(r.path)}</span>` + (r.dirty ? `<div class="risk">Local changes:<br>${r.dirty_lines.map(l => `<span class="mono">${esc(l)}</span>`).join("<br>")}</div>` : "");
     $(p + "-detail").innerHTML = head + (d.commits.length ? commitsHtml(d.commits, "Incoming commits", r.commit_base) + filesHtml(d.files) : '<div class="muted" style="margin-top:8px">Nothing incoming.</div>')
       + (d.conflicts && d.conflicts.length ? `<div class="risk">Conflicts with your patches:<br>${d.conflicts.map(f => `<span class="mono">${esc(f)}</span>`).join("<br>")}</div>` : "")
-      + (d.error ? `<div class="bad">${esc(d.error)}</div>` : "");
+      + (d.error ? `<div class="bad">${esc(d.error)}</div>` : "") + graphBox;
+    bindGraph();
   } catch (e) { if (seq === rDetailSeq) $(p + "-detail").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 }
 
@@ -1402,7 +1458,6 @@ async function nLoad() {
   $("r-tag").innerHTML = $("n-tag").innerHTML;
   for (const id in picked) $(id).value = picked[id];
   gitTab.render();
-  $("n-taglist").innerHTML = nodes.tags.map(t => `<option value="${esc(t)}">`).join("");
   $("n-preset").innerHTML = Object.entries(nodes.presets).map(([n, v]) => `<option value="${esc(n)}">${esc(n)} (${v.mode}, ${v.count})</option>`).join("");
   const counts = {}; nodes.rows.forEach(r => counts[r.kind] = (counts[r.kind] || 0) + 1);
   $("n-chips").innerHTML = NKINDS.filter(x => counts[x]).map(x => `<span class="chip ${nActive.has(x) ? "on" : ""}" data-s="${x}">${x} ${counts[x]}</span>`).join(" ");
@@ -1469,6 +1524,34 @@ $("n-tagsel").onclick = () => {
   hit.forEach(r => nSel.add(r.name)); nRender();
   $("n-selinfo").textContent = `${nSel.size} selected (${hit.length} with tag "${tag}")`;
 };
+const tagSuggest = (() => {
+  const box = document.createElement("div"); box.id = "tagsuggest"; document.body.appendChild(box);
+  let inp = null;
+  const hide = () => { box.style.display = "none"; };
+  const show = el => {
+    inp = el;
+    const q = el.value.trim().toLowerCase(), tags = (nodes.tags || []).filter(t => t.toLowerCase().includes(q));
+    if (!tags.length) return hide();
+    box.innerHTML = tags.map(t => `<div>${esc(t)}</div>`).join("");
+    const r = el.getBoundingClientRect();
+    Object.assign(box.style, {display: "block", left: r.left + "px", top: r.bottom + 2 + "px", minWidth: r.width + "px"});
+  };
+  box.onmousedown = e => { e.preventDefault(); if (e.target.parentNode === box) { inp.value = e.target.textContent; hide(); inp.dispatchEvent(new Event("input")); } };
+  for (const id of ["n-tagname", "r-tagname"]) {
+    const el = $(id);
+    el.autocomplete = "off";
+    el.addEventListener("focus", () => show(el)); el.addEventListener("input", () => show(el)); el.addEventListener("blur", hide);
+    el.addEventListener("keydown", e => {
+      if (e.key === "Escape") return hide();
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && !(e.key === "Enter" && box.querySelector(".on"))) return;
+      const items = [...box.children], cur = items.findIndex(d => d.classList.contains("on"));
+      if (e.key === "Enter") { e.preventDefault(); el.value = items[cur].textContent; return hide(); }
+      e.preventDefault(); if (box.style.display === "none") return show(el);
+      items[cur]?.classList.remove("on");
+      const n = items[(cur + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]; n.classList.add("on"); n.scrollIntoView({block: "nearest"});
+    });
+  }
+})();
 $("n-tagadd").onclick = () => needSel() && $("n-tagname").value.trim() && nAct({action: "tag_add", tag: $("n-tagname").value, names: nNames()}, "Tag nodes");
 $("n-tagdel").onclick = () => needSel() && $("n-tagname").value.trim() && nAct({action: "tag_remove", tag: $("n-tagname").value, names: nNames()}, "Untag nodes");
 for (const [id, action] of [["r-tagadd", "tag_add"], ["r-tagdel", "tag_remove"]])

@@ -45,7 +45,7 @@ import update_workflow_repos as wf
 from comfyui_root import default_workflows_dir
 from workflow_sources import parse_workflow_url, partial_changes, partial_remote_status, read_metadata, sync_partial_source, write_metadata
 from workflow_sources import _cache_key as _partial_cache_key
-from update_comfy_repos import NO_PROMPT_ENV, collect_repos, incoming_changes, repo_status, result_to_dict, run_git, to_web_url, update_repo
+from update_comfy_repos import NO_PROMPT_ENV, collect_repos, incoming_changes, repo_graph, repo_status, result_to_dict, run_git, to_web_url, update_repo
 from wheels import download_wheel, listed_packages, load_catalog, match_quality, mismatch, scan_local, scan_source
 from pip_audit_core import SIDE_EFFECT_PROTECTED, comfy_env_install_code, TORCH_INDEX_PACKAGES, TORCH_INDEX_URL, _torch_cuda, audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, fetch_requires_dist, fetch_torch_index, find_reverse_conflicts, forward_needs, load_installed_dists, need_vcs_install, parse_install_changes, run_audit, target_marker_env, torch_index_tag
 
@@ -55,6 +55,7 @@ LOG_DIR = HERE / "install_logs"
 PARTIAL_CACHE = (HERE / ".partial_repo_cache").resolve()
 PRESETS_PATH = str(HERE / "run_comfyui_presets_config.json")
 TOKEN = secrets.token_urlsafe(16)
+APP_WINDOW = None
 CONFIG_LOCK = threading.Lock()
 JOBS: Dict[str, dict] = {}
 REPO_KIND: Dict[str, str] = {}  # repositories found by the last scans (path -> "nodes" | "workflows"); the only paths the update endpoints accept
@@ -130,7 +131,8 @@ def venv_rows() -> dict:
         "venvs": config_schema.list_venvs(v2),
         "comfyui_root": config_schema.get_value(v2, "comfyui_root"),
         "uv": bool(shutil.which("uv")),
-        "pythons": installed_pythons(PY_CANDIDATES),
+        "pythons": PY_CANDIDATES,
+        "pythons_installed": installed_pythons(PY_CANDIDATES),
         "cuda": CUDA_CANDIDATES,
     }
 
@@ -1278,6 +1280,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "unknown repository"}, 400)
                 path = str(body["path"])
                 self.send_json(incoming_changes(path) if os.path.isdir(os.path.join(path, ".git")) else partial_incoming(path))
+            elif self.path == "/api/repo_graph":
+                path = str(body["path"])
+                if path not in REPO_KIND:
+                    return self.send_json({"error": "unknown repository"}, 400)
+                self.send_json(repo_graph(path) if os.path.isdir(os.path.join(path, ".git")) else {"commits": [], "error": "not a full git checkout"})
             elif self.path == "/api/repos_update":
                 job = new_job("repos", changes=() if body.get("dry_run") else ("scan-nodes", "scan-workflows"))
                 run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
@@ -1305,6 +1312,9 @@ class Handler(BaseHTTPRequestHandler):
                 if job:
                     job["cancel"].set()
                 self.send_json({"ok": bool(job)})
+            elif self.path == "/api/shutdown":
+                self.send_json({"ok": True})
+                threading.Timer(0.3, shutdown).start()
             elif self.path == "/api/rules":
                 save_rules(body["venv"], list(body.get("hold", [])), dict(body.get("pins", {})))
                 self.send_json({"ok": True})
@@ -1312,6 +1322,26 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "not found"}, 404)
         except (KeyError, ValueError, TypeError) as e:
             self.send_json({"error": f"{type(e).__name__}: {e}"}, 400)
+
+
+def open_browser(url: str) -> None:
+    global APP_WINDOW
+    candidates = [shutil.which(n) for n in ("msedge", "chrome", "google-chrome", "chromium")]
+    candidates += [os.path.join(os.environ.get(v, ""), r"Microsoft\Edge\Application\msedge.exe") for v in ("ProgramFiles(x86)", "ProgramFiles")]
+    candidates += [os.path.join(os.environ.get(v, ""), r"Google\Chrome\Application\chrome.exe") for v in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData")]
+    exe = next((c for c in candidates if c and os.path.isfile(c)), None)
+    if exe is None:
+        webbrowser.open(url)
+        return
+    # own profile: the window is a separate browser process, so quitting can close it without touching the user's browser
+    profile = Path(tempfile.gettempdir()) / "comfyui_utils_gui_profile"
+    APP_WINDOW = subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}", "--no-first-run"])
+
+
+def shutdown() -> None:
+    if APP_WINDOW and APP_WINDOW.poll() is None:
+        APP_WINDOW.terminate()
+    os._exit(0)
 
 
 def port_in_use(port: int) -> bool:
@@ -1338,14 +1368,14 @@ def main() -> None:
             url = f"http://127.0.0.1:{port}/"
             print(f"ComfyUI utils GUI is already running: {url}")
             if not args.no_browser:
-                webbrowser.open(url)
+                open_browser(url)
             return
         port += 1
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
     print(f"ComfyUI utils GUI: {url}  (Ctrl+C to stop)")
     if not args.no_browser:
-        webbrowser.open(url)
+        open_browser(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

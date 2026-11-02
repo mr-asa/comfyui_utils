@@ -700,13 +700,18 @@ def dedupe_pkg_versions(items: List[Tuple[str, Version]]) -> List[Tuple[str, Ver
     return sorted(by_name.items(), key=lambda x: x[0])
 
 
+FALLBACK_MAX_CHECKS = 40
+
+
 def _find_safe_upgrade_fallback(
     pkg_name: str,
     rpt: PackageReport,
     reverse_map: Dict[str, List[Tuple[str, SpecifierSet]]],
     evaluate: Callable,
+    installed_map: Dict[str, dict],
+    marker_env: Dict[str, str],
     upper_exclusive: Optional[Version] = None,
-    max_dry_run_checks: int = 12,
+    max_dry_run_checks: int = FALLBACK_MAX_CHECKS,
 ) -> Optional[Version]:
     """
     Find highest safe upgrade for an installed package:
@@ -715,6 +720,8 @@ def _find_safe_upgrade_fallback(
     - satisfies direct requirement constraints
     - satisfies reverse dependency constraints
     - passes the dry run and its side effects as safe
+    Releases whose own requirements would change an installed package are only dry-run
+    after every release that needs no such change has failed.
     """
     if not rpt.installed:
         return None
@@ -722,17 +729,21 @@ def _find_safe_upgrade_fallback(
     if not versions:
         return None
     direct_specs = [c.spec for c in rpt.constraints if str(c.spec)]
+    cands = [
+        cand for cand in versions
+        if not (cand <= rpt.installed_public and not rpt.installed_yanked)
+        and not (upper_exclusive and cand >= upper_exclusive)
+        and not (rpt.max_allowed and cand > rpt.max_allowed)
+        and not (direct_specs and not all(cand in s for s in direct_specs))
+        and not find_reverse_conflicts(reverse_map, pkg_name, cand)
+    ]
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        all_requires = list(ex.map(lambda c: fetch_requires_dist(pkg_name, str(c)), cands))
     checks = 0
-    for cand in versions:
-        if cand <= rpt.installed_public and not rpt.installed_yanked:
-            continue
-        if upper_exclusive and cand >= upper_exclusive:
-            continue
-        if rpt.max_allowed and cand > rpt.max_allowed:
-            continue
-        if direct_specs and not all(cand in s for s in direct_specs):
-            continue
-        if find_reverse_conflicts(reverse_map, pkg_name, cand):
+    needy: List[Version] = []
+    for cand, requires in zip(cands, all_requires):
+        if requires and forward_needs(requires, installed_map, marker_env):
+            needy.append(cand)
             continue
         cls = evaluate(pkg_name, cand)[2]
         checks += 1
@@ -740,7 +751,14 @@ def _find_safe_upgrade_fallback(
             return cand
         if checks >= max_dry_run_checks:
             rpt.search_truncated = True
+            return None
+    for cand in needy:
+        if checks >= max_dry_run_checks:
+            rpt.search_truncated = True
             break
+        checks += 1
+        if evaluate(pkg_name, cand)[2] == "safe":
+            return cand
     return None
 
 
@@ -1080,7 +1098,7 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
         if state in ("held", "pinned") and action == "upgrade":
             extra_info.append(f"{state.capitalize()}; {tgt} is available")
         if r.search_truncated:
-            extra_info.append("Stopped after 12 trial installs without finding a safe older version")
+            extra_info.append(f"Stopped after {FALLBACK_MAX_CHECKS} trial installs without finding a safe older version")
         if r.installed_yanked:
             extra_info.append(f"The installed {r.installed} was yanked on PyPI (withdrawn by its author)" + (f"; {tgt} replaces it, even though the number is lower" if action == "upgrade" and tgt and tgt < r.installed_public else ""))
         capped_by = [f"{c.repo} {c.spec}" for c in r.constraints if str(c.spec) and r.newest and r.newest not in c.spec] if tgt and r.newest and tgt < r.newest else []
@@ -1395,7 +1413,8 @@ def run_audit(
     if total:
         report("Classify", total, total)
 
-    for n, v in cand:
+    for idx, (n, v) in enumerate(cand, 1):
+        report("Safe version search", idx, total, n)
         ver_checked, conflicts, ok, out, cls, err = initial_results.get(
             n, (v, [], False, "", "unknown", "internal classification error")
         )
@@ -1460,6 +1479,8 @@ def run_audit(
                 rpt,
                 reverse_map,
                 evaluate,
+                installed_map=installed_map,
+                marker_env=marker_env,
                 upper_exclusive=v,
             )
             if fallback:

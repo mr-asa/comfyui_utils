@@ -439,7 +439,10 @@ def update_repo(path: str, dry_run: bool = False, on_local: Optional[str] = None
             print_repo_header(name, path, web_url, branch)
         notes.append("Unresolved merge conflict (left over from a previous run):")
         notes.extend(["  " + ln for ln in remedy_unmerged_conflict(path, conflicted)])
-        resolution = ("reset" if on_conflict == "reset" else None) if on_conflict else prompt_conflict_resolution(name, path, web_url, branch, conflicted)
+        if on_local == "1":
+            resolution = "reset"
+        else:
+            resolution = ("reset" if on_conflict == "reset" else None) if on_conflict else prompt_conflict_resolution(name, path, web_url, branch, conflicted)
         if resolution is None:
             skip_notes = notes + ["Skipped due to unresolved merge conflict."]
             abort_note = abort_in_progress_operation(path)
@@ -721,6 +724,18 @@ def incoming_changes(path: str, limit: int = 60) -> Dict[str, object]:
             files.append({"added": parts[0], "deleted": parts[1], "path": parts[2]})
     conflicts = predict_conflicts(path, fork_ref) if fork_ref and commits else []
     return {"commits": commits, "files": files, "conflicts": conflicts, "error": "" if ok else (err or out).strip()[-300:]}
+
+
+def repo_graph(path: str, limit: int = 80) -> Dict[str, object]:
+    """Newest commits reachable from HEAD and its upstream, with parents and ref labels for drawing the branch graph."""
+    fork_ref = fork_upstream_ref(path, get_current_branch(path) or "")
+    refs = [r for r in ("HEAD", "@{u}", fork_ref) if r and run_git(["rev-parse", "--verify", "--quiet", r], cwd=path)[0]]
+    ok, out, err = run_git(["log", f"--max-count={limit}", "--topo-order", "--format=%h%x1f%p%x1f%cs%x1f%D%x1f%s", *refs], cwd=path)
+    commits = []
+    for line in out.splitlines() if ok else []:
+        h, parents, date, refs_label, subject = line.split("\x1f", 4)
+        commits.append({"hash": h, "parents": parents.split(), "date": date, "refs": [x.strip() for x in refs_label.split(",") if x.strip()], "subject": subject})
+    return {"commits": commits, "error": "" if ok else (err or out).strip()[-300:]}
 
 
 def result_to_dict(res: UpdateResult) -> Dict[str, object]:
