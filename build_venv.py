@@ -31,7 +31,7 @@ from packaging.utils import canonicalize_name
 import config_schema
 from comfyui_root import resolve_comfyui_root
 from wheels import Wheel, best_wheels, download_wheel, load_catalog, tup
-from envtools import enabled_node_dirs, find_requirements_files, installed_pythons, parse_requirements_file, run_logged, run_uv as uv, uv_command
+from envtools import enabled_node_dirs, find_requirements_files, parse_requirements_file, run_logged, run_uv as uv, uv_command
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
@@ -275,7 +275,7 @@ def make_plan(opts: PlanOptions, tmp: Path, log: Callable[[str], None] = print, 
     order = head + prefer + sorted(k for k in by_src if k not in head + prefer)
     ordered = [(k, [l for l in by_src[k] if canonicalize_name(Requirement(l).name) not in excl]) for k in order if k in by_src]
     catalog, wheel_dir, wanted = load_catalog(opts.remote)
-    pythons = [opts.python] if opts.python else installed_pythons(PY_CANDIDATES)
+    pythons = [opts.python] if opts.python else PY_CANDIDATES
     nodes = sum(1 for v in by_src.values() if v)
     log(f"ComfyUI: {root}\nNodes with requirements: {nodes}, vcs/url: {len(vcs)}")
     log(f"Wheel catalog: {len(catalog)} for {', '.join(wanted)} (dir: {wheel_dir}); pythons: {', '.join(pythons)}")
