@@ -1320,13 +1320,19 @@ async function rPick(path) {
   rPicked = path; const seq = ++rDetailSeq, r = repos.find(x => x.path === path);
   document.querySelectorAll("#" + p + "-rows tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.p === path && !tr.classList.contains("flash")));
   const graphBox = '<h4>History graph</h4><div class="graph"><button class="link" data-graph>Load graph</button></div>';
-  const bindGraph = () => $(p + "-detail").querySelector("[data-graph]").onclick = async e => {
-    const box = e.target.parentElement; box.innerHTML = '<span class="muted">Loading…</span>';
+  const GRAPH_STEP = 80;
+  const loadGraph = async (box, limit) => {
+    box.innerHTML = '<span class="muted">Loading…</span>';
     try {
-      const g = await api("/api/repo_graph", {path});
-      if (seq === rDetailSeq) box.innerHTML = g.error ? `<span class="bad">${esc(g.error)}</span>` : graphHtml(g.commits, r.commit_base);
+      const g = await api("/api/repo_graph", {path, limit});
+      if (seq !== rDetailSeq) return;
+      box.innerHTML = g.error ? `<span class="bad">${esc(g.error)}</span>` : graphHtml(g.commits, r.commit_base)
+        + (g.commits.length >= limit ? `<button class="link" data-more>Load ${GRAPH_STEP} more</button>` : "");
+      const more = box.querySelector("[data-more]");
+      if (more) more.onclick = () => loadGraph(box, limit + GRAPH_STEP);
     } catch (err) { if (seq === rDetailSeq) box.innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
   };
+  const bindGraph = () => $(p + "-detail").querySelector("[data-graph]").onclick = e => loadGraph(e.target.parentElement, GRAPH_STEP);
   if (r.updated) { $(p + "-detail").innerHTML = r.updated + graphBox; bindGraph(); return; }
   $(p + "-detail").innerHTML = '<span class="muted">Loading…</span>';
   try {

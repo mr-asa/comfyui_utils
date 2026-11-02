@@ -1284,7 +1284,7 @@ class Handler(BaseHTTPRequestHandler):
                 path = str(body["path"])
                 if path not in REPO_KIND:
                     return self.send_json({"error": "unknown repository"}, 400)
-                self.send_json(repo_graph(path) if os.path.isdir(os.path.join(path, ".git")) else {"commits": [], "error": "not a full git checkout"})
+                self.send_json(repo_graph(path, int(body.get("limit", 80))) if os.path.isdir(os.path.join(path, ".git")) else {"commits": [], "error": "not a full git checkout"})
             elif self.path == "/api/repos_update":
                 job = new_job("repos", changes=() if body.get("dry_run") else ("scan-nodes", "scan-workflows"))
                 run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
