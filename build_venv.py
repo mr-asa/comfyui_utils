@@ -162,6 +162,12 @@ def why_failed(err: str) -> str:
     return re.sub(r"\s+", " ", m[0])[:160] if m else ""
 
 
+def short_error(err: str) -> str:
+    """The reason of a uv resolve failure: from the first 'Because' on, else the tail."""
+    i = err.find("Because")
+    return re.sub(r"\s+", " ", err[i:])[:360] if i >= 0 else re.sub(r"\s+", " ", err)[-360:]
+
+
 def lock_names(lock: Path) -> set:
     return {canonicalize_name(m[1]) for m in re.finditer(r"^([A-Za-z0-9_.\-]+)==", lock.read_text(), re.M)} if lock.exists() else set()
 
@@ -304,10 +310,20 @@ def describe_plan(plan: Plan) -> str:
         status = f"loose {len(c.loosened)} drop {len(c.dropped)}" if c.resolved else "FAILED"
         out.append(f"  {c.label():26} {status:11} wheels {len(c.wheels)}/{len(plan.wanted)}: {have or '-'}")
     out.append("  (? = untagged wheel, unverified; ~ = other CUDA minor, same major)")
+    for c in plan.candidates:
+        if c.resolved is False:
+            out.append(f"\n{c.label()} failed: {short_error(c.error)}")
     best = plan.best
     if not best:
         out.append(f"\nNothing resolves. Error for {plan.candidates[0].label()}:\n{plan.candidates[0].error}" if plan.candidates else "\nNo candidates.")
         return "\n".join(out)
+    others = [c for c in plan.candidates if c.resolved and c is not best]
+    for c in others:
+        mine, ref = set(c.loosened) | set(c.dropped), set(best.loosened) | set(best.dropped)
+        if mine != ref:
+            out.append(f"\n{c.label()} differs from the best: " + "; ".join([f"also {x}" for x in sorted(mine - ref)] + [f"not {x}" for x in sorted(ref - mine)]))
+    if others and all(set(c.loosened) == set(best.loosened) and set(c.dropped) == set(best.dropped) for c in others):
+        out.append(f"\nThe lists below are the same for all {len(others) + 1} resolved candidates: they come from conflicts between nodes, not from torch.")
     if best.loosened:
         out.append("\nVersion pins loosened (conflict with earlier requirements):\n  " + "\n  ".join(best.loosened))
     if best.dropped:
