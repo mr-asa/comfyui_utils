@@ -958,6 +958,7 @@ def versions_info(venv: str, name: str, specs: List[dict]) -> dict:
     for c in caps:
         ss = SpecifierSet(c["spec"])
         c["top"] = next((r["version"] for r in stable if ss.contains(Version(r["version"]), prereleases=True)), "")
+        c["mask"] = "".join("1" if ss.contains(Version(r["version"]), prereleases=True) else "0" for r in releases[:400])  # which of the listed releases it allows
     allowed = next((r["version"] for r in stable if not r["blocked_by"] and not r["conflicts"] and not r["off_index"]), "")
     # the newest candidates: which installed packages their own requirements would force to change
     cands = [r for r in stable if not r["blocked_by"] and not r["conflicts"] and not r["off_index"] and (current_public is None or Version(r["version"]) > current_public)][:12]
