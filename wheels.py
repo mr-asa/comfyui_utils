@@ -180,6 +180,12 @@ def match_quality(w: Wheel, py: str, torch_mm: Tuple[int, int], cuda: Tuple[int,
     return 3 if w.torch else 1
 
 
+def ranked_wheels(catalog: List[Wheel], name: str, py: str, torch_mm: Tuple[int, int], cuda: Tuple[int, int]) -> List[Wheel]:
+    """Every wheel of one package that fits, best first: the order best_wheels picks from."""
+    fits = [(match_quality(w, py, torch_mm, cuda), w) for w in catalog if w.name == name]
+    return [w for q, w in sorted(((q, w) for q, w in fits if q), key=lambda x: (x[0], x[1].pep_version(), x[1].path is not None), reverse=True)]
+
+
 def best_wheels(catalog: List[Wheel], wanted: List[str], py: str, torch_mm: Tuple[int, int], cuda: Tuple[int, int]) -> Dict[str, Tuple[Wheel, int]]:
     best: Dict[str, Tuple[Wheel, int]] = {}
     for w in catalog:

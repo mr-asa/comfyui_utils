@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -30,7 +31,7 @@ from packaging.utils import canonicalize_name
 
 import config_schema
 from comfyui_root import resolve_comfyui_root
-from wheels import Wheel, best_wheels, download_wheel, load_catalog, tup
+from wheels import Wheel, best_wheels, download_wheel, load_catalog, ranked_wheels, tup
 from envtools import enabled_node_dirs, find_requirements_files, parse_requirements_file, run_logged, run_uv as uv, uv_command
 
 HERE = Path(__file__).resolve().parent
@@ -266,6 +267,7 @@ class Plan:
     seeds: int
     catalog_size: int
     pythons: List[str]
+    catalog: List[Wheel]
 
     @property
     def best(self) -> Optional[Candidate]:
@@ -300,7 +302,7 @@ def make_plan(opts: PlanOptions, tmp: Path, log: Callable[[str], None] = print, 
     with ThreadPoolExecutor(max_workers=len(checked) or 1) as ex:
         list(ex.map(lambda c: verify(c, ordered, seeds, tmp, cancelled), checked))
     checked.sort(key=lambda c: c.score, reverse=True)
-    return Plan(root, vcs, wheel_dir, wanted, checked, nodes, len(seeds), len(catalog), pythons)
+    return Plan(root, vcs, wheel_dir, wanted, checked, nodes, len(seeds), len(catalog), pythons, catalog)
 
 
 def describe_plan(plan: Plan) -> str:
@@ -351,6 +353,12 @@ def default_venv_name(c: Candidate) -> str:
     return f".venv{c.py.replace('.', '')}_{c.cuda}_torch{c.torch_mm[0]}{c.torch_mm[1]}"
 
 
+def imports_ok(py: str, module: str) -> bool:
+    """Import in its own process: a wheel with a mismatched binary interface kills the interpreter."""
+    r = subprocess.run([py, "-c", f"import torch, {module}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+    return r.returncode == 0
+
+
 def build_venv(plan: Plan, c: Candidate, name: str, tmp: Path, log: Callable[[str], None] = print, select: bool = False) -> dict:
     """Create the venv for a resolved candidate and register it in config.json. Raises RuntimeError on failure."""
     venv = plan.root / name
@@ -380,12 +388,13 @@ def build_venv(plan: Plan, c: Candidate, name: str, tmp: Path, log: Callable[[st
         lock.write_text("".join(l for l in lock.read_text().splitlines(True) if canonicalize_name(l.split("==")[0].strip()) != canonicalize_name(bad[1])), encoding="utf-8")
     (d / "installed.txt").write_text("".join(l for l in lock.read_text().splitlines(True) if not l.lower().startswith(("setuptools==", "wheel=="))), encoding="utf-8")
 
-    wheel_paths = []
-    for w, _ in c.wheels.values():
+    def wheel_file(w: Wheel) -> str:
         src = w.path or download_wheel(w, plan.wheel_dir, log)
         if src.name != w.filename:  # uv rejects url-quoted names such as %2B
             src = Path(shutil.copy(src, d / w.filename))
-        wheel_paths.append(str(src))
+        return str(src)
+
+    wheel_paths = [wheel_file(w) for w, _ in c.wheels.values()]
     if wheel_paths:
         run("pip", "install", "--python", py, "--no-deps", *wheel_paths)
     pip_install = ["pip", "install", "--python", py, "-c", str(d / "installed.txt"), "--torch-backend", c.cuda]
@@ -404,9 +413,24 @@ def build_venv(plan: Plan, c: Candidate, name: str, tmp: Path, log: Callable[[st
             log(f"! failed (seed, --no-deps): {line}")
 
     run("pip", "check", "--python", py)
-    imports = [SMOKE_IMPORTS[n.replace("_", "-")] for n in c.wheels if n.replace("_", "-") in SMOKE_IMPORTS]
-    code = "import torch;print('torch',torch.__version__,'cuda',torch.cuda.is_available());" + "".join(f"import {m};print('ok {m}');" for m in imports)
-    run_logged([py, "-c", code], log)
+    run_logged([py, "-c", "import torch;print('torch',torch.__version__,'cuda',torch.cuda.is_available())"], log)
+    # a wheel built for another torch installs fine and then dies on import: try the other fitting wheels, else leave the package out
+    for name, (w, _) in c.wheels.items():
+        module = SMOKE_IMPORTS.get(name.replace("_", "-"))
+        if not module:
+            continue
+        tried = [w]
+        while not imports_ok(py, module):
+            log(f"! {module} does not import with {tried[-1].filename} (built for another torch?)")
+            nxt = next((x for x in ranked_wheels(plan.catalog, name, c.py, c.torch_mm, cuda_tuple(c.cuda)) if x not in tried), None)
+            if not nxt:
+                run("pip", "uninstall", "--python", py, name)
+                log(f"! {name} removed: no wheel imports with torch {c.torch_mm[0]}.{c.torch_mm[1]}")
+                break
+            tried.append(nxt)
+            run("pip", "install", "--python", py, "--no-deps", "--reinstall", wheel_file(nxt))
+        else:
+            log(f"ok {module}: {tried[-1].filename}")
 
     LOCKS_DIR.mkdir(exist_ok=True)
     frozen = uv("pip", "freeze", "--python", py, capture=True).stdout
