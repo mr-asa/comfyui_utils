@@ -78,6 +78,12 @@ details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0; width: min(860px, 94vw); max-height: 88vh; }
 #setdlg .clr { display: flex; flex: 1; } #setdlg .clr input { width: 100%; }
 .iconbtn { padding: 3px 6px; display: inline-flex; align-items: center; background: transparent; border-color: transparent; color: var(--muted); }
+.lrow { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
+.llab { flex: none; width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.lcells { display: flex; gap: 1px; }
+.lc { width: 9px; height: 14px; border-radius: 2px; }
+.lc.yes { background: var(--ok); opacity: .55; } .lc.no { background: var(--bad); opacity: .8; }
+.lc.cur { outline: 2px solid var(--text); outline-offset: 1px; }
 .iconbtn:hover { color: var(--text); border-color: var(--line); }
 #quit { color: var(--bad); }
 #quit:hover { color: var(--bad); border-color: var(--bad); }
@@ -814,25 +820,19 @@ async function openVersions(name, venv, names = []) {
     renderWhy(); renderVersions();
   } catch (e) { $("verinfo").textContent = ""; $("verbody").innerHTML = `<div class="bad" style="padding:8px 14px">${esc(e.message)}</div>`; }
 }
-// constraint ladder: one column per limiter, one row per stable release, green where that limiter allows it; the last column is where all of them overlap
+// constraint ladder: one row per limiter, one cell per stable release (newest first), green where that limiter allows it; the last row is where all of them overlap
 function ladderHtml() {
   const caps = verData.caps;
   if (!caps.length) return "";
-  const idx = verData.versions.map((v, i) => i).filter(i => { const v = verData.versions[i]; return !v.pre && !v.yanked && v.python_ok; }).slice(0, 40);
-  const W = 16, H = 14, left = 64, top = 78, cols = caps.length + 1;
-  const label = c => `${c.who} ${c.spec}`;
-  const head = caps.map((c, j) => `<text transform="translate(${left + j * W + W / 2},${top - 4}) rotate(-55)" font-size="10" fill="currentColor"><title>${esc(label(c))}</title>${esc(label(c).slice(0, 22))}</text>`).join("")
-    + `<text transform="translate(${left + caps.length * W + W / 2},${top - 4}) rotate(-55)" font-size="10" font-weight="700" fill="currentColor">all</text>`;
-  const body = idx.map((i, r) => {
-    const v = verData.versions[i], y = top + r * H, oks = caps.map(c => c.mask[i] === "1");
-    const all = oks.every(Boolean), mine = v.installed;
-    return `<text x="${left - 6}" y="${y + H - 3}" text-anchor="end" font-size="10.5" font-family="monospace" fill="currentColor"${mine ? ' font-weight="700"' : ""}>${mine ? "▸ " : ""}${esc(v.version)}</text>`
-      + oks.map((ok, j) => `<rect x="${left + j * W + 1}" y="${y + 1}" width="${W - 2}" height="${H - 2}" rx="2" fill="${ok ? "var(--ok)" : "var(--bad)"}" opacity="${ok ? ".45" : ".8"}"><title>${esc(v.version)}: ${esc(label(caps[j]))} ${ok ? "allows" : "forbids"} it</title></rect>`).join("")
-      + `<rect x="${left + caps.length * W + 1}" y="${y + 1}" width="${W - 2}" height="${H - 2}" rx="2" fill="${all ? "var(--ok)" : "var(--line)"}" opacity="${all ? 1 : .6}"><title>${esc(v.version)}: ${all ? "every limiter allows it" : "some limiter forbids it"}</title></rect>`;
-  }).join("");
-  const any = idx.some(i => caps.every(c => c.mask[i] === "1"));
-  return `<details style="margin:6px 0"><summary class="muted">constraint ladder${any ? "" : " — the limiters do not overlap on any recent release"}</summary>`
-    + `<svg width="${left + cols * W + 8}" height="${top + idx.length * H + 4}" style="display:block;overflow:visible">${head}${body}</svg></details>`;
+  const idx = verData.versions.map((v, i) => i).filter(i => { const v = verData.versions[i]; return !v.pre && !v.yanked && v.python_ok; }).slice(0, 48);
+  if (!idx.length) return "";
+  const allOk = i => caps.every(c => c.mask[i] === "1");
+  const cells = (ok, tip) => idx.map(i => `<i class="lc ${ok(i) ? "yes" : "no"}${verData.versions[i].installed ? " cur" : ""}" title="${esc(verData.versions[i].version)}: ${esc(tip(i))}"></i>`).join("");
+  const rows = caps.map(c => `<div class="lrow"><span class="llab" title="${esc(c.who + " " + c.spec)}">${esc(c.who)} <span class="mono">${esc(c.spec)}</span></span><span class="lcells">${cells(i => c.mask[i] === "1", i => (c.mask[i] === "1" ? "allowed by " : "forbidden by ") + c.who + " " + c.spec)}</span></div>`).join("")
+    + `<div class="lrow"><span class="llab"><b>all limiters</b></span><span class="lcells">${cells(allOk, i => allOk(i) ? "every limiter allows it" : "some limiter forbids it")}</span></div>`;
+  const cur = idx.findIndex(i => verData.versions[i].installed);
+  const axis = `<div class="lrow"><span class="llab"></span><span class="lcells muted" style="font-size:11px">${esc(verData.versions[idx[0]].version)} (newest) ← → ${esc(verData.versions[idx[idx.length - 1]].version)}${cur >= 0 ? ` · outlined: installed ${esc(verData.installed)}` : ""}</span></div>`;
+  return `<details style="margin:6px 0" ${idx.some(allOk) ? "" : "open"}><summary class="muted">constraint ladder${idx.some(allOk) ? "" : " — the limiters do not overlap on any recent release"}</summary>${rows}${axis}</details>`;
 }
 // every constraint on the package and the newest release each one allows on its own: the lowest "up to" is what holds it back
 function renderWhy() {
