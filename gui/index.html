@@ -81,6 +81,7 @@ dialog { background: var(--panel); color: var(--text); border: 1px solid var(--l
 .lrow { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
 .llab { flex: none; width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .lcells { display: flex; gap: 1px; }
+.ltotal { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
 .lc { width: 9px; height: 14px; border-radius: 2px; }
 .lc.yes { background: var(--ok); opacity: .55; } .lc.no { background: var(--bad); opacity: .8; }
 .lc.mk { height: 5px; background: none; } .lc.mk.on { background: var(--accent); }
@@ -829,7 +830,7 @@ function ladderHtml() {
   const allOk = i => caps.every(c => c.mask[i] === "1");
   const cells = (ok, tip) => idx.map(i => `<i class="lc ${ok(i) ? "yes" : "no"}" data-tip="${esc(verData.versions[i].version + ": " + tip(i))}"></i>`).join("");
   const rows = caps.map(c => `<div class="lrow"><span class="llab" title="${esc(c.who + " " + c.spec)}">${esc(c.who)} <span class="mono">${esc(c.spec)}</span></span><span class="lcells">${cells(i => c.mask[i] === "1", i => (c.mask[i] === "1" ? "allowed by " : "forbidden by ") + c.who + " " + c.spec)}</span></div>`).join("")
-    + (caps.length > 1 ? `<div class="lrow"><span class="llab"><b>all limiters</b></span><span class="lcells">${cells(allOk, i => allOk(i) ? "every limiter allows it" : "some limiter forbids it")}</span></div>` : "");
+    + (caps.length > 1 ? `<div class="lrow ltotal"><span class="llab"><b>Overall</b></span><span class="lcells">${cells(allOk, i => allOk(i) ? "every limiter allows it" : "some limiter forbids it")}</span></div>` : "");
   const cur = idx.some(i => verData.versions[i].installed);
   const marks = cur ? `<div class="lrow"><span class="llab"></span><span class="lcells">${idx.map(i => `<i class="lc mk${verData.versions[i].installed ? " on" : ""}"></i>`).join("")}</span></div>` : "";
   const hint = `${verData.versions[idx[0]].version} (newest) ← → ${verData.versions[idx[idx.length - 1]].version}${cur ? ` · ▲ installed ${verData.installed}` : ""}`;
