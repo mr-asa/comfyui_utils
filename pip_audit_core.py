@@ -701,6 +701,7 @@ def dedupe_pkg_versions(items: List[Tuple[str, Version]]) -> List[Tuple[str, Ver
 
 
 FALLBACK_MAX_CHECKS = 40
+FALLBACK_MAX_CANDIDATES = 80
 
 
 def _find_safe_upgrade_fallback(
@@ -711,10 +712,12 @@ def _find_safe_upgrade_fallback(
     installed_map: Dict[str, dict],
     marker_env: Dict[str, str],
     upper_exclusive: Optional[Version] = None,
+    downgrade: bool = False,
     max_dry_run_checks: int = FALLBACK_MAX_CHECKS,
 ) -> Optional[Version]:
     """
-    Find highest safe upgrade for an installed package:
+    Find highest safe upgrade for an installed package (with downgrade=True: the highest safe version
+    below the installed one, which may also downgrade unprotected packages that depend on it):
     - above installed
     - below upper_exclusive (if set)
     - satisfies direct requirement constraints
@@ -731,12 +734,12 @@ def _find_safe_upgrade_fallback(
     direct_specs = [c.spec for c in rpt.constraints if str(c.spec)]
     cands = [
         cand for cand in versions
-        if not (cand <= rpt.installed_public and not rpt.installed_yanked)
+        if (cand < rpt.installed_public if downgrade else not (cand <= rpt.installed_public and not rpt.installed_yanked))
         and not (upper_exclusive and cand >= upper_exclusive)
         and not (rpt.max_allowed and cand > rpt.max_allowed)
         and not (direct_specs and not all(cand in s for s in direct_specs))
         and not find_reverse_conflicts(reverse_map, pkg_name, cand)
-    ]
+    ][:FALLBACK_MAX_CANDIDATES]
     with ThreadPoolExecutor(max_workers=8) as ex:
         all_requires = list(ex.map(lambda c: fetch_requires_dist(pkg_name, str(c)), cands))
     checks = 0
@@ -745,7 +748,7 @@ def _find_safe_upgrade_fallback(
         if requires and forward_needs(requires, installed_map, marker_env):
             needy.append(cand)
             continue
-        cls = evaluate(pkg_name, cand)[2]
+        cls = evaluate(pkg_name, cand, downgrade)[2]
         checks += 1
         if cls == "safe":
             return cand
@@ -757,9 +760,17 @@ def _find_safe_upgrade_fallback(
             rpt.search_truncated = True
             break
         checks += 1
-        if evaluate(pkg_name, cand)[2] == "safe":
+        if evaluate(pkg_name, cand, downgrade)[2] == "safe":
             return cand
     return None
+
+
+def installed_is_inconsistent(name: str, installed_map: Dict[str, dict], reverse_map: Dict[str, List[Tuple[str, SpecifierSet]]], marker_env: Dict[str, str]) -> bool:
+    """The installed release breaks what another installed package requires, or its own requirements are not met (what pip check reports)."""
+    info = installed_map.get(name)
+    if not info:
+        return False
+    return bool(find_reverse_conflicts(reverse_map, name, Version(Version(info["version"]).public)) or forward_needs(info.get("requires") or [], installed_map, marker_env))
 
 
 def diff_versions(before: Dict[str, str], after: Dict[str, str]) -> List[dict]:
@@ -792,8 +803,10 @@ def side_effect_issues(
     reverse_map: Dict[str, List[Tuple[str, SpecifierSet]]],
     hold_set: set,
     pin_map: Dict[str, str],
+    allow_downgrade: bool = False,
 ) -> Tuple[List[dict], List[str]]:
-    """Packages other than `pkg` that an install would change, and why some of those changes are not acceptable."""
+    """Packages other than `pkg` that an install would change, and why some of those changes are not acceptable.
+    allow_downgrade: lowering another package is fine (the install is itself a downgrade that has to pull its dependents down)."""
     extras = [c for c in changes if c["name"] != pkg]
     changing = {c["name"] for c in changes}
     issues: List[str] = []
@@ -804,7 +817,7 @@ def side_effect_issues(
             continue
         try:
             new_v = Version(new)
-            if old and new_v < Version(old):
+            if old and new_v < Version(old) and not allow_downgrade:
                 issues.append(f"{n} would be downgraded {old} -> {new}")
         except Exception:
             continue
@@ -1088,7 +1101,7 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
         elif action == "downgrade":
             state = "downgrade"
         elif action == "upgrade":
-            state = ("safe-deps" if r.side_changes else "safe") if n in safe else RISKY_STATES.get(r.risky_kind, "risky") if n in risky else "unknown" if n in unknown else "upgrade"
+            state = "downgrade" if r.safe_update and r.installed_public and r.safe_update < r.installed_public else ("safe-deps" if r.side_changes else "safe") if n in safe else RISKY_STATES.get(r.risky_kind, "risky") if n in risky else "unknown" if n in unknown else "upgrade"
         else:
             state = "ok"
         extra_info = []
@@ -1345,13 +1358,13 @@ def run_audit(
     side_changes: Dict[Tuple[str, str], List[dict]] = {}
     side_issues: Dict[Tuple[str, str], List[str]] = {}
 
-    def evaluate(name: str, ver: Version) -> Tuple[bool, str, str, str]:
+    def evaluate(name: str, ver: Version, allow_side_downgrade: bool = False) -> Tuple[bool, str, str, str]:
         """Dry-run one install and judge the other packages it would change."""
         tag = reports[name].index_tag if name in reports else ""
         ok_e, out_e = dry_run(pip + (["--extra-index-url", TORCH_INDEX_URL + tag] if tag else []), [(name, ver)])
         cls_e, err_e = classify_dry_run(ok_e, out_e)
         if ok_e:
-            extras, issues = side_effect_issues(name, parse_install_changes(out_e.splitlines()), specs_by_name, reverse_map, hold_set, pin_map)
+            extras, issues = side_effect_issues(name, parse_install_changes(out_e.splitlines()), specs_by_name, reverse_map, hold_set, pin_map, allow_side_downgrade)
             side_changes[(name, str(ver))] = extras
             side_issues[(name, str(ver))] = issues
             if issues:
@@ -1488,6 +1501,21 @@ def run_audit(
                 rpt.safe_update = fallback
                 rpt.side_changes = side_changes.get((n, str(fallback)), [])
                 rpt.update_ok = True
+            elif rpt.installed and installed_is_inconsistent(n, installed_map, reverse_map, marker_env):
+                # the installed release itself breaks the environment and nothing newer fits: the fix is a lower one
+                lower = _find_safe_upgrade_fallback(
+                    n,
+                    rpt,
+                    reverse_map,
+                    evaluate,
+                    installed_map=installed_map,
+                    marker_env=marker_env,
+                    downgrade=True,
+                )
+                if lower:
+                    rpt.safe_update = lower
+                    rpt.side_changes = side_changes.get((n, str(lower)), [])
+                    rpt.update_ok = True
 
     return AuditResult(
         names, reports, extra_reqs, comfy_env_reports, commented_reqs,
