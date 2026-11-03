@@ -78,6 +78,7 @@ details { padding: 8px 12px; } summary { cursor: pointer; font-weight: 600; }
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0; width: min(860px, 94vw); max-height: 88vh; }
 #setdlg .clr { display: flex; flex: 1; } #setdlg .clr input { width: 100%; }
 .iconbtn { padding: 3px 6px; display: inline-flex; align-items: center; background: transparent; border-color: transparent; color: var(--muted); }
+.sidechg { font-size: 12px; margin-top: 3px; } .ok-txt { color: var(--ok); }
 .lrow { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
 .llab { flex: none; width: 330px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .lcells { display: flex; gap: 1px; }
@@ -914,8 +915,26 @@ async function checkVersion(ver) {
   verChecks[ver] = '<span class="badge s-ok">checking…</span>'; renderVersions();
   try {
     const {job} = await api("/api/install", {venv: verVenv, packages: [`${verRow.name}==${ver}`], force_pip: $("pip").checked, protect: "held", dry_run: true, allow: []});
-    watch(job, j => { verChecks[ver] = checkBadge(j); renderVersions(); });
+    watch(job, j => {
+      verChecks[ver] = checkBadge(j); renderVersions();
+      const side = j.result && j.result.exit_code === 0 ? j.result.changes.filter(c => c.name !== verRow.name) : [];
+      if (side.length) sideVerdicts(ver, side);
+    });
   } catch (e) { verChecks[ver] = `<span class="badge s-risky">${esc(e.message)}</span>`; renderVersions(); }
+}
+// which of the other packages a version would change may really be changed (held / pinned / protected, or forbidden by a requirement)
+async function sideVerdicts(ver, side) {
+  const specs = {};
+  if (verAudited) side.forEach(c => { const r = data.rows.find(x => x.name === c.name); if (r) specs[c.name] = r.used_in.map(u => u.spec).filter(Boolean); });
+  try {
+    const v = await api("/api/change_verdicts", {venv: verVenv, root: verRow.name, changes: [{name: verRow.name, from: verRow.installed, to: ver}, ...side], specs, allow_downgrade: cmpVer(ver, verRow.installed || "0") < 0});
+    verChecks[ver] += `<div class="sidechg">` + side.map(c => {
+      const why = v[c.name] || [], down = c.from && c.to && cmpVer(c.to, c.from) < 0;
+      return `<div><span class="mono">${esc(c.name)} ${esc(c.from || "-")} → ${esc(c.to || "-")}</span> ${down ? "↓" : "↑"} `
+        + (why.length ? `<span class="bad" title="${esc(why.join("\n"))}">not allowed: ${esc(why[0].replace(c.name + " ", ""))}</span>` : '<span class="ok-txt">can change</span>') + "</div>";
+    }).join("") + "</div>";
+    renderVersions();
+  } catch (e) { /* the plain check badge stays */ }
 }
 function checkBadge(j) {
   const res = j.result, fmt = c => `${c.name} ${c.from || "-"} → ${c.to || "-"}`;

@@ -47,7 +47,7 @@ from workflow_sources import parse_workflow_url, partial_changes, partial_remote
 from workflow_sources import _cache_key as _partial_cache_key
 from update_comfy_repos import NO_PROMPT_ENV, collect_repos, incoming_changes, repo_graph, repo_status, result_to_dict, run_git, to_web_url, update_repo
 from wheels import download_wheel, listed_packages, load_catalog, match_quality, mismatch, scan_local, scan_source
-from pip_audit_core import SIDE_EFFECT_PROTECTED, comfy_env_install_code, TORCH_INDEX_PACKAGES, TORCH_INDEX_URL, _torch_cuda, audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, fetch_requires_dist, fetch_torch_index, find_reverse_conflicts, forward_needs, load_installed_dists, need_vcs_install, parse_install_changes, run_audit, target_marker_env, torch_index_tag
+from pip_audit_core import SIDE_EFFECT_PROTECTED, comfy_env_install_code, TORCH_INDEX_PACKAGES, TORCH_INDEX_URL, _torch_cuda, audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, fetch_requires_dist, fetch_torch_index, find_reverse_conflicts, forward_needs, load_installed_dists, need_vcs_install, side_effect_issues, parse_install_changes, run_audit, target_marker_env, torch_index_tag
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = str(HERE / "config.json")
@@ -982,6 +982,23 @@ def versions_info(venv: str, name: str, specs: List[dict]) -> dict:
             "index_tag": tag, "index_error": index_error, "error": error, "caps": caps, "versions": releases[:400], "wheels": wheels[:60]}
 
 
+def change_verdicts(venv: str, root: str, changes: List[dict], specs: Dict[str, List[str]], allow_downgrade: bool) -> dict:
+    """Why each package an install would also change may not be changed: held / pinned / protected, a requirements.txt or an installed package that forbids the new version."""
+    row = venv_entry(venv)
+    installed_map = load_installed_dists({"env_type": "venv", "venv_path": row["path"]})
+    marker_env = target_marker_env(venv_python_version(row["path"]) or ".".join(map(str, sys.version_info[:3])))
+    reverse_map = build_reverse_constraints(list(installed_map), installed_map, marker_env)
+    with CONFIG_LOCK:
+        v2, _ = config_schema.load_v2(CONFIG_PATH, auto_migrate=False)
+    hold, pins = config_schema.get_pip_rules(v2, venv)
+    specs_by_name = {canonicalize_name(n): [SpecifierSet(x) for x in ss] for n, ss in specs.items()}
+    _, issues = side_effect_issues(root, changes, specs_by_name, reverse_map, {canonicalize_name(h) for h in hold}, {canonicalize_name(k): v for k, v in pins.items()}, allow_downgrade)
+    verdicts: Dict[str, List[str]] = {c["name"]: [] for c in changes if c["name"] != root}
+    for issue in issues:
+        verdicts.setdefault(issue.split(" ", 1)[0], []).append(issue)
+    return verdicts
+
+
 def wheels_check(venv: str, wheel_dir: str, packages: List[str], sources: List[dict]) -> dict:
     """Scan every wheel source (the settings as typed, saved or not) and judge each wheel against the venv's Python / torch / CUDA."""
     row = venv_entry(venv)
@@ -1292,6 +1309,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/versions":
                 self.send_json(versions_info(str(body["venv"]), str(body["name"]), [{"repo": str(x["repo"]), "spec": str(x["spec"])} for x in body.get("specs", [])]))
+            elif self.path == "/api/change_verdicts":
+                self.send_json(change_verdicts(str(body["venv"]), canonicalize_name(str(body["root"])), body["changes"], {str(k): [str(x) for x in v] for k, v in body.get("specs", {}).items()}, bool(body.get("allow_downgrade"))))
             elif self.path == "/api/wheels_check":
                 sources = [{"type": x["type"], "repo": x["repo"].strip(), "path": (x.get("path") or "").strip()} for x in body["sources"] if x.get("repo", "").strip()]
                 self.send_json(wheels_check(str(body["venv"]), str(body.get("wheel_dir") or "").strip(), [str(p) for p in body["packages"]], sources))
