@@ -726,15 +726,13 @@ def _find_safe_upgrade_fallback(
     Releases whose own requirements would change an installed package are only dry-run
     after every release that needs no such change has failed.
     """
-    if not rpt.installed:
-        return None
     versions = sorted(set(rpt.available_versions), reverse=True)
     if not versions:
         return None
     direct_specs = [c.spec for c in rpt.constraints if str(c.spec)]
     cands = [
         cand for cand in versions
-        if (cand < rpt.installed_public if downgrade else not (cand <= rpt.installed_public and not rpt.installed_yanked))
+        if (rpt.installed is None or (cand < rpt.installed_public if downgrade else not (cand <= rpt.installed_public and not rpt.installed_yanked)))
         and not (upper_exclusive and cand >= upper_exclusive)
         and not (rpt.max_allowed and cand > rpt.max_allowed)
         and not (direct_specs and not all(cand in s for s in direct_specs))
@@ -1096,10 +1094,8 @@ def audit_rows(result: AuditResult, hold_set: set, pin_map: Dict[str, str]) -> L
             state = "wheel-update"
         elif r.from_wheel:
             state = "wheel"
-        elif action == "install":
-            state = "missing"
-        elif action == "downgrade":
-            state = "downgrade"
+        elif action in ("install", "downgrade"):
+            state = RISKY_STATES.get(r.risky_kind, "risky") if r.risky_update and not r.safe_update else "missing" if action == "install" else "downgrade"
         elif action == "upgrade":
             state = "downgrade" if r.safe_update and r.installed_public and r.safe_update < r.installed_public else ("safe-deps" if r.side_changes else "safe") if n in safe else RISKY_STATES.get(r.risky_kind, "risky") if n in risky else "unknown" if n in unknown else "upgrade"
         else:
@@ -1516,6 +1512,27 @@ def run_audit(
                     rpt.safe_update = lower
                     rpt.side_changes = side_changes.get((n, str(lower)), [])
                     rpt.update_ok = True
+
+    # Downgrades and installs of missing packages get the same checks as upgrades: the target must fit the installed dependents and resolve
+    for n, tgt in downgrades + missing:
+        rpt = reports[n]
+        down = rpt.installed is not None
+        conflicts = find_reverse_conflicts(reverse_map, n, tgt)
+        ok, out, cls, err = (False, "", "risky", "Reverse dependency conflict: " + "; ".join(conflicts)) if conflicts else evaluate(n, tgt, down)
+        if cls == "safe":
+            rpt.safe_update, rpt.side_changes, rpt.update_ok = tgt, side_changes.get((n, str(tgt)), []), True
+            continue
+        lower = _find_safe_upgrade_fallback(n, rpt, reverse_map, evaluate, installed_map=installed_map, marker_env=marker_env, upper_exclusive=tgt, downgrade=down)
+        if lower:
+            rpt.safe_update, rpt.side_changes, rpt.update_ok = lower, side_changes.get((n, str(lower)), []), True
+            continue
+        rpt.update_ok, rpt.update_error, rpt.reverse_conflicts, rpt.risky_update = False, err, conflicts, tgt
+        if conflicts:
+            rpt.risky_kind, rpt.risky_why = "blocked", conflicts
+        elif ok:
+            rpt.risky_kind, rpt.risky_why, rpt.risky_changes = "side-effects", side_issues.get((n, str(tgt)), []), side_changes.get((n, str(tgt)), [])
+        else:
+            rpt.risky_kind, rpt.risky_why = "unresolvable", [err]
 
     return AuditResult(
         names, reports, extra_reqs, comfy_env_reports, commented_reqs,

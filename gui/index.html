@@ -79,7 +79,7 @@ dialog { background: var(--panel); color: var(--text); border: 1px solid var(--l
 #setdlg .clr { display: flex; flex: 1; } #setdlg .clr input { width: 100%; }
 .iconbtn { padding: 3px 6px; display: inline-flex; align-items: center; background: transparent; border-color: transparent; color: var(--muted); }
 .lrow { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
-.llab { flex: none; width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.llab { flex: none; width: 330px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .lcells { display: flex; gap: 1px; }
 .ltotal { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
 .lc { width: 9px; height: 14px; border-radius: 2px; }
@@ -821,23 +821,26 @@ async function openVersions(name, venv, names = []) {
     renderWhy(); renderVersions();
   } catch (e) { $("verinfo").textContent = ""; $("verbody").innerHTML = `<div class="bad" style="padding:8px 14px">${esc(e.message)}</div>`; }
 }
-// constraint ladder: one row per limiter, one cell per stable release (newest first), green where that limiter allows it; the last row is where all of them overlap
-function ladderHtml() {
+// every limiter of the package: who, its spec, one cell per stable release (newest first, green = allowed) and the newest release it allows on its own;
+// the "Overall" row is where all of them overlap, the lowest "up to" is what holds the package back
+function limitersHtml(whoLink) {
   const caps = verData.caps;
-  if (!caps.length) return "";
+  if (!caps.length) return '<div class="muted">No requirement constrains this package: any release can be installed.</div>';
   const idx = verData.versions.map((v, i) => i).filter(i => { const v = verData.versions[i]; return !v.pre && !v.yanked && v.python_ok; }).slice(0, 48);
-  if (!idx.length) return "";
   const allOk = i => caps.every(c => c.mask[i] === "1");
   const cells = (ok, tip) => idx.map(i => `<i class="lc ${ok(i) ? "yes" : "no"}" data-tip="${esc(verData.versions[i].version + ": " + tip(i))}"></i>`).join("");
-  const rows = caps.map(c => `<div class="lrow"><span class="llab" title="${esc(c.who + " " + c.spec)}">${esc(c.who)} <span class="mono">${esc(c.spec)}</span></span><span class="lcells">${cells(i => c.mask[i] === "1", i => (c.mask[i] === "1" ? "allowed by " : "forbidden by ") + c.who + " " + c.spec)}</span></div>`).join("")
-    + (caps.length > 1 ? `<div class="lrow ltotal"><span class="llab"><b>Overall</b></span><span class="lcells">${cells(allOk, i => allOk(i) ? "every limiter allows it" : "some limiter forbids it")}</span></div>` : "");
+  const rows = caps.map(c => {
+    const limits = !c.top || cmpVer(c.top, verData.newest || "0") < 0;
+    return `<div class="lrow"><span class="llab">${whoLink(c)} <span class="mono">${esc(c.spec)}</span></span><span class="lcells">${cells(i => c.mask[i] === "1", i => (c.mask[i] === "1" ? "allowed by " : "forbidden by ") + c.who + " " + c.spec)}</span>`
+      + `<span class="${limits ? "risk" : "muted"}" style="font-size:12px;white-space:nowrap">${c.top ? "up to " + esc(c.top) : "allows no release"}</span></div>`;
+  }).join("") + (caps.length > 1 && idx.length ? `<div class="lrow ltotal"><span class="llab"><b>Overall</b></span><span class="lcells">${cells(allOk, i => allOk(i) ? "every limiter allows it" : "some limiter forbids it")}</span>`
+    + `<span class="${idx.some(allOk) ? "muted" : "risk"}" style="font-size:12px">${idx.some(allOk) ? "" : "no overlap on any recent release"}</span></div>` : "");
+  if (!idx.length) return rows;
   const cur = idx.some(i => verData.versions[i].installed);
   const marks = cur ? `<div class="lrow"><span class="llab"></span><span class="lcells">${idx.map(i => `<i class="lc mk${verData.versions[i].installed ? " on" : ""}"></i>`).join("")}</span></div>` : "";
   const hint = `${verData.versions[idx[0]].version} (newest) ← → ${verData.versions[idx[idx.length - 1]].version}${cur ? ` · ▲ installed ${verData.installed}` : ""}`;
-  const axis = `<div class="lrow"><span class="llab"></span><span class="lcells muted ltip" data-hint="${esc(hint)}" style="font-size:11px">${esc(hint)}</span></div>`;
-  return `<details class="ladder" style="margin:6px 0" ${idx.some(allOk) ? "" : "open"}><summary class="muted">constraint ladder${idx.some(allOk) ? "" : " — the limiters do not overlap on any recent release"}</summary>${rows}${marks}${axis}</details>`;
+  return `<div class="ladder">${rows}${marks}<div class="lrow"><span class="llab"></span><span class="lcells muted ltip" data-hint="${esc(hint)}" style="font-size:11px">${esc(hint)}</span></div></div>`;
 }
-// every constraint on the package and the newest release each one allows on its own: the lowest "up to" is what holds it back
 function renderWhy() {
   const n = verData.name, held = rules.hold.has(n), pin = rules.pins[n];
   const whoLink = c => {
@@ -845,15 +848,14 @@ function renderWhy() {
     const git = gitTab.find(c.who), st = git ? ` <span class="badge s-${git.state}">${git.behind ? "↓" + git.behind + " " : ""}${git.state}</span>` : "";
     return `<button type="button" class="link mono" data-vn-node="${esc(c.who)}" title="Open this node in the Git tab: its updates may relax this limit">${esc(c.who)}</button> requirements.txt${st}`;
   };
-  const line = (who, spec, top, limits) => `<div class="${limits ? "risk" : "muted"}">${who} <span class="mono">${esc(spec)}</span> — ${top ? "allows up to " + esc(top) : "allows no release"}</div>`;
-  const lines = verData.caps.map(c => line(whoLink(c), c.spec, c.top, !c.top || cmpVer(c.top, verData.newest || "0") < 0));
+  const lines = [];
   if (verData.index_tag) lines.push(verData.index_error ? `<div class="risk">could not read the PyTorch index for +${esc(verData.index_tag)} (${esc(verData.index_error)}): PyPI releases are other builds</div>`
     : `<div class="muted">installed build +${esc(verData.index_tag)}: releases come from the PyTorch index; ones only on PyPI are other builds (marked) and are not offered as updates</div>`);
   if (verData.wheel) lines.push(`<div class="risk">installed from the wheel <span class="mono">${esc(verData.wheel)}</span>: the PyPI releases below are other builds, not updates of it</div>`);
   if (pin) lines.push(`<div class="risk">pinned to ${esc(pin)} in this venv</div>`);
   else if (held) lines.push('<div class="risk">held in this venv: audits skip it</div>');
   if (verData.protected) lines.push('<div class="risk">protected: never changed as a side effect of another install</div>');
-  $("verwhy").innerHTML = (lines.join("") || '<div class="muted">No requirement constrains this package: any release can be installed.</div>') + ladderHtml();
+  $("verwhy").innerHTML = limitersHtml(whoLink) + lines.join("");
   const ladder = $("verwhy").querySelector(".ladder");
   if (ladder) {
     const tip = ladder.querySelector(".ltip");
