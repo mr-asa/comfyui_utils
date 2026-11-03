@@ -83,7 +83,7 @@ dialog { background: var(--panel); color: var(--text); border: 1px solid var(--l
 .lcells { display: flex; gap: 1px; }
 .lc { width: 9px; height: 14px; border-radius: 2px; }
 .lc.yes { background: var(--ok); opacity: .55; } .lc.no { background: var(--bad); opacity: .8; }
-.lc.cur { outline: 2px solid var(--text); outline-offset: 1px; }
+.lc.mk { height: 5px; background: none; } .lc.mk.on { background: var(--accent); }
 .iconbtn:hover { color: var(--text); border-color: var(--line); }
 #quit { color: var(--bad); }
 #quit:hover { color: var(--bad); border-color: var(--bad); }
@@ -827,12 +827,14 @@ function ladderHtml() {
   const idx = verData.versions.map((v, i) => i).filter(i => { const v = verData.versions[i]; return !v.pre && !v.yanked && v.python_ok; }).slice(0, 48);
   if (!idx.length) return "";
   const allOk = i => caps.every(c => c.mask[i] === "1");
-  const cells = (ok, tip) => idx.map(i => `<i class="lc ${ok(i) ? "yes" : "no"}${verData.versions[i].installed ? " cur" : ""}" title="${esc(verData.versions[i].version)}: ${esc(tip(i))}"></i>`).join("");
+  const cells = (ok, tip) => idx.map(i => `<i class="lc ${ok(i) ? "yes" : "no"}" data-tip="${esc(verData.versions[i].version + ": " + tip(i))}"></i>`).join("");
   const rows = caps.map(c => `<div class="lrow"><span class="llab" title="${esc(c.who + " " + c.spec)}">${esc(c.who)} <span class="mono">${esc(c.spec)}</span></span><span class="lcells">${cells(i => c.mask[i] === "1", i => (c.mask[i] === "1" ? "allowed by " : "forbidden by ") + c.who + " " + c.spec)}</span></div>`).join("")
-    + `<div class="lrow"><span class="llab"><b>all limiters</b></span><span class="lcells">${cells(allOk, i => allOk(i) ? "every limiter allows it" : "some limiter forbids it")}</span></div>`;
-  const cur = idx.findIndex(i => verData.versions[i].installed);
-  const axis = `<div class="lrow"><span class="llab"></span><span class="lcells muted" style="font-size:11px">${esc(verData.versions[idx[0]].version)} (newest) ← → ${esc(verData.versions[idx[idx.length - 1]].version)}${cur >= 0 ? ` · outlined: installed ${esc(verData.installed)}` : ""}</span></div>`;
-  return `<details style="margin:6px 0" ${idx.some(allOk) ? "" : "open"}><summary class="muted">constraint ladder${idx.some(allOk) ? "" : " — the limiters do not overlap on any recent release"}</summary>${rows}${axis}</details>`;
+    + (caps.length > 1 ? `<div class="lrow"><span class="llab"><b>all limiters</b></span><span class="lcells">${cells(allOk, i => allOk(i) ? "every limiter allows it" : "some limiter forbids it")}</span></div>` : "");
+  const cur = idx.some(i => verData.versions[i].installed);
+  const marks = cur ? `<div class="lrow"><span class="llab"></span><span class="lcells">${idx.map(i => `<i class="lc mk${verData.versions[i].installed ? " on" : ""}"></i>`).join("")}</span></div>` : "";
+  const hint = `${verData.versions[idx[0]].version} (newest) ← → ${verData.versions[idx[idx.length - 1]].version}${cur ? ` · ▲ installed ${verData.installed}` : ""}`;
+  const axis = `<div class="lrow"><span class="llab"></span><span class="lcells muted ltip" data-hint="${esc(hint)}" style="font-size:11px">${esc(hint)}</span></div>`;
+  return `<details class="ladder" style="margin:6px 0" ${idx.some(allOk) ? "" : "open"}><summary class="muted">constraint ladder${idx.some(allOk) ? "" : " — the limiters do not overlap on any recent release"}</summary>${rows}${marks}${axis}</details>`;
 }
 // every constraint on the package and the newest release each one allows on its own: the lowest "up to" is what holds it back
 function renderWhy() {
@@ -851,6 +853,12 @@ function renderWhy() {
   else if (held) lines.push('<div class="risk">held in this venv: audits skip it</div>');
   if (verData.protected) lines.push('<div class="risk">protected: never changed as a side effect of another install</div>');
   $("verwhy").innerHTML = (lines.join("") || '<div class="muted">No requirement constrains this package: any release can be installed.</div>') + ladderHtml();
+  const ladder = $("verwhy").querySelector(".ladder");
+  if (ladder) {
+    const tip = ladder.querySelector(".ltip");
+    ladder.onmouseover = e => { if (e.target.dataset.tip) tip.textContent = e.target.dataset.tip; };
+    ladder.onmouseout = e => { if (e.target.dataset.tip) tip.textContent = tip.dataset.hint; };
+  }
   $("verwhy").querySelectorAll("button[data-vw]").forEach(b => b.onclick = () => openVersions(b.dataset.vw, verVenv));
   $("verwhy").querySelectorAll("button[data-vn-node]").forEach(b => b.onclick = () => {
     $("verdlg").close();
