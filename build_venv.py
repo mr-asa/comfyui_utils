@@ -415,17 +415,17 @@ def build_venv(plan: Plan, c: Candidate, name: str, tmp: Path, log: Callable[[st
     run("pip", "check", "--python", py)
     run_logged([py, "-c", "import torch;print('torch',torch.__version__,'cuda',torch.cuda.is_available())"], log)
     # a wheel built for another torch installs fine and then dies on import: try the other fitting wheels, else leave the package out
-    for name, (w, _) in c.wheels.items():
-        module = SMOKE_IMPORTS.get(name.replace("_", "-"))
+    for pkg, (w, _) in c.wheels.items():
+        module = SMOKE_IMPORTS.get(pkg.replace("_", "-"))
         if not module:
             continue
         tried = [w]
         while not imports_ok(py, module):
             log(f"! {module} does not import with {tried[-1].filename} (built for another torch?)")
-            nxt = next((x for x in ranked_wheels(plan.catalog, name, c.py, c.torch_mm, cuda_tuple(c.cuda)) if x not in tried), None)
+            nxt = next((x for x in ranked_wheels(plan.catalog, pkg, c.py, c.torch_mm, cuda_tuple(c.cuda)) if x not in tried), None)
             if not nxt:
-                run("pip", "uninstall", "--python", py, name)
-                log(f"! {name} removed: no wheel imports with torch {c.torch_mm[0]}.{c.torch_mm[1]}")
+                run("pip", "uninstall", "--python", py, pkg)
+                log(f"! {pkg} removed: no wheel imports with torch {c.torch_mm[0]}.{c.torch_mm[1]}")
                 break
             tried.append(nxt)
             run("pip", "install", "--python", py, "--no-deps", "--reinstall", wheel_file(nxt))
