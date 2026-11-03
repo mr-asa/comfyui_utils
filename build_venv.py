@@ -143,8 +143,8 @@ def make_candidates(catalog: List[Wheel], wanted: List[str], pythons: List[str],
         for cuda in CUDA_CANDIDATES:
             torch_mms = set(torch_seen)
             lt = latest_torch(py, cuda, tmp)
-            if lt:
-                torch_mms.add(lt)
+            if lt:  # releases newer than the newest wheel in the catalog still resolve, just without those wheels
+                torch_mms |= {(lt[0], m) for m in range(max((mm[1] for mm in torch_mms if mm[0] == lt[0]), default=lt[1]), lt[1] + 1)}
             for mm in torch_mms:
                 if lt and mm > lt:
                     continue
