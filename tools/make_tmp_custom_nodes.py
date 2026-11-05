@@ -40,7 +40,7 @@ def collect_custom_nodes(custom_nodes_dir: Path) -> dict[str, dict[str, str]]:
 
 def main() -> None:
     script_dir = Path(__file__).resolve().parent
-    custom_nodes_dir = script_dir.parents[1] / "custom_nodes"
+    custom_nodes_dir = script_dir.parents[2] / "custom_nodes"
     if not custom_nodes_dir.is_dir():
         raise SystemExit(f"custom_nodes directory not found at: {custom_nodes_dir}")
 

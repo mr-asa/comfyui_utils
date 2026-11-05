@@ -67,7 +67,7 @@ function Get-Settings {
 
     if (-not (Test-Path -LiteralPath $Path)) {
         $defaultSettings = [ordered]@{
-            _documentation = "See compare_venv_versions_README_RU.md"
+            _documentation = "See docs/compare_venv_versions_README_RU.md"
             source_config_path = ".\config.json"
             venv_paths = @()
             include_python = $true

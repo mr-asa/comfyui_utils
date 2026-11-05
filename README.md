@@ -52,6 +52,17 @@ What changed in the toolbox and why:
 
 ### Release notes
 
+<details open>
+<summary><b>2026-11-05</b></summary>
+
+- **Build venv, filters:** Python, CUDA and torch are text fields: `2.12 2.14` (several), `>=2.12 <2.15`, `>=cu128`, `128` for `cu128`. Hover for what is available.
+- **Build venv, CUDA list** is read from the PyTorch index (12.6+); tags that uv does not know yet (`cu132`, `cu134`: torch 2.15) are taken from the index directly.
+- **Build venv, torch 2.14+:** a missing `triton-windows` release no longer fails the whole candidate; it is resolved without triton and reported. Failed candidates are replaced by the next ones.
+- **Build venv, speed:** node and package checks use bisection instead of one resolve per item, identical resolves are cached for a day (`locks/plan_cache.json`), Cancel stops the running `uv`.
+- **Build venv, report:** live log of what is being checked, a progress bar, the nodes behind the conflicts and the planning time.
+
+</details>
+
 <details>
 <summary><b>2026-10-16</b></summary>
 
@@ -80,7 +91,7 @@ What changed in the toolbox and why:
 | `run_comfyui_presets_config.json` | node presets (managed in the Custom nodes tab, Links view). |
 | `compare_venv_versions_config.json` | favorite modules for Compare venvs (a `.bak` of the previous state is kept). |
 | `install_logs/` | install / build logs, `_before.txt` snapshots, constraints used. |
-| `locks/` | package lists of venvs built by `build_venv.py`. |
+| `locks/` | package lists of venvs built by `build_venv.py`, and the one-day cache of plan results (`plan_cache.json`). |
 
 <details>
 <summary><b>Console tools (older, still supported)</b></summary>
@@ -104,8 +115,8 @@ headless use, or when you prefer the terminal. Parts of the config template belo
   selection (venv/conda), custom paths, and per-package status reporting.
 - <img src="ico/clone_workflow_repos_run.ico" width="16" height="16" alt=""> `clone-workflow_repos.py` adds workflow sources from console-entered URLs:
   full repositories are cloned, folder URLs are synced as partial sources.
-- `rename_to_english.py` renames files and folders with non-ASCII names into English equivalents (translate/transliterate) — handy for making sense of a batch of workflows with CJK names.
-- `make_tmp_custom_nodes.py` generates `tmp_custom_nodes.json` with loaded/disabled nodes and
+- `tools/rename_to_english.py` renames files and folders with non-ASCII names into English equivalents (translate/transliterate) — handy for making sense of a batch of workflows with CJK names.
+- `tools/make_tmp_custom_nodes.py` generates `tmp_custom_nodes.json` with loaded/disabled nodes and
   their repo URLs, useful for collecting all plugins into a single list/repository.
 - <img src="ico/png_to_json_run.ico" width="16" height="16" alt=""> `png_to_json.py` scans a folder of images and video (`.png/.jpeg/.webp/.bmp/.tif/.mp4/.mkv/.webm/.mov/.gif`), reads ComfyUI `workflow` metadata,
   and writes a matching `.json` file next to each file that contains a workflow.
