@@ -11,3 +11,4 @@ tmp_*
 run_*/
 .dirac-cache/*
 *.json.bak
+locks/plan_cache.json

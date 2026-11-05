@@ -14,6 +14,7 @@ Requirements are collected from the ComfyUI root and every enabled custom node (
 
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -21,13 +22,19 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+import requests
 from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 import config_schema
 from comfyui_root import resolve_comfyui_root
@@ -37,9 +44,12 @@ from envtools import enabled_node_dirs, find_requirements_files, parse_requireme
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
 LOCKS_DIR = HERE / "locks"
+CACHE_PATH = LOCKS_DIR / "plan_cache.json"
+CACHE_TTL = 24 * 3600
 TORCH_FAMILY = {"torch", "torchvision", "torchaudio", "triton", "triton-windows"}
+SEED_STEPS = 10  # share of the plan progress bar for the packages carried over from other venvs
 PY_CANDIDATES = ["3.13", "3.12", "3.11", "3.10"]
-CUDA_CANDIDATES = ["cu130", "cu128"]
+CUDA_FALLBACK = ["cu130", "cu128"]
 SMOKE_IMPORTS = {"sageattention": "sageattention", "sageattn3": "sageattn3", "flash-attn": "flash_attn", "llama-cpp-python": "llama_cpp", "xformers": "xformers"}
 
 
@@ -84,9 +94,9 @@ def triton_spec(torch_mm: Tuple[int, int]) -> str:
     return f"triton-windows==3.{torch_mm[1] - 4}.*"
 
 
-def write_inputs(tmp: Path, lines: List[str], torch_mm: Tuple[int, int]) -> Tuple[Path, Path]:
+def write_inputs(tmp: Path, lines: List[str], torch_mm: Tuple[int, int], triton: bool = True) -> Tuple[Path, Path]:
     t = f"{torch_mm[0]}.{torch_mm[1]}.*"
-    pins = [f"torch=={t}", "torchvision", "torchaudio", triton_spec(torch_mm), "pip"]  # pip: run_comfyui.bat and nodes call python -m pip
+    pins = [f"torch=={t}", "torchvision", "torchaudio", "pip"] + ([triton_spec(torch_mm)] if triton else [])  # pip: run_comfyui.bat and nodes call python -m pip
     inp = tmp / "requirements.in"
     inp.write_text("\n".join(pins + lines) + "\n", encoding="utf-8")
     con = tmp / "constraints.txt"
@@ -94,17 +104,82 @@ def write_inputs(tmp: Path, lines: List[str], torch_mm: Tuple[int, int]) -> Tupl
     return inp, con
 
 
-def compile_reqs(inp: Path, con: Path, py: str, cuda: str, out: Path) -> Tuple[bool, str]:
-    r = uv("pip", "compile", str(inp), "-c", str(con), "--python-version", py, "--torch-backend", cuda,
-           "--no-header", "--no-annotate", "-o", str(out), check=False, capture=True)
-    return r.returncode == 0, (r.stderr or "")[-1500:]
+@lru_cache(maxsize=None)
+def torch_source(cuda: str) -> List[str]:
+    """uv arguments that select the torch build. A CUDA tag newer than this uv knows is not accepted by
+    --torch-backend, so the PyTorch index is passed directly."""
+    with tempfile.TemporaryDirectory() as d:
+        empty = Path(d) / "empty.in"
+        empty.write_text("", encoding="utf-8")
+        if uv("pip", "compile", str(empty), "--torch-backend", cuda, check=False, capture=True).returncode == 0:
+            return ["--torch-backend", cuda]
+    return ["--index", f"https://download.pytorch.org/whl/{cuda}"]
+
+
+def uv_cancellable(args: List[str], cancelled: Callable[[], bool]) -> Tuple[int, str]:
+    """Run uv and kill it as soon as `cancelled()` turns true. Returns (exit code, stderr)."""
+    p = subprocess.Popen(uv_command() + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
+    while True:
+        try:
+            _, err = p.communicate(timeout=0.5)
+            return p.returncode, err or ""
+        except subprocess.TimeoutExpired:
+            if cancelled():
+                p.kill()
+                p.communicate()
+                raise PlanCancelled()
+
+
+def compile_reqs(inp: Path, con: Path, py: str, cuda: str, out: Path, cached_only: bool = False, cancelled: Callable[[], bool] = lambda: False) -> Tuple[bool, str]:
+    """cached_only: resolve from the uv cache without contacting the indexes; falls back to online when something is not cached."""
+    args = ["pip", "compile", str(inp), "-c", str(con), "--python-version", py, *torch_source(cuda), "--no-header", "--no-annotate", "-o", str(out)]
+    code, err = uv_cancellable(args + (["--offline"] if cached_only else []), cancelled)
+    if code and cached_only and "offline" in err.lower():
+        code, err = uv_cancellable(args, cancelled)
+    return code == 0, err[-1500:]
+
+
+@lru_cache(maxsize=1)
+def uv_version() -> str:
+    return uv("--version", capture=True).stdout.strip()
+
+
+class AttemptCache:
+    """Results of single resolves, kept on disk for a day: the same requirement set for the same python / CUDA / torch
+    resolves the same way until the indexes change."""
+
+    def __init__(self, path: Path = CACHE_PATH, ttl: float = CACHE_TTL):
+        self.path = path
+        self.lock = threading.Lock()
+        self.data: Dict[str, list] = {}
+        if path.exists():
+            now = time.time()
+            self.data = {k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items() if now - v[0] < ttl}
+
+    @staticmethod
+    def key(c: "Candidate", reqs: tuple) -> str:
+        return hashlib.sha1("\n".join([uv_version(), c.py, c.cuda, str(c.torch_mm), str(c.triton), *reqs]).encode()).hexdigest()
+
+    def get(self, key: str) -> Optional[Tuple[bool, str]]:
+        with self.lock:
+            hit = self.data.get(key)
+        return (hit[1], hit[2]) if hit else None
+
+    def put(self, key: str, ok: bool, err: str) -> None:
+        with self.lock:
+            self.data[key] = [time.time(), ok, "" if ok else err]
+
+    def save(self) -> None:
+        with self.lock:
+            self.path.parent.mkdir(exist_ok=True)
+            self.path.write_text(json.dumps(self.data), encoding="utf-8")
 
 
 def latest_torch(py: str, cuda: str, tmp: Path) -> Optional[Tuple[int, int]]:
     f = tmp / f"latest_{py}_{cuda}.in"
     f.write_text("torch\n", encoding="utf-8")
     out = tmp / f"latest_{py}_{cuda}.txt"
-    r = uv("pip", "compile", str(f), "--python-version", py, "--torch-backend", cuda, "--no-header", "-o", str(out), check=False, capture=True)
+    r = uv("pip", "compile", str(f), "--python-version", py, *torch_source(cuda), "--no-header", "-o", str(out), check=False, capture=True)
     if r.returncode:
         return None
     m = re.search(r"^torch==(\d+)\.(\d+)", out.read_text(), re.M)
@@ -124,6 +199,7 @@ class Candidate:
     lines: Optional[List[str]] = None
     dropped: Optional[List[str]] = None
     loosened: Optional[List[str]] = None
+    triton: bool = True  # False: no triton-windows release for this torch, resolved without it
 
     @property
     def score(self) -> Tuple:
@@ -137,11 +213,22 @@ def cuda_tuple(cuda: str) -> Tuple[int, int]:
     return int(cuda[2:4]), int(cuda[4:])
 
 
-def make_candidates(catalog: List[Wheel], wanted: List[str], pythons: List[str], tmp: Path) -> List[Candidate]:
+@lru_cache(maxsize=1)
+def cuda_candidates() -> List[str]:
+    """CUDA builds (12.6+) PyTorch publishes wheels for, newest first; the fallback list if the index is unreachable."""
+    try:
+        html = requests.get("https://download.pytorch.org/whl/", timeout=15).text
+    except requests.RequestException:
+        return CUDA_FALLBACK
+    tags = {t for t in re.findall(r">(cu\d{3})/?<", html) if cuda_tuple(t) >= (12, 6)}
+    return sorted(tags, key=cuda_tuple, reverse=True) or CUDA_FALLBACK
+
+
+def make_candidates(catalog: List[Wheel], wanted: List[str], pythons: List[str], cudas: List[str], tmp: Path) -> List[Candidate]:
     torch_seen = {w.torch[:2] for w in catalog if w.torch and w.torch[:2] >= (2, 7)}
     cands = []
     for py in pythons:
-        for cuda in CUDA_CANDIDATES:
+        for cuda in cudas:
             torch_mms = set(torch_seen)
             lt = latest_torch(py, cuda, tmp)
             if lt:  # releases newer than the newest wheel in the catalog still resolve, just without those wheels
@@ -151,6 +238,20 @@ def make_candidates(catalog: List[Wheel], wanted: List[str], pythons: List[str],
                     continue
                 cands.append(Candidate(py, cuda, mm, best_wheels(catalog, wanted, py, mm, cuda_tuple(cuda))))
     return cands
+
+
+def version_filter(expr: str, value: str) -> bool:
+    """Terms are separated by commas or spaces. Bare versions are alternatives ('2.12 2.14' = 2.12.x or 2.14.x),
+    comparisons all have to hold ('>=2.12 <2.15'); both can be mixed. CUDA is written as cu128 or 12.8."""
+    def norm(t: str) -> str:
+        t = t.lower().removeprefix("cu")
+        return f"{t[:2]}.{t[2:]}" if t.isdigit() and len(t) > 2 else t
+    terms = [t for t in re.split(r"[,\s]+", expr.strip()) if t]
+    ver = Version(norm(value))
+    bare = [t for t in terms if t[0].isdigit() or t[:2].lower() == "cu"]
+    cmp = [t for t in terms if t not in bare]
+    ok_cmp = not cmp or ver in SpecifierSet(",".join(re.sub(r"^([<>=!~]+)(.+)$", lambda m: m[1] + norm(m[2]), t) for t in cmp))
+    return ok_cmp and (not bare or any(ver in SpecifierSet(f"=={norm(t)}.*") for t in bare))
 
 
 def loosen(line: str) -> str:
@@ -177,7 +278,7 @@ class PlanCancelled(Exception):
     pass
 
 
-def verify(c: Candidate, ordered: List[Tuple[str, List[str]]], seeds: List[str], tmp: Path, cancelled: Callable[[], bool] = lambda: False) -> None:
+def verify(c: Candidate, ordered: List[Tuple[str, List[str]]], seeds: List[str], tmp: Path, cache: AttemptCache, cancelled: Callable[[], bool] = lambda: False, log: Callable[[str], None] = print, progress: Callable[[int], None] = lambda n: None) -> None:
     """Add node requirements in priority order. A node that conflicts first gets its version pins loosened,
     then is added line by line; only lines that still cannot resolve are dropped."""
     d = tmp / c.label().replace(" ", "_")
@@ -186,42 +287,92 @@ def verify(c: Candidate, ordered: List[Tuple[str, List[str]]], seeds: List[str],
     accepted: List[str] = []
     c.dropped, c.loosened = [], []
 
-    def attempt(lines: List[str]) -> Tuple[bool, str]:
+    tag = f"[{c.py} {c.cuda} {c.torch_mm[0]}.{c.torch_mm[1]}]"
+
+    resolved_once = False
+
+    def attempt(lines: List[str], what: str = "", fresh: bool = False) -> Tuple[bool, str]:
+        """Resolve accepted + lines. Sets resolved before (this plan or a plan within the last day) are answered from the cache;
+        fresh=True resolves again to rewrite the lock."""
+        nonlocal resolved_once
         if cancelled():
             raise PlanCancelled()
-        inp, con = write_inputs(d, sorted(set(accepted) | set(lines)), c.torch_mm)
-        return compile_reqs(inp, con, c.py, c.cuda, lock)
+        reqs = tuple(sorted(set(accepted) | set(lines)))
+        key = cache.key(c, reqs)
+        hit = None if fresh else cache.get(key)
+        if hit:
+            return hit
+        if what:
+            log(f"{tag} {what}")
+        inp, con = write_inputs(d, list(reqs), c.torch_mm, c.triton)
+        ok, err = compile_reqs(inp, con, c.py, c.cuda, lock, cached_only=resolved_once, cancelled=cancelled)
+        resolved_once = True
+        cache.put(key, ok, err)
+        return ok, err
 
-    for i, (src, lines) in enumerate(ordered):
-        if not lines:
-            continue
-        ok, err = attempt(lines)
-        if ok:
-            accepted = sorted(set(accepted) | set(lines))
-            continue
-        if i < 2:
+    ok, err = attempt([], "torch pins")
+    if not ok:  # torch pins alone do not resolve: retry without triton-windows, which may lack a release for this torch
+        c.triton = False
+        ok, err = attempt([], "torch pins without triton-windows")
+        if not ok:
             c.resolved, c.error = False, err
             return
-        for line in lines:
-            if attempt([line])[0]:
-                accepted = sorted(set(accepted) | {line})
-            elif attempt([loosen(line)])[0]:
+        c.dropped.append(f"torch pins: {triton_spec(c.torch_mm)} [no such triton-windows release, resolved without triton]")
+
+    nodes = [(src, lines) for src, lines in ordered if lines]
+
+    def extend(items: list, lines_of: Callable, what: str, fail: Callable, tick: Callable[[int], None]) -> None:
+        """Accept the longest resolvable prefix of items (adding requirements can only break a resolve, so it is found
+        by bisection), hand the first item that breaks it to `fail`, and go on with the rest."""
+        nonlocal accepted
+        i = 0
+        while i < len(items):
+            def run(k: int) -> List[str]:
+                return [l for it in items[i:i + k] for l in lines_of(it)]
+            lo, hi = 0, len(items) - i
+            if attempt(run(hi), f"{what} {i + 1}-{len(items)} of {len(items)} together")[0]:
+                accepted = sorted(set(accepted) | set(run(hi)))
+                tick(len(items))
+                return
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                if attempt(run(mid), f"{what} {i + 1}-{i + mid} of {len(items)}")[0]:
+                    lo = mid
+                    tick(i + lo)
+                else:
+                    hi = mid
+            accepted = sorted(set(accepted) | set(run(lo)))
+            fail(items[i + lo])
+            i += lo + 1
+            tick(i)
+
+    def line_failed(src: str) -> Callable:
+        def fail(line: str) -> None:
+            nonlocal accepted
+            if attempt([loosen(line)])[0]:
                 accepted = sorted(set(accepted) | {loosen(line)})
                 c.loosened.append(f"{src}: {line}")
+                log(f"{tag} loosened {line}")
             else:
                 c.dropped.append(f"{src}: {line} [{why_failed(attempt([line])[1])}]")
-    attempt([])
+                log(f"{tag} dropped {line}")
+        return fail
+
+    def node_failed(node: Tuple[str, List[str]]) -> None:
+        src, lines = node
+        log(f"{tag} conflict in {src}, checking its {len(lines)} lines")
+        extend(lines, lambda l: [l], f"{src}: lines", line_failed(src), lambda k: None)
+
+    progress(0)
+    extend(nodes, lambda n: n[1], "nodes", node_failed, progress)
+    attempt([], fresh=True)
     have = lock_names(lock)
     extra = [x for x in seeds if canonicalize_name(x) not in have]
-    if extra and attempt(extra)[0]:
-        accepted = sorted(set(accepted) | set(extra))
-    else:
-        for x in extra:
-            if attempt([x])[0]:
-                accepted = sorted(set(accepted) | {x})
-            else:
-                c.dropped.append(f"seed: {x}")
+    seed_tick = lambda k: progress(len(nodes) + SEED_STEPS * k // max(len(extra), 1))
+    extend(extra, lambda x: [x], "packages from other venvs", lambda x: c.dropped.append(f"seed: {x}"), seed_tick)
     c.resolved, c.lines = True, accepted
+    progress(len(nodes) + SEED_STEPS)
+    log(f"{tag} done: loosened {len(c.loosened)}, dropped {len(c.dropped)}")
 
 
 def seed_packages(source: Optional[str], known: set) -> List[str]:
@@ -268,13 +419,15 @@ class Plan:
     catalog_size: int
     pythons: List[str]
     catalog: List[Wheel]
+    seconds: float
 
     @property
     def best(self) -> Optional[Candidate]:
         return next((c for c in self.candidates if c.resolved), None)
 
 
-def make_plan(opts: PlanOptions, tmp: Path, log: Callable[[str], None] = print, cancelled: Callable[[], bool] = lambda: False) -> Plan:
+def make_plan(opts: PlanOptions, tmp: Path, log: Callable[[str], None] = print, cancelled: Callable[[], bool] = lambda: False, progress: Callable[[int, int], None] = lambda i, n: None) -> Plan:
+    started = time.monotonic()
     root = resolve_comfyui_root(str(CONFIG_PATH))
     by_src, vcs = collect_requirements(root, set(opts.skip_nodes))
     excl = {canonicalize_name(x) for x in opts.exclude}
@@ -283,7 +436,8 @@ def make_plan(opts: PlanOptions, tmp: Path, log: Callable[[str], None] = print, 
     order = head + prefer + sorted(k for k in by_src if k not in head + prefer)
     ordered = [(k, [l for l in by_src[k] if canonicalize_name(Requirement(l).name) not in excl]) for k in order if k in by_src]
     catalog, wheel_dir, wanted = load_catalog(opts.remote)
-    pythons = [opts.python] if opts.python else PY_CANDIDATES
+    pythons = [p for p in PY_CANDIDATES if not opts.python or version_filter(opts.python, p)]
+    cudas = [x for x in cuda_candidates() if not opts.cuda or version_filter(opts.cuda, x)]
     nodes = sum(1 for v in by_src.values() if v)
     log(f"ComfyUI: {root}\nNodes with requirements: {nodes}, vcs/url: {len(vcs)}")
     log(f"Wheel catalog: {len(catalog)} for {', '.join(wanted)} (dir: {wheel_dir}); pythons: {', '.join(pythons)}")
@@ -291,18 +445,37 @@ def make_plan(opts: PlanOptions, tmp: Path, log: Callable[[str], None] = print, 
     known = {canonicalize_name(Requirement(l).name) for _, ls in ordered for l in ls}
     seeds = [] if opts.no_seed else seed_packages(opts.seed_from, known)
     log(f"Seed packages from existing venvs (not in any requirements.txt): {len(seeds)}")
-    cands = make_candidates(catalog, wanted, pythons, tmp)
-    if opts.cuda:
-        cands = [c for c in cands if c.cuda == opts.cuda]
+    steps = sum(1 for _, ls in ordered if ls) + SEED_STEPS
+    progress(0, steps)
+    cands = make_candidates(catalog, wanted, pythons, cudas, tmp)
     if opts.torch:
-        cands = [c for c in cands if f"{c.torch_mm[0]}.{c.torch_mm[1]}" == opts.torch]
+        cands = [c for c in cands if version_filter(opts.torch, f"{c.torch_mm[0]}.{c.torch_mm[1]}")]
+        if not cands:
+            log(f"No torch {opts.torch} release found for the chosen python/cuda")
     cands.sort(key=lambda c: (len(c.wheels), sum(q for _, q in c.wheels.values()), tup(c.py), c.torch_mm), reverse=True)
-    checked = cands[:opts.top]
-    log(f"Resolving {len(checked)} candidates (adding nodes one by one, this takes a while) ...")
-    with ThreadPoolExecutor(max_workers=len(checked) or 1) as ex:
-        list(ex.map(lambda c: verify(c, ordered, seeds, tmp, cancelled), checked))
+    checked: List[Candidate] = []
+    done: Dict[str, int] = {}
+    shown = 0
+    cache = AttemptCache()
+
+    def report(c: Candidate, k: int) -> None:
+        nonlocal shown
+        done[c.label()] = k
+        shown = max(shown, sum(done.values()) // len(done))  # candidates added later must not move the bar back
+        progress(shown, steps)
+
+    try:
+        with ThreadPoolExecutor(max_workers=max(opts.top, 1)) as ex:
+            while cands and (need := opts.top - sum(1 for c in checked if c.resolved)) > 0:  # candidates that fail are replaced by the next ones
+                batch, cands = cands[:need], cands[need:]
+                checked += batch
+                done.update({c.label(): 0 for c in batch})
+                log(f"Resolving {len(batch)} candidates (this takes a while) ...")
+                list(ex.map(lambda c: verify(c, ordered, seeds, tmp, cache, cancelled, log, lambda k: report(c, k)), batch))
+    finally:
+        cache.save()
     checked.sort(key=lambda c: c.score, reverse=True)
-    return Plan(root, vcs, wheel_dir, wanted, checked, nodes, len(seeds), len(catalog), pythons, catalog)
+    return Plan(root, vcs, wheel_dir, wanted, checked, nodes, len(seeds), len(catalog), pythons, catalog, time.monotonic() - started)
 
 
 def describe_plan(plan: Plan) -> str:
@@ -318,6 +491,7 @@ def describe_plan(plan: Plan) -> str:
     best = plan.best
     if not best:
         out.append(f"\nNothing resolves. Error for {plan.candidates[0].label()}:\n{plan.candidates[0].error}" if plan.candidates else "\nNo candidates.")
+        out.append(f"Planned in {int(plan.seconds) // 60} min {int(plan.seconds) % 60} s")
         return "\n".join(out)
     others = [c for c in plan.candidates if c.resolved and c is not best]
     for c in others:
@@ -326,6 +500,12 @@ def describe_plan(plan: Plan) -> str:
             out.append(f"\n{c.label()} differs from the best: " + "; ".join([f"also {x}" for x in sorted(mine - ref)] + [f"not {x}" for x in sorted(ref - mine)]))
     if others and all(set(c.loosened) == set(best.loosened) and set(c.dropped) == set(best.dropped) for c in others):
         out.append(f"\nThe lists below are the same for all {len(others) + 1} resolved candidates: they come from conflicts between nodes, not from torch.")
+    per_node: Dict[str, List[int]] = {}
+    for n, x in enumerate([best.loosened, best.dropped]):
+        for item in x:
+            per_node.setdefault(item.split(": ", 1)[0], [0, 0])[n] += 1
+    if per_node:
+        out.append("\nSources of the conflicts:\n  " + "\n  ".join(f"{k}: {v[0]} loosened, {v[1]} dropped" for k, v in sorted(per_node.items(), key=lambda kv: -sum(kv[1]))))
     if best.loosened:
         out.append("\nVersion pins loosened (conflict with earlier requirements):\n  " + "\n  ".join(best.loosened))
     if best.dropped:
@@ -334,6 +514,7 @@ def describe_plan(plan: Plan) -> str:
         out.append(f"VCS/URL requirements (installed after the main set): {len(plan.vcs)}")
     missing = [w for w in plan.wanted if w not in best.wheels]
     out.append(f"\nBest: {best.label()}" + (f"; no wheel for: {', '.join(missing)}" if missing else ""))
+    out.append(f"Planned in {int(plan.seconds) // 60} min {int(plan.seconds) % 60} s")
     return "\n".join(out)
 
 
@@ -366,7 +547,7 @@ def build_venv(plan: Plan, c: Candidate, name: str, tmp: Path, log: Callable[[st
         raise RuntimeError(f"{venv} already exists")
     d = tmp / "final"
     d.mkdir(exist_ok=True)
-    inp, con = write_inputs(d, c.lines, c.torch_mm)
+    inp, con = write_inputs(d, c.lines, c.torch_mm, c.triton)
     lock = d / "lock.txt"
     ok, err = compile_reqs(inp, con, c.py, c.cuda, lock)
     if not ok:
@@ -378,7 +559,7 @@ def build_venv(plan: Plan, c: Candidate, name: str, tmp: Path, log: Callable[[st
     py = str(venv / "Scripts" / "python.exe")
     while True:  # sdist-only packages that cannot build on Windows (e.g. cgal) are skipped
         out: List[str] = []
-        code = run_logged(U + ["pip", "install", "--python", py, "-r", str(lock), "--torch-backend", c.cuda], lambda l: (out.append(l), log(l)))
+        code = run_logged(U + ["pip", "install", "--python", py, "-r", str(lock), *torch_source(c.cuda)], lambda l: (out.append(l), log(l)))
         if not code:
             break
         bad = re.search(r"Failed to build `([A-Za-z0-9_.\-]+)==", "\n".join(out))
@@ -397,7 +578,7 @@ def build_venv(plan: Plan, c: Candidate, name: str, tmp: Path, log: Callable[[st
     wheel_paths = [wheel_file(w) for w, _ in c.wheels.values()]
     if wheel_paths:
         run("pip", "install", "--python", py, "--no-deps", *wheel_paths)
-    pip_install = ["pip", "install", "--python", py, "-c", str(d / "installed.txt"), "--torch-backend", c.cuda]
+    pip_install = ["pip", "install", "--python", py, "-c", str(d / "installed.txt"), *torch_source(c.cuda)]
     if plan.vcs:
         run("pip", "install", "--python", py, "setuptools<70", "wheel")
     for line in plan.vcs:
@@ -475,9 +656,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["plan", "build", "wheels"], nargs="?", default="plan")
     ap.add_argument("--remote", action="store_true", help="also list wheels from remote sources")
-    ap.add_argument("--python", help="restrict to this Python, e.g. 3.13")
-    ap.add_argument("--cuda", help="restrict to cu128 / cu130")
-    ap.add_argument("--torch", help="restrict to torch major.minor, e.g. 2.11")
+    ap.add_argument("--python", help="restrict Python: 3.13, \"3.12 3.13\", \">=3.12\"")
+    ap.add_argument("--cuda", help="restrict CUDA: cu130, \"cu128 cu130\", \">=cu128\"")
+    ap.add_argument("--torch", help="restrict to torch major.minor: 2.11, or an expression like \">2.13\" or \">=2.12,<2.15\"")
     ap.add_argument("--top", type=int, default=6, help="how many candidates to resolve with uv")
     ap.add_argument("--exclude", nargs="+", help="package names to drop from the requirements")
     ap.add_argument("--prefer", nargs="+", help="node folder names whose requirements win conflicts (after ComfyUI itself)")

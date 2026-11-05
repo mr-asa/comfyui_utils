@@ -39,7 +39,7 @@ from packaging.version import Version
 import config_schema
 from comfyui_root import resolve_comfyui_root, validate_root
 from envtools import custom_nodes_paths, dedupe_dirs, install_prefix, installed_pythons, run_uv
-from build_venv import CUDA_CANDIDATES, PY_CANDIDATES, Candidate, PlanCancelled, PlanOptions, build_venv, default_venv_name, describe_plan, make_plan
+from build_venv import PY_CANDIDATES, Candidate, PlanCancelled, PlanOptions, build_venv, cuda_candidates, default_venv_name, describe_plan, make_plan
 import custom_nodes_link_manager as nodes_mgr
 import update_workflow_repos as wf
 from comfyui_root import default_workflows_dir
@@ -133,7 +133,7 @@ def venv_rows() -> dict:
         "uv": bool(shutil.which("uv")),
         "pythons": PY_CANDIDATES,
         "pythons_installed": installed_pythons(PY_CANDIDATES),
-        "cuda": CUDA_CANDIDATES,
+        "cuda": cuda_candidates(),
     }
 
 
@@ -388,7 +388,8 @@ def plan_job(job: dict, opts: dict) -> dict:
         PLANS.pop(old)[1].cleanup()
     tmp = tempfile.TemporaryDirectory()
     try:
-        plan = make_plan(options, Path(tmp.name), lambda m: job["log"].append(m), job["cancel"].is_set)
+        plan = make_plan(options, Path(tmp.name), lambda m: job["log"].append(m), job["cancel"].is_set,
+                         lambda i, n: job.update(progress={"label": "Planning", "i": i, "n": n, "suffix": ""}))
     except BaseException:
         tmp.cleanup()
         raise

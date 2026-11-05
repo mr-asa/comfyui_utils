@@ -201,9 +201,9 @@ header .spacer { flex: 1; }
 <section id="tab-build" class="tabsec" hidden>
   <div class="panel">
     <div class="grp"><span class="gl">Target</span>
-      <label>Python <select id="b-py"><option value="">all</option></select></label>
-      <label>CUDA <select id="b-cuda"><option value="">all</option></select></label>
-      <label title="Optional, major.minor">torch <input type="text" id="b-torch" size="5" placeholder="2.11"></label>
+      <label id="b-py-l">Python <input type="text" id="b-py" size="10" placeholder="all"></label>
+      <label id="b-cuda-l">CUDA <input type="text" id="b-cuda" size="10" placeholder="all"></label>
+      <label title="Empty = all. Several versions: 2.12 2.14. Comparisons: >2.13 or >=2.12 <2.15">torch <input type="text" id="b-torch" size="10" placeholder="all"></label>
       <label title="How many Python/CUDA/torch combinations are fully resolved">candidates <input type="text" id="b-top" size="2" value="6"></label>
     </div>
     <div class="grp"><span class="gl">Packages</span>
@@ -506,8 +506,10 @@ async function loadVenvs() {
   if (keep && [...$("venv").options].some(o => o.value === keep)) $("venv").value = keep;
   $("info").textContent = st.uv ? "uv found" : "uv not found, pip will be used";
   cFillVenvs();
-  $("b-py").innerHTML = '<option value="">all</option>' + st.pythons.map(v => `<option value="${v}">${v}${st.pythons_installed.includes(v) ? "" : " (uv will download)"}</option>`).join("");
-  $("b-cuda").innerHTML = '<option value="">all</option>' + st.cuda.map(v => `<option>${v}</option>`).join("");
+  $("b-py-l").title = `Empty = all. Several: 3.12 3.13. Comparison: >=3.12.
+Known: ${st.pythons.map(v => v + (st.pythons_installed.includes(v) ? "" : " (uv will download)")).join(", ")}`;
+  $("b-cuda-l").title = `Empty = all. Several: cu128 cu130. Comparison: >=cu128. Short form: 128 = 12.8 = cu128.
+Available: ${st.cuda.join(", ")}`;
   return st;
 }
 async function init() {
@@ -1173,7 +1175,7 @@ $("b-plan").onclick = async () => {
     api("/api/cancel", {job: planJob}).catch(e => logAdd([e.message]));
     return;
   }
-  const opts = {python: $("b-py").value, cuda: $("b-cuda").value, torch: $("b-torch").value.trim(), top: $("b-top").value, seed: $("b-seed").checked,
+  const opts = {python: $("b-py").value.trim(), cuda: $("b-cuda").value.trim(), torch: $("b-torch").value.trim(), top: $("b-top").value, seed: $("b-seed").checked,
     remote: $("b-remote").checked, exclude: $("b-exclude").value, prefer: $("b-prefer").value, skip_nodes: $("b-skip").value};
   showLog("Plan a new venv", "", "running");
   const idle = () => { planJob = null; $("b-plan").disabled = false; $("b-plan").textContent = "Plan"; };
