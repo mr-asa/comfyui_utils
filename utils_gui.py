@@ -1345,12 +1345,27 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": f"{type(e).__name__}: {e}"}, 400)
 
 
+def default_chromium_exe() -> str | None:
+    if sys.platform != "win32":
+        return None
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoiceLatest\ProgId") as k:
+            prog_id = winreg.QueryValueEx(k, "ProgId")[0]
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"{prog_id}\shell\open\command") as k:
+            command = winreg.QueryValueEx(k, "")[0]
+    except OSError:
+        return None
+    m = re.match(r'\s*"([^"]+)"|\s*(\S+)', command)
+    exe = m.group(1) or m.group(2)
+    if Path(exe).stem.lower() in ("msedge", "chrome", "brave", "vivaldi", "opera", "chromium") and os.path.isfile(exe):
+        return exe
+    return None
+
+
 def open_browser(url: str) -> None:
     global APP_WINDOW
-    candidates = [shutil.which(n) for n in ("msedge", "chrome", "google-chrome", "chromium")]
-    candidates += [os.path.join(os.environ.get(v, ""), r"Microsoft\Edge\Application\msedge.exe") for v in ("ProgramFiles(x86)", "ProgramFiles")]
-    candidates += [os.path.join(os.environ.get(v, ""), r"Google\Chrome\Application\chrome.exe") for v in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData")]
-    exe = next((c for c in candidates if c and os.path.isfile(c)), None)
+    exe = default_chromium_exe()
     if exe is None:
         webbrowser.open(url)
         return
