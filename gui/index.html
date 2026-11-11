@@ -452,6 +452,17 @@ header .spacer { flex: 1; }
     </div>
   </form>
 </dialog>
+<dialog id="lockdlg" style="width:min(560px,94vw)">
+  <form method="dialog" onsubmit="return false">
+    <div style="padding:10px 16px 6px;border-bottom:1px solid var(--line)"><b style="color:var(--warn)">⚠ Not updated: in use by this GUI</b></div>
+    <div style="padding:10px 16px">
+      <p>These packages were skipped: <b id="lockpkgs"></b></p>
+      <p>The GUI runs on the Python of this venv and has their binary modules loaded. Windows does not let a loaded file be replaced, and an install that fails halfway leaves the package broken, which can stop both this GUI and ComfyUI from starting.</p>
+      <p>To update them the GUI has to exit first. It will close, a console window will run the install, then the GUI opens again. Running jobs are interrupted and the audit table has to be refreshed afterwards.</p>
+    </div>
+    <div style="padding:8px 16px;display:flex;gap:8px;border-top:1px solid var(--line)"><span style="flex:1"></span><button type="button" id="locklater">Not now</button><button type="button" class="primary" id="lockgo">Close the GUI and update in a console</button></div>
+  </form>
+</dialog>
 <dialog id="dlg">
   <form method="dialog" onsubmit="return false">
     <div id="dlghead">
@@ -1092,6 +1103,21 @@ $("dlgok").onclick = () => { $("dlg").close(); doInstall(protectMode()); };
 const runJob = (path, body) => new Promise((resolve, reject) => api(path, body).then(({job}) => watch(job, resolve, logAdd)).catch(reject));
 const jobFailed = j => j.status === "error" || j.result.exit_code !== 0;
 
+let lockJob = "";
+function offerConsoleUpdate(job, packages) {
+  lockJob = job; $("lockpkgs").textContent = packages.join(", ");
+  logAdd([`\nNOT updated, in use by this GUI: ${packages.join(", ")}`]);
+  const b = document.createElement("button"); b.textContent = "Update these in a console…"; b.onclick = () => $("lockdlg").showModal();
+  $("log").appendChild(b);
+  $("lockdlg").showModal();
+}
+$("locklater").onclick = () => $("lockdlg").close();
+$("lockgo").onclick = async () => {
+  try { await api("/api/console_update", {job: lockJob}); } catch (e) { $("lockdlg").close(); logAdd([e.message]); return; }
+  window.close();
+  document.body.innerHTML = '<p style="padding:24px;font:16px sans-serif">Updating in the console window. The GUI will open again when it is done.</p>';
+};
+
 async function doInstall(protect) {
   const {items, venv} = pending, pk = pypiPkgs(), wheels = wheelItems();
   showLog(`Installing ${items.length} package(s) into ${pending.venv}`, "", "running");
@@ -1107,6 +1133,8 @@ async function doInstall(protect) {
   const inTable = data && data.venv === venv;
   if (!failed && inTable) { data.vcs.forEach(v => { if (pk.includes(v.raw)) { v.need_install = false; v.installed = "now"; } }); renderExtra(); }
   results.filter(jobFailed).forEach(j => { if (j.error) logAdd([j.error]); });
+  const guiLocked = results.find(j => j.result && (j.result.gui_locked || []).length);
+  if (guiLocked) offerConsoleUpdate(guiLocked.id, guiLocked.result.gui_locked);
   const locked = results.flatMap(j => (j.result && j.result.locked) || []);
   if (locked.length) logAdd([`\nNOT updated, files in use by a running process (this GUI runs from the same venv): ${locked.join(", ")}\nRun the GUI with another Python, or stop whatever uses the venv, then update these again.`]);
   const changes = results.filter(j => !jobFailed(j)).flatMap(j => j.result.changes);

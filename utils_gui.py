@@ -18,6 +18,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -234,6 +235,21 @@ def locked_file_owner(lines: List[str]) -> str:
     return ""
 
 
+def loaded_native_owners(venv_path: str) -> set:
+    """Distributions whose native modules this GUI process has loaded from the venv. Windows locks those files and uv
+    fails halfway through replacing such a package, leaving it broken (simplejson via requests took the venv down)."""
+    if sys.platform != "win32" or not os.path.samefile(sys.prefix, venv_path):
+        return set()
+    site = Path(sysconfig.get_paths()["purelib"])
+    files = [Path(f) for f in (getattr(m, "__file__", None) for m in list(sys.modules.values())) if f and f.endswith(".pyd")]
+    rels = {f.relative_to(site).as_posix().lower() for f in files if f.is_relative_to(site)}
+    owners = set()
+    for record in site.glob("*.dist-info/RECORD"):
+        if any(l.split(",", 1)[0].replace("\\", "/").lower() in rels for l in record.read_text(encoding="utf-8", errors="replace").splitlines()):
+            owners.add(canonicalize_name(record.parent.name.split("-", 1)[0]))
+    return owners
+
+
 def install_job(job: dict, name: str, packages: List[str], force_pip: bool, protect: str, dry_run: bool, allow: List[str]) -> dict:
     """Install (or only simulate) the packages.
 
@@ -267,7 +283,15 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
         con = LOG_DIR / f"{stamp}_{name}_constraints.txt"
         con.write_text("".join(f"{n}=={v}\n" for n, v in sorted(keep.items())), encoding="utf-8")
         cmd += ["-c", str(con)]
-    code, lines = stream(job, cmd + packages, cancellable=dry_run)
+    gui_locked: List[str] = []
+    if not dry_run:
+        in_use = loaded_native_owners(row["path"])
+        gui_locked = [p for p in packages if canonicalize_name(re.split(r"[=<>!~ ]", p, maxsplit=1)[0]) in in_use]
+        packages = [p for p in packages if p not in gui_locked]
+        if gui_locked:
+            job["console_cmd"] = cmd + gui_locked  # /api/console_update runs it after the GUI has exited
+            job["log"].append(f"in use by this GUI, skipped: {', '.join(gui_locked)}")
+    code, lines = stream(job, cmd + packages, cancellable=dry_run) if packages else (0, [])
     locked: List[str] = []
     while code and not dry_run:  # a file held by a running process (this GUI included) fails the whole install: leave that package out and install the rest
         owner = locked_file_owner(lines)
@@ -286,9 +310,32 @@ def install_job(job: dict, name: str, packages: List[str], force_pip: bool, prot
             result["unprotected"] = {"exit_code": code2, "changes": changes2, "output": lines2[-14:]}
             result["released"] = [c for c in changes2 if c["name"] in keep]
         return result
-    if locked:
+    if locked:  # not the GUI's own files: restarting it would not release them
         job["log"].append(f"not updated, files in use (close the process that uses the venv, e.g. restart this GUI from another Python): {', '.join(locked)}")
-    return {**record_install(job, name, stamp, before, installed_versions(py), code), "output": lines[-3:], "locked": locked}
+    return {**record_install(job, name, stamp, before, installed_versions(py), code), "output": lines[-3:], "locked": locked, "gui_locked": gui_locked}
+
+
+def console_update(cmd: List[str], port: int) -> None:
+    """Hand an install to a console that outlives this process: it waits for the GUI to exit (which unlocks
+    its files), runs the install and starts the GUI again."""
+    LOG_DIR.mkdir(exist_ok=True)
+    bat = LOG_DIR / f"{time.strftime('%Y%m%d_%H%M%S')}_console_update.bat"
+    quote = lambda args: " ".join(f'"{a}"' for a in args).replace("%", "%%")  # every argument quoted: `pkg>=1.0` would redirect otherwise
+    pid = os.getpid()
+    bat.write_text("\n".join([
+        "@echo off",
+        "chcp 65001 >nul",
+        "title ComfyUI utils: updating packages the GUI had in use",
+        "echo Waiting for the GUI to exit...",
+        ":wait",
+        f'tasklist /FI "PID eq {pid}" /NH | find " {pid} " >nul && (timeout /t 1 /nobreak >nul & goto wait)',
+        f"echo {quote(cmd)}",
+        quote(cmd),
+        "if errorlevel 1 (echo. & echo Update FAILED, see the output above. & pause)",
+        "echo Starting the GUI...",
+        f"{quote([sys.executable, str(Path(__file__).resolve()), '--port', str(port)])} <nul",
+    ]) + "\n", encoding="utf-8")
+    subprocess.Popen(["cmd", "/c", str(bat)], creationflags=subprocess.CREATE_NEW_CONSOLE)
 
 
 def comfy_env_job(job: dict, name: str, repo: str) -> dict:
@@ -1333,6 +1380,13 @@ class Handler(BaseHTTPRequestHandler):
                 if job:
                     job["cancel"].set()
                 self.send_json({"ok": bool(job)})
+            elif self.path == "/api/console_update":
+                job = JOBS.get(str(body["job"]))
+                if not job or "console_cmd" not in job:
+                    return self.send_json({"error": "nothing to update"}, 400)
+                console_update(job["console_cmd"], self.server.server_address[1])
+                self.send_json({"ok": True})
+                threading.Timer(0.3, shutdown).start()
             elif self.path == "/api/shutdown":
                 self.send_json({"ok": True})
                 threading.Timer(0.3, shutdown).start()
