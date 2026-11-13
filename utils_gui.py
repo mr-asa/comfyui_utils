@@ -513,6 +513,10 @@ def repos_scan_job(job: dict, kind: str, fetch: bool, include_disabled: bool, na
             repos = [str(p) for p in wf.collect_workflow_sources(wdir)] if wdir.is_dir() else []
         else:
             repos = collect_repos(root, custom_nodes_paths(cfg, str(root)), include_disabled)
+            repo_dir, _, tags = nodes_context()  # tagged nodes are listed whatever their link state, as in the Links tab
+            seen = {os.path.normcase(os.path.realpath(r)) for r in repos}
+            tagged = {n.lower() for names in tags.values() for n in names}
+            repos += [p for n in nodes_mgr._scan_repo(repo_dir) if n.lower() in tagged and os.path.normcase(os.path.realpath(p := os.path.join(repo_dir, n))) not in seen]
         for old in [p for p, k in REPO_KIND.items() if k == kind]:  # each tab rescans only its own kind
             del REPO_KIND[old]
         REPO_KIND.update({r: kind for r in repos})
