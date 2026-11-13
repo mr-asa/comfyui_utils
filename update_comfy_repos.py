@@ -702,6 +702,7 @@ def repo_status(path: str, fetch: bool = True) -> Dict[str, object]:
         if not ok:
             info["error"] = (err or out).strip()[-300:]
             info["state"] = "fetch-failed"
+            info["fix_refs"] = sorted(set(re.findall(r"cannot lock ref '(refs/remotes/[^']+)'", err + out)))
     dirty, status_out, _ignored = repo_dirty(path)
     if dirty:
         info["dirty"] = len([l for l in status_out.splitlines() if l.strip()])
@@ -1397,6 +1398,18 @@ def checkout_commit(path: str, commit: str) -> Tuple[bool, str]:
         return False, f"git reset --hard {sha} failed: {(err or out).strip()}"
     branch = get_current_branch(path) or "DETACHED"
     return True, f"Reset to {sha} on {branch}"
+
+
+def fix_ref_lock(path: str, refs: List[str]) -> str:
+    """Delete the local remote-tracking refs that clash by letter case (a/Foo vs a/foo share one file on Windows); the next fetch recreates them."""
+    ok, out, err = run_git(["for-each-ref", "--format=%(refname)", "refs/remotes/"], cwd=path)
+    if not ok:
+        return f"git for-each-ref failed: {(err or out).strip()}"
+    wanted = {r.lower() for r in refs}
+    clashing = [r for r in out.splitlines() if r.lower() in wanted]
+    for ref in clashing:
+        run_git(["update-ref", "-d", ref], cwd=path)
+    return f"Deleted {len(clashing)} local ref(s): " + ", ".join(clashing)
 
 
 def get_commit_datetime(path: str, rev: str = "HEAD") -> Optional[datetime]:

@@ -1414,7 +1414,7 @@ function rRender() {
     const date = r.last_date ? r.last_date.slice(0, 10) : "";
     return `<tr data-p="${esc(r.path)}" class="${r.flash ? "flash" : rPicked === r.path ? "sel" : ""}"><td><input type="checkbox" data-p="${esc(r.path)}" ${rSel.has(r.path) ? "checked" : ""}></td>
       <td class="mono">${name}${fork}${r.disabled ? ' <span class="muted">(disabled)</span>' : ""}</td>${kind === "nodes" ? `<td>${nodeTags(r.name).map(t => `<button class="tag" data-tag="${esc(t)}" title="Show only nodes with this tag">${esc(t)}</button>`).join("")}</td>` : ""}${kind === "nodes" ? branchCell(r) : `<td class="mono">${esc(r.branch)}</td>`}
-      <td><span class="badge s-${r.state}" title="${esc(r.error)}">${RLABEL[r.state] || r.state}</span></td>
+      <td><span class="badge s-${r.state}" title="${esc(r.error)}">${RLABEL[r.state] || r.state}</span>${r.fix_refs && r.fix_refs.length ? ` <button class="link" data-fix="${esc(r.path)}" title="Repair the local branch refs that block the fetch">fix…</button>` : ""}</td>
       <td class="mono">${r.behind ? "↓" + r.behind : ""} ${r.ahead ? "↑" + r.ahead : ""}</td><td>${dirty}</td>
       <td class="trunc" title="${esc(r.last_subject)}"><span class="mono">${esc(date)}</span> <span class="muted">${esc(r.last_subject)}</span></td></tr>`;
   }).join("");
@@ -1423,6 +1423,18 @@ function rRender() {
     const pth = sel.dataset.bp, cur = (repos.find(r => r.path === pth) || {}).branch, want = sel.value;
     if (!want || want === cur) rBranch.delete(pth); else rBranch.set(pth, want);
   }; });
+  $(p + "-rows").querySelectorAll("button[data-fix]").forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    const r = repos.find(x => x.path === b.dataset.fix);
+    if (!confirm(`${r.name}: git fetch fails because two remote branches differ only in letter case (${r.fix_refs.join(", ")}). Windows stores them in the same file, so their local refs clash.\n\nFix: delete these local remote-tracking refs (no branches, commits or files are touched), then fetch again; git recreates them.\n\nProceed?`)) return;
+    b.disabled = true; b.textContent = "…";
+    try {
+      const res = await api("/api/repo_fix", {path: r.path, refs: r.fix_refs});
+      logAdd([`${r.name}: ${res.message}`]);
+      repos[repos.indexOf(r)] = {...r, ...res.row, fix_refs: res.row.fix_refs || [], flash: true};
+    } catch (err) { logAdd([`${r.name}: fix failed: ${err.message}`]); }
+    rRender();
+  });
   $(p + "-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => rPick(tr.dataset.p));
   $(p + "-rows").querySelectorAll("button[data-tag]").forEach(b => b.onclick = e => { e.stopPropagation(); $(p + "-tag").value = b.dataset.tag; rRender(); });
   rUpdateSel();

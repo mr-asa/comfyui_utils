@@ -46,7 +46,7 @@ import update_workflow_repos as wf
 from comfyui_root import default_workflows_dir
 from workflow_sources import parse_workflow_url, partial_changes, partial_remote_status, read_metadata, sync_partial_source, write_metadata
 from workflow_sources import _cache_key as _partial_cache_key
-from update_comfy_repos import NO_PROMPT_ENV, checkout_commit, collect_repos, incoming_changes, repo_graph, repo_status, result_to_dict, run_git, to_web_url, update_repo
+from update_comfy_repos import NO_PROMPT_ENV, checkout_commit, collect_repos, fix_ref_lock, incoming_changes, repo_graph, repo_status, result_to_dict, run_git, to_web_url, update_repo
 from wheels import download_wheel, listed_packages, load_catalog, match_quality, mismatch, scan_local, scan_source
 from pip_audit_core import SIDE_EFFECT_PROTECTED, comfy_env_install_code, TORCH_INDEX_PACKAGES, TORCH_INDEX_URL, _torch_cuda, audit_rows, build_reverse_constraints, diff_versions, fetch_release_list, fetch_requires_dist, fetch_torch_index, find_reverse_conflicts, forward_needs, load_installed_dists, need_vcs_install, side_effect_issues, parse_install_changes, run_audit, target_marker_env, torch_index_tag
 
@@ -1364,6 +1364,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "unknown repository"}, 400)
                 ok, msg = checkout_commit(path, commit)
                 self.send_json({"ok": ok, "message": msg, "row": source_status(path, False) if ok else None})
+            elif self.path == "/api/repo_fix":
+                path = str(body["path"])
+                if path not in REPO_KIND:
+                    return self.send_json({"error": "unknown repository"}, 400)
+                message = fix_ref_lock(path, [str(r) for r in body["refs"] if str(r).startswith("refs/remotes/")])
+                self.send_json({"message": message, "row": source_status(path, True)})
             elif self.path == "/api/repos_update":
                 branches = body.get("branches")
                 if branches is not None and not isinstance(branches, dict):
