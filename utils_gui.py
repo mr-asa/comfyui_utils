@@ -499,18 +499,23 @@ def source_status(path: str, fetch: bool) -> dict:
     return repo_status(path, fetch)
 
 
-def repos_scan_job(job: dict, kind: str, fetch: bool, include_disabled: bool) -> dict:
+def repos_scan_job(job: dict, kind: str, fetch: bool, include_disabled: bool, names: Optional[List[str]] = None) -> dict:
     with CONFIG_LOCK:
         cfg, _ = config_schema.load_legacy_compat(CONFIG_PATH)
     root = resolve_comfyui_root(CONFIG_PATH)
-    if kind == "workflows":
-        wdir = default_workflows_dir(root)
-        repos = [str(p) for p in wf.collect_workflow_sources(wdir)] if wdir.is_dir() else []
+    if names:  # nodes picked in the Links tab: scan only these, whether linked into custom_nodes or only in the repo
+        repo_dir, custom, _ = nodes_context()
+        repos = [p for n in names for p in [os.path.join(custom, n) if os.path.isdir(os.path.join(custom, n)) else os.path.join(repo_dir, n)] if os.path.isdir(p)]
+        REPO_KIND.update({r: kind for r in repos})
     else:
-        repos = collect_repos(root, custom_nodes_paths(cfg, str(root)), include_disabled)
-    for old in [p for p, k in REPO_KIND.items() if k == kind]:  # each tab rescans only its own kind
-        del REPO_KIND[old]
-    REPO_KIND.update({r: kind for r in repos})
+        if kind == "workflows":
+            wdir = default_workflows_dir(root)
+            repos = [str(p) for p in wf.collect_workflow_sources(wdir)] if wdir.is_dir() else []
+        else:
+            repos = collect_repos(root, custom_nodes_paths(cfg, str(root)), include_disabled)
+        for old in [p for p, k in REPO_KIND.items() if k == kind]:  # each tab rescans only its own kind
+            del REPO_KIND[old]
+        REPO_KIND.update({r: kind for r in repos})
     rows, done, running = [], 0, set()
 
     def scan(path: str) -> dict:
@@ -1326,7 +1331,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repos_scan":
                 job = new_job("repos", "scan-" + str(body.get("kind", "nodes")))
-                run_in_thread(job, repos_scan_job, str(body.get("kind", "nodes")), bool(body.get("fetch", True)), bool(body.get("include_disabled")))
+                run_in_thread(job, repos_scan_job, str(body.get("kind", "nodes")), bool(body.get("fetch", True)), bool(body.get("include_disabled")), [str(x) for x in body.get("names", [])])
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/repo_add":
                 job = new_job("repos", changes=("scan-nodes", "scan-workflows"))

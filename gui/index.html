@@ -243,8 +243,7 @@ header .spacer { flex: 1; }
   <div class="subsec split" id="sub-git">
   <div class="panel" id="r-panel" style="flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden">
     <div class="grp"><span class="gl">Scan</span>
-      <button class="primary" id="r-scan">Scan</button>
-      <label title="git fetch every repository so ahead/behind is current (slower)"><input type="checkbox" id="r-fetch" checked> fetch from remotes</label>
+      <button class="primary" id="r-scan">Scan</button>      <label title="git fetch every repository so ahead/behind is current (slower)"><input type="checkbox" id="r-fetch" checked> fetch from remotes</label>
       <label><input type="checkbox" id="r-disabled"> include disabled folders</label>
       <span class="sep"></span>
       <span id="r-addnode"><textarea id="r-newurl" rows="1" cols="46" style="vertical-align:middle;resize:both" placeholder="https://github.com/user/new-node (several: separate with spaces or new lines)"></textarea> <label><input type="checkbox" id="r-newlink" checked> link</label> <button id="r-addnodebtn">Add custom node(s)</button></span>
@@ -310,6 +309,7 @@ header .spacer { flex: 1; }
       <label>tag <input type="text" id="n-tagname" size="12"></label>
       <button id="n-tagsel" title="Select every node that has this tag (the field above, or the tag filter)">Select by tag</button>
       <button id="n-tagadd">Tag selected</button><button id="n-tagdel">Untag selected</button>
+      <button id="n-gitscan" title="Check only the selected nodes with git (fetch setting of the Git tab) and show the result in the Git tab">Scan in Git</button>
     </div>
     <div class="tablewrap"><table>
       <thead><tr><th></th><th data-nk="name">Node</th><th data-nk="kind">State</th><th data-nk="added" title="When the folder was created: for a clone, when it was added">Added</th><th data-nk="tags">Tags</th><th data-nk="target">Target</th></tr></thead>
@@ -1347,18 +1347,18 @@ try { $(p + "-ask").checked = localStorage.getItem(p + "-ask") !== "0"; } catch 
 $(p + "-ask").onchange = () => { try { localStorage.setItem(p + "-ask", $(p + "-ask").checked ? "1" : "0"); } catch (e) {} };
 let repos = [], rSel = new Set(), rActive = new Set(RSTATES), rJob = null, rSortKey = "state", rSortDir = 1, rPicked = "", rDetailSeq = 0, rBranch = new Map();
 
-$(p + "-scan").onclick = async () => {
-  if (rJob) {
-    $(p + "-scan").disabled = true; $(p + "-scan").textContent = "Cancelling…";
-    api("/api/cancel", {job: rJob}).catch(e => logAdd([e.message]));
-    return;
-  }
+async function startScan(names) {  // names: scan only these nodes (picked in Links), otherwise everything
+  if (rJob) return;
   showLog("Scan: " + (kind === "nodes" ? "ComfyUI & custom nodes" : "workflow sources"), "", "running");
-  const idle = () => { rJob = null; $(p + "-scan").disabled = false; $(p + "-scan").textContent = "Scan"; };
   try {
-    const {job} = await api("/api/repos_scan", {kind, fetch: $(p + "-fetch").checked, include_disabled: $(p + "-disabled") ? $(p + "-disabled").checked : false});
+    const {job} = await api("/api/repos_scan", {kind, fetch: $(p + "-fetch").checked, include_disabled: $(p + "-disabled") ? $(p + "-disabled").checked : false, names});
     rSel.clear(); watchScan(job);
-  } catch (e) { idle(); logAdd(["Scan failed: " + e.message]); setStatus("failed"); }
+  } catch (e) { rJob = null; $(p + "-scan").disabled = false; $(p + "-scan").textContent = "Scan"; logAdd(["Scan failed: " + e.message]); setStatus("failed"); }
+}
+$(p + "-scan").onclick = () => {
+  if (!rJob) return startScan([]);
+  $(p + "-scan").disabled = true; $(p + "-scan").textContent = "Cancelling…";
+  api("/api/cancel", {job: rJob}).catch(e => logAdd([e.message]));
 };
 
 // the scan job outlives the page: a reload reattaches to it
@@ -1582,7 +1582,7 @@ $(p + "-selnone").onclick = () => { rSel.clear(); rRender(); };
 ["search", "hide", "dirtyonly", "tag"].forEach(id => { if ($(p + "-" + id)) $(p + "-" + id).oninput = rRender; });
 document.querySelectorAll("#tab-" + tabId + " th[data-rk]").forEach(th => th.onclick = () => { rSortDir = rSortKey === th.dataset.rk ? -rSortDir : 1; rSortKey = th.dataset.rk; rRender(); });
 // the Git / Links switch hands the selection over by node name
-return {render: rRender, find: name => repos.find(r => r.name === name), pick: name => { const r = repos.find(x => x.name === name); if (r) { rPick(r.path); rRender(); document.querySelector(`#${p}-rows tr[data-p="${CSS.escape(r.path)}"]`)?.scrollIntoView({block: "center"}); } }, names: () => repos.length ? [...rSel].map(x => repos.find(r => r.path === x).name) : null, select: names => { rSel = new Set(repos.filter(r => names.includes(r.name)).map(r => r.path)); rRender(); }};
+return {render: rRender, scan: startScan, busy: () => !!rJob, find: name => repos.find(r => r.name === name), pick: name => { const r = repos.find(x => x.name === name); if (r) { rPick(r.path); rRender(); document.querySelector(`#${p}-rows tr[data-p="${CSS.escape(r.path)}"]`)?.scrollIntoView({block: "center"}); } }, names: () => repos.length ? [...rSel].map(x => repos.find(r => r.path === x).name) : null, select: names => { rSel = new Set(repos.filter(r => names.includes(r.name)).map(r => r.path)); rRender(); }};
 }
 const gitTab = repoTab("r", "nodes", "repos");
 repoTab("w", "workflows", "workflows");
@@ -1702,6 +1702,12 @@ for (const [id, action] of [["r-tagadd", "tag_add"], ["r-tagdel", "tag_remove"]]
   $(id).onclick = () => { const names = gitTab.names(), tag = $("r-tagname").value.trim(); names && names.length && tag ? nAct({action, tag, names}, "Tag nodes") : alert("Select repositories and type a tag."); };
 $("n-selvis").onclick = () => { nVisible().forEach(r => nSel.add(r.name)); nRender(); };
 $("n-selnone").onclick = () => { nSel.clear(); nRender(); };
+$("n-gitscan").onclick = () => {
+  if (!needSel()) return;
+  if (gitTab.busy()) return alert("A Git scan is already running.");
+  document.querySelector('button[data-sub="git"]').click();
+  gitTab.scan(nNames());
+};
 ["n-search", "n-tag", "n-hidelinked"].forEach(id => $(id).oninput = nRender);
 document.querySelectorAll("th[data-nk]").forEach(th => th.onclick = () => { nSortDir = nSortKey === th.dataset.nk ? -nSortDir : th.dataset.nk === "added" ? -1 : 1; nSortKey = th.dataset.nk; nRender(); });  // dates start newest first
 document.querySelector('nav button[data-tab="repos"]').addEventListener("click", () => { if (!nodes) nLoad(); });
