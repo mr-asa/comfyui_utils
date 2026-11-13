@@ -1380,6 +1380,25 @@ def branch_override(name: str, path: str) -> str:
     return ""
 
 
+def checkout_commit(path: str, commit: str) -> Tuple[bool, str]:
+    """Reset a repo to a specific commit (git reset --hard <commit>).
+    Returns (ok, message)."""
+    commit = commit.strip()
+    if not commit:
+        return False, "Empty commit hash"
+    ok, out, err = run_git(["rev-parse", "--verify", "--quiet", f"refs/{commit}"], cwd=path)
+    if not ok:
+        ok, out, err = run_git(["rev-parse", "--verify", "--quiet", commit], cwd=path)
+    if not ok:
+        return False, f"Commit '{commit[:8]}' not found"
+    sha = out.strip()[:8]
+    ok, out, err = run_git(["reset", "--hard", commit], cwd=path)
+    if not ok:
+        return False, f"git reset --hard {sha} failed: {(err or out).strip()}"
+    branch = get_current_branch(path) or "DETACHED"
+    return True, f"Reset to {sha} on {branch}"
+
+
 def get_commit_datetime(path: str, rev: str = "HEAD") -> Optional[datetime]:
     if not rev:
         return None

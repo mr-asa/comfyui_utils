@@ -162,6 +162,9 @@ nav button.done::after { content: ""; width: 7px; height: 7px; border-radius: 50
 .detail .frow > span { flex: none; text-align: right; }
 .detail .frow > span.path { flex: 1 1 auto; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; }
 .detail .grow { display: flex; align-items: center; height: 22px; font-size: 12.5px; white-space: nowrap; }
+.detail .co { flex: none; width: 20px; height: 20px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--chip); color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; margin-left: 4px; opacity: .5; transition: opacity .15s; }
+.detail .co:hover { opacity: 1; color: var(--text); background: var(--accent); border-color: var(--accent); }
+.detail .co[disabled] { opacity: .3; cursor: default; }
 .detail .grow svg { flex: none; }
 .detail .gtext { overflow: hidden; text-overflow: ellipsis; margin-left: 4px; }
 .detail .gref { padding: 0 6px; margin-right: 4px; font-size: 11px; color: var(--accent); }
@@ -1291,7 +1294,7 @@ const commitsHtml = (commits, title, base) => commits.length ? `<h4>${title} (${
 
 // branch graph: one lane per line of history, each row is an svg cell (dot + lines) next to the commit
 const GRAPH_COLORS = ["#6d94ff", "#4cc27e", "#e0a64a", "#ef6b5b", "#4cc3dc", "#b58aff"];
-function graphHtml(commits, base) {
+function graphHtml(commits, base, path) {
   const H = 22, W = 14, lanes = [], rows = [];
   for (const c of commits) {
     const before = lanes.slice();
@@ -1316,7 +1319,8 @@ function graphHtml(commits, base) {
       + r.out.map(j => line(r.col, mid, j, H, j === r.col ? r.col : j)).join("")
       + `<circle cx="${x(r.col)}" cy="${mid}" r="${r.c.parents.length > 1 ? 3 : 4}" fill="${r.c.parents.length > 1 ? "var(--panel)" : color(r.col)}" stroke="${color(r.col)}" stroke-width="1.6"/>`;
     const refs = r.c.refs.map(t => `<span class="badge gref">${esc(t.replace("HEAD -> ", "● "))}</span>`).join("");
-    return `<div class="grow" title="${esc(r.c.hash + " " + r.c.date + "  " + r.c.subject)}"><svg width="${width}" height="${H}">${svg}</svg><span class="gtext">${refs}<span class="mono">${base ? `<a href="${esc(`${base.replace(/\/$/, "")}${/gitlab/i.test(base) ? "/-" : ""}/commit/${r.c.hash}`)}" target="_blank" rel="noopener" title="Open this commit on the web">${esc(r.c.hash)}</a>` : esc(r.c.hash)}</span> ${prLinks(esc(r.c.subject), base)}</span></div>`;
+    const co = path ? `<button class="co" data-rp="${esc(path)}" data-hs="${esc(r.c.hash)}" title="Reset to this commit">⏮</button>` : "";
+    return `<div class="grow" title="${esc(r.c.hash + " " + r.c.date + "  " + r.c.subject)}"><svg width="${width}" height="${H}">${svg}</svg><span class="gtext">${refs}<span class="mono">${base ? `<a href="${esc(`${base.replace(/\/$/, "")}${/gitlab/i.test(base) ? "/-" : ""}/commit/${r.c.hash}`)}" target="_blank" rel="noopener" title="Open this commit on the web">${esc(r.c.hash)}</a>` : esc(r.c.hash)}</span> ${prLinks(esc(r.c.subject), base)}</span>${co}</div>`;
   }).join("");
 }
 
@@ -1433,13 +1437,35 @@ async function rPick(path) {
     try {
       const g = await api("/api/repo_graph", {path, limit});
       if (seq !== rDetailSeq) return;
-      box.innerHTML = g.error ? `<span class="bad">${esc(g.error)}</span>` : graphHtml(g.commits, r.commit_base)
+      box.innerHTML = g.error ? `<span class="bad">${esc(g.error)}</span>` : graphHtml(g.commits, r.commit_base, path)
         + (g.commits.length >= limit ? `<button class="link" data-more>Load ${GRAPH_STEP} more</button>` : "");
       const more = box.querySelector("[data-more]");
       if (more) more.onclick = () => loadGraph(box, limit + GRAPH_STEP);
+      bindCo(box);
     } catch (err) { if (seq === rDetailSeq) box.innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
   };
   const bindGraph = () => $(p + "-detail").querySelector("[data-graph]").onclick = e => loadGraph(e.target.parentElement, GRAPH_STEP);
+  const bindCo = (box) => {
+    (box || $(p + "-detail")).querySelectorAll("button.co[data-hs]").forEach(btn => {
+      btn.onclick = async () => {
+        const rp = btn.dataset.rp, hs = btn.dataset.hs, rpRepo = repos.find(x => x.path === rp);
+        if (!confirm(`Reset ${rpRepo ? rpRepo.name : rp} to commit ${hs.substring(0, 8)}?\n\nLocal changes and current branch position will be replaced.`)) return;
+        btn.disabled = true; btn.textContent = "…";
+        try {
+          const res = await api("/api/repo_checkout", {path: rp, commit: hs});
+          if (res.ok) {
+            btn.textContent = "✓";
+            // update the picked row's branch/state
+            const ri = repos.findIndex(x => x.path === rp);
+            if (ri >= 0 && res.row) repos[ri] = {...repos[ri], ...res.row, flash: true};
+            rRender();
+          } else {
+            btn.textContent = "✗"; btn.title = res.message;
+          }
+        } catch (e) { btn.textContent = "✗"; btn.title = e.message; }
+      };
+    });
+  };
   if (r.updated) { $(p + "-detail").innerHTML = r.updated + graphBox; bindGraph(); return; }
   $(p + "-detail").innerHTML = '<span class="muted">Loading…</span>';
   try {
