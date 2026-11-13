@@ -53,6 +53,15 @@ What changed in the toolbox and why:
 ### Release notes
 
 <details open>
+<summary><b>2026-11-13</b></summary>
+
+- **Custom nodes, branch select:** pick a target branch per repository in the Git table; confirm dialog lists the switches.
+- **Custom nodes, BRANCH_OVERRIDES:** the dict now works; pin a repo to a branch from console or GUI.
+- **Custom nodes, reset to commit:** ⏮ on any commit in the history graph rolls the repo back to that build (`git reset --hard`).
+
+</details>
+
+<details>
 <summary><b>2026-11-05</b></summary>
 
 - **Build venv, filters:** Python, CUDA and torch are text fields: `2.12 2.14` (several), `>=2.12 <2.15`, `>=cu128`, `128` for `cu128`. Hover for what is available.
