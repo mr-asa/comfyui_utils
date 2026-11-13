@@ -43,7 +43,7 @@ label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted)
 table { border-collapse: collapse; }
 #tab-audit table { width: 100%; }  /* the Issue column uses the free width */
 td.trunc { max-width: 75vw; overflow: hidden; text-overflow: ellipsis; }
-select[data-bp] { max-width: 11em; text-overflow: ellipsis; padding: 2px 4px; } /* branch cell in the repos table */
+select[data-bp] { width: 100%; box-sizing: border-box; padding: 2px 4px; } /* branch cell in the repos table */
 th, td { text-align: left; padding: 3px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
 th[data-dir=asc]::after { content: " ▲"; font-size: 10px; } th[data-dir=desc]::after { content: " ▼"; font-size: 10px; }
 th.sorted { color: var(--text); }
@@ -1390,7 +1390,8 @@ function rVisible() {
 function branchCell(r) {
   const opts = (r.branches && r.branches.length ? [...r.branches] : []);
   if (r.branch !== "DETACHED" && !opts.includes(r.branch)) opts.unshift(r.branch);
-  if (!opts.length) return `<td class="mono">${esc(r.branch)}</td>`;
+  const label = r.branch === "DETACHED" ? "detached" : r.branch;
+  if (opts.length <= 1) return `<td class="mono">${esc(label)}</td>`;  // only one branch — no menu needed
   const cur = rBranch.get(r.path) || (r.branch === "DETACHED" ? "" : r.branch);
   const o = v => `<option value="${esc(v)}"${cur === v ? " selected" : ""}>${esc(v)}</option>`;
   return `<td class="mono"><select data-bp="${esc(r.path)}" title="Branch to update to">${r.branch === "DETACHED" ? `<option value=""${cur === "" ? " selected" : ""}>detached</option>` : ""}${opts.map(o).join("")}</select></td>`;
