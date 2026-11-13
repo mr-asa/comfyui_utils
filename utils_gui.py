@@ -29,7 +29,7 @@ from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import unquote
 
 import requests
@@ -540,9 +540,10 @@ def repos_scan_job(job: dict, kind: str, fetch: bool, include_disabled: bool) ->
     return {"rows": rows, "root": str(root)}
 
 
-def repos_update_job(job: dict, paths: List[str], on_local: str, on_conflict: str, dry_run: bool) -> dict:
-    """Nodes: local changes stash/replace/skip, conflicts skip/reset. Workflows: local changes also fetch-only / move edited JSONs,
-    "conflicts" is the Windows-incompatible-paths answer (skip / fetch + sparse checkout)."""
+def repos_update_job(job: dict, paths: List[str], on_local: str, on_conflict: str, dry_run: bool, branches: Optional[Dict[str, str]] = None) -> dict:
+    """Nodes: local changes stash/replace/skip, conflicts skip/reset, branches maps a path to the branch to update it to.
+    Workflows: local changes also fetch-only / move edited JSONs, "conflicts" is the Windows-incompatible-paths answer
+    (skip / fetch + sparse checkout); branch switching is nodes-only."""
     unknown = [p for p in paths if p not in REPO_KIND]
     if unknown:
         raise ValueError("not a scanned repository: " + unknown[0])
@@ -561,7 +562,7 @@ def repos_update_job(job: dict, paths: List[str], on_local: str, on_conflict: st
                 cache_root.mkdir(exist_ok=True)
                 res = wf.report_to_dict(wf.update_partial_repo(Path(path), cache_root))
         else:
-            res = result_to_dict(update_repo(path, dry_run=dry_run, on_local=local, on_conflict=resolve))
+            res = result_to_dict(update_repo(path, dry_run=dry_run, on_local=local, on_conflict=resolve, branch=(branches or {}).get(path)))
         res["row"] = source_status(path, False)
         return res
 
@@ -1352,8 +1353,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "unknown repository"}, 400)
                 self.send_json(repo_graph(path, int(body.get("limit", 80))) if os.path.isdir(os.path.join(path, ".git")) else {"commits": [], "error": "not a full git checkout"})
             elif self.path == "/api/repos_update":
+                branches = body.get("branches")
+                if branches is not None and not isinstance(branches, dict):
+                    return self.send_json({"error": "branches must be a map of path to branch"}, 400)
                 job = new_job("repos", changes=() if body.get("dry_run") else ("scan-nodes", "scan-workflows"))
-                run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")))
+                run_in_thread(job, repos_update_job, [str(x) for x in body["paths"]], str(body.get("on_local", "stash")), str(body.get("on_conflict", "skip")), bool(body.get("dry_run")), {str(k): str(v) for k, v in (branches or {}).items() if str(v).strip()})
                 self.send_json({"job": job["id"]})
             elif self.path == "/api/versions":
                 self.send_json(versions_info(str(body["venv"]), str(body["name"]), [{"repo": str(x["repo"]), "spec": str(x["spec"])} for x in body.get("specs", [])]))

@@ -397,12 +397,14 @@ def apply_filters(paths: List[str], only: Optional[List[str]], skip: Optional[Li
 
 # ------------------------- Repo update -------------------------
 
-def update_repo(path: str, dry_run: bool = False, on_local: Optional[str] = None, on_conflict: Optional[str] = None) -> UpdateResult:
+def update_repo(path: str, dry_run: bool = False, on_local: Optional[str] = None, on_conflict: Optional[str] = None, branch: Optional[str] = None) -> UpdateResult:
     """on_local answers the local-changes prompt ("1" replace from remote, "2" stash and re-apply, "3" skip, "4" re-clone),
-    on_conflict the conflict prompt ("reset" or "skip"); None asks on the console."""
+    on_conflict the conflict prompt ("reset" or "skip"); None asks on the console.
+    branch -- update this branch instead of the current one (BRANCH_OVERRIDES applies when it's not given)."""
     name = os.path.basename(path.rstrip(os.sep))
 
     web_url = to_web_url(get_remote_url(path) or "")
+    requested_branch = branch  # the target branch asked by the caller; `branch` is rebound to the current one below
     branch = get_current_branch(path) or "DETACHED"
 
     if not os.path.isdir(os.path.join(path, ".git")):
@@ -418,6 +420,19 @@ def update_repo(path: str, dry_run: bool = False, on_local: Optional[str] = None
     ok, out, err = run_git(["-c", "maintenance.auto=false", "-c", "gc.auto=0", "fetch", "--all", "--tags"], cwd=path)
     if not ok:
         return UpdateResult(name, path, web_url, branch, False, [], [], ["git fetch failed"], error=(err or out).strip())
+
+    # Target branch: explicit request (e.g. the GUI branch select) or BRANCH_OVERRIDES; default -- the current branch
+    target = (requested_branch or "").strip() or branch_override(name, path)
+    if target and target != branch:
+        if dry_run:
+            notes.append(f"[dry-run] Would switch branch {branch} → {target}, then update it")
+            branch = target
+        else:
+            ok, msg = checkout_branch(path, target)
+            if not ok:
+                return UpdateResult(name, path, web_url, branch, False, [], [], [msg], error=msg)
+            notes.append(f"Switched branch: {branch} → {target}")
+            branch = target
 
     fork_ref = fork_upstream_ref(path, branch)
     if fork_ref:
@@ -681,6 +696,7 @@ def repo_status(path: str, fetch: bool = True) -> Dict[str, object]:
     info["web_url"] = to_web_url(get_remote_url(path) or "")
     info["commit_base"] = info["web_url"]  # commits are linked as <commit_base>/commit/<hash>
     info["branch"] = get_current_branch(path) or "DETACHED"
+    info["branches"] = list_remote_branches(path)  # local refs only, no network
     if fetch:
         ok, out, err = run_git(["-c", "maintenance.auto=false", "-c", "gc.auto=0", "fetch", "--all", "--tags"], cwd=path, env=NO_PROMPT_ENV, timeout=90)
         if not ok:
@@ -739,6 +755,9 @@ def repo_graph(path: str, limit: int = 80) -> Dict[str, object]:
 
 
 def result_to_dict(res: UpdateResult) -> Dict[str, object]:
+    cur = get_current_branch(res.path)  # a branch switch changes the answer
+    if cur:
+        res.branch = cur
     return {
         "name": res.name, "path": res.path, "branch": res.branch, "changed": res.changed, "skipped": res.skipped or "", "error": res.error or "",
         "commits": res.commit_messages, "files": [{"added": a, "deleted": d, "path": p} for a, d, p in res.numstat],
@@ -1313,6 +1332,54 @@ def get_head_commit(path: str) -> str:
     return out.strip() if ok else ""
 
 
+def list_remote_branches(path: str) -> List[str]:
+    """Remote branch names (remote prefixes stripped, /HEAD pointers dropped), deduplicated."""
+    ok, out, _ = run_git(["for-each-ref", "--format=%(refname:short)", "refs/remotes"], cwd=path)
+    if not ok:
+        return []
+    names: List[str] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if "/" not in line or line.endswith("/HEAD"):
+            continue
+        name = line.split("/", 1)[1]
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def checkout_branch(path: str, branch: str) -> Tuple[bool, str]:
+    """Check out a branch, creating a local tracking branch from <remote>/<branch> when it doesn't exist yet."""
+    ok, out, err = "", "", ""
+    if run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=path)[0]:
+        ok, out, err = run_git(["checkout", branch], cwd=path)
+    else:
+        for remote in ("origin", "upstream"):
+            if run_git(["rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}"], cwd=path)[0]:
+                ok, out, err = run_git(["checkout", "-b", branch, f"refs/remotes/{remote}/{branch}"], cwd=path)
+                break
+        if not ok and not out and not err:  # nothing matched at all
+            return False, f"Branch '{branch}' not found locally or on the remote. Available remote branches: {', '.join(list_remote_branches(path)[:30]) or 'none'}"
+    if not ok:
+        return False, f"git checkout {branch} failed: {(err or out).strip()}"
+    return True, ""
+
+
+def branch_override(name: str, path: str) -> str:
+    """BRANCH_OVERRIDES lookup: exact name/path match first, then a regex key (see the header examples)."""
+    for key, val in BRANCH_OVERRIDES.items():
+        if not isinstance(val, str) or not val.strip():
+            continue
+        if key in (name, path):
+            return val.strip()
+        try:
+            if re.search(key, name) or re.search(key, path):
+                return val.strip()
+        except re.error:
+            continue
+    return ""
+
+
 def get_commit_datetime(path: str, rev: str = "HEAD") -> Optional[datetime]:
     if not rev:
         return None
@@ -1461,6 +1528,9 @@ def remedy_pull_failure(out: str, err: str) -> List[str]:
 # ------------------------- Reporting -------------------------
 
 def print_report(res: UpdateResult) -> None:
+    cur = get_current_branch(res.path)  # a branch switch changes the answer
+    if cur:
+        res.branch = cur
     header_printed = res.name in _PRINTED_HEADERS
     if header_printed:
         _PRINTED_HEADERS.discard(res.name)

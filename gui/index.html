@@ -43,6 +43,7 @@ label { display: inline-flex; gap: 5px; align-items: center; color: var(--muted)
 table { border-collapse: collapse; }
 #tab-audit table { width: 100%; }  /* the Issue column uses the free width */
 td.trunc { max-width: 75vw; overflow: hidden; text-overflow: ellipsis; }
+select[data-bp] { max-width: 11em; text-overflow: ellipsis; padding: 2px 4px; } /* branch cell in the repos table */
 th, td { text-align: left; padding: 3px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
 th[data-dir=asc]::after { content: " ▲"; font-size: 10px; } th[data-dir=desc]::after { content: " ▼"; font-size: 10px; }
 th.sorted { color: var(--text); }
@@ -1338,7 +1339,7 @@ function setRepoOptions() {
 setRepoOptions();
 try { $(p + "-ask").checked = localStorage.getItem(p + "-ask") !== "0"; } catch (e) {}
 $(p + "-ask").onchange = () => { try { localStorage.setItem(p + "-ask", $(p + "-ask").checked ? "1" : "0"); } catch (e) {} };
-let repos = [], rSel = new Set(), rActive = new Set(RSTATES), rJob = null, rSortKey = "state", rSortDir = 1, rPicked = "", rDetailSeq = 0;
+let repos = [], rSel = new Set(), rActive = new Set(RSTATES), rJob = null, rSortKey = "state", rSortDir = 1, rPicked = "", rDetailSeq = 0, rBranch = new Map();
 
 $(p + "-scan").onclick = async () => {
   if (rJob) {
@@ -1361,7 +1362,7 @@ function watchScan(job) {
     rJob = null; $(p + "-scan").disabled = false; $(p + "-scan").textContent = "Scan";
     if (j.status === "cancelled") { logAdd(["Scan cancelled."]); setStatus("cancelled"); return; }
     if (j.status === "error") { logAdd(["Scan failed: " + j.error]); setStatus("failed"); return; }
-    repos = j.result.rows; setStatus("done"); rBuildChips(); rRender();
+    repos = j.result.rows; rBranch.clear(); setStatus("done"); rBuildChips(); rRender();
   }, logAdd, tabId);
 }
 api("/api/last_job?scope=scan-" + kind).then(last => {
@@ -1385,6 +1386,16 @@ function rVisible() {
   return rows;
 }
 
+// branch cell: a select of the repo's remote branches, defaulting to the current one; picking another targets the update at that branch
+function branchCell(r) {
+  const opts = (r.branches && r.branches.length ? [...r.branches] : []);
+  if (r.branch !== "DETACHED" && !opts.includes(r.branch)) opts.unshift(r.branch);
+  if (!opts.length) return `<td class="mono">${esc(r.branch)}</td>`;
+  const cur = rBranch.get(r.path) || (r.branch === "DETACHED" ? "" : r.branch);
+  const o = v => `<option value="${esc(v)}"${cur === v ? " selected" : ""}>${esc(v)}</option>`;
+  return `<td class="mono"><select data-bp="${esc(r.path)}" title="Branch to update to">${r.branch === "DETACHED" ? `<option value=""${cur === "" ? " selected" : ""}>detached</option>` : ""}${opts.map(o).join("")}</select></td>`;
+}
+
 function rRender() {
   markSort("#tab-" + tabId + " th[data-rk]", "rk", rSortKey, rSortDir);
   const rows = rVisible();
@@ -1395,12 +1406,16 @@ function rRender() {
     const dirty = r.dirty ? `<span class="risk" title="${esc(r.dirty_lines.join("\n"))}">${r.dirty} file(s)</span>` : '<span class="muted">—</span>';
     const date = r.last_date ? r.last_date.slice(0, 10) : "";
     return `<tr data-p="${esc(r.path)}" class="${r.flash ? "flash" : rPicked === r.path ? "sel" : ""}"><td><input type="checkbox" data-p="${esc(r.path)}" ${rSel.has(r.path) ? "checked" : ""}></td>
-      <td class="mono">${name}${fork}${r.disabled ? ' <span class="muted">(disabled)</span>' : ""}</td>${kind === "nodes" ? `<td>${nodeTags(r.name).map(t => `<button class="tag" data-tag="${esc(t)}" title="Show only nodes with this tag">${esc(t)}</button>`).join("")}</td>` : ""}<td class="mono">${esc(r.branch)}</td>
+      <td class="mono">${name}${fork}${r.disabled ? ' <span class="muted">(disabled)</span>' : ""}</td>${kind === "nodes" ? `<td>${nodeTags(r.name).map(t => `<button class="tag" data-tag="${esc(t)}" title="Show only nodes with this tag">${esc(t)}</button>`).join("")}</td>` : ""}${kind === "nodes" ? branchCell(r) : `<td class="mono">${esc(r.branch)}</td>`}
       <td><span class="badge s-${r.state}" title="${esc(r.error)}">${RLABEL[r.state] || r.state}</span></td>
       <td class="mono">${r.behind ? "↓" + r.behind : ""} ${r.ahead ? "↑" + r.ahead : ""}</td><td>${dirty}</td>
       <td class="trunc" title="${esc(r.last_subject)}"><span class="mono">${esc(date)}</span> <span class="muted">${esc(r.last_subject)}</span></td></tr>`;
   }).join("");
   $(p + "-rows").querySelectorAll("input[type=checkbox]").forEach(cb => { cb.onclick = e => e.stopPropagation(); cb.onchange = () => { cb.checked ? rSel.add(cb.dataset.p) : rSel.delete(cb.dataset.p); rUpdateSel(); }; });
+  $(p + "-rows").querySelectorAll("select[data-bp]").forEach(sel => { sel.onclick = e => e.stopPropagation(); sel.onchange = () => {
+    const pth = sel.dataset.bp, cur = (repos.find(r => r.path === pth) || {}).branch, want = sel.value;
+    if (!want || want === cur) rBranch.delete(pth); else rBranch.set(pth, want);
+  }; });
   $(p + "-rows").querySelectorAll("tr").forEach(tr => tr.onclick = () => rPick(tr.dataset.p));
   $(p + "-rows").querySelectorAll("button[data-tag]").forEach(b => b.onclick = e => { e.stopPropagation(); $(p + "-tag").value = b.dataset.tag; rRender(); });
   rUpdateSel();
@@ -1440,15 +1455,18 @@ async function rPick(path) {
 $(p + "-update").onclick = async () => {
   const paths = [...rSel], local = $(p + "-local").value, conflict = $(p + "-conflict").value, dry = $(p + "-dry") ? $(p + "-dry").checked : false;
   const dirty = paths.map(p => repos.find(r => r.path === p)).filter(r => r.dirty);
+  const switches = {};
+  paths.forEach(pth => { const b = rBranch.get(pth), r = repos.find(x => x.path === pth); if (b && r && b !== r.branch) switches[pth] = b; });
   const destructive = conflict === "reset" || (dirty.length && (local === "replace" || local === "move_json"));
   if ((destructive || $(p + "-ask").checked) && !confirm(`${dry ? "Dry run for" : "Update"} ${paths.length} repositor${paths.length === 1 ? "y" : "ies"}?`
     + (dirty.length ? `\n\n${dirty.length} have local changes → ${local === "stash" ? "stash and re-apply after the pull" : local === "skip" ? "they will be skipped" : local === "fetch" ? "only fetched, the working tree stays as it is" : "LOCAL CHANGES WILL BE DISCARDED"}.` : "")
-    + (conflict === "reset" ? "\nConflicts → hard reset to the remote (local commits are lost)." : "") + (local === "move_json" ? "\nEdited JSONs are moved to github_edits, other local changes are discarded." : ""))) return;
+    + (conflict === "reset" ? "\nConflicts → hard reset to the remote (local commits are lost)." : "") + (local === "move_json" ? "\nEdited JSONs are moved to github_edits, other local changes are discarded." : "")
+    + (Object.keys(switches).length ? `\n\n${Object.keys(switches).length} will switch branch (local commits are kept):\n` + Object.entries(switches).map(([pth, b]) => { const r = repos.find(x => x.path === pth); return `${r ? r.name : pth}: ${r && r.branch !== "DETACHED" ? r.branch : "detached"} → ${b}`; }).join("\n") : ""))) return;
   showLog(`${dry ? "Dry run" : "Update"}: ${paths.length} repositories`, "", "running");
   $(p + "-update").dataset.busy = "1"; $(p + "-update").disabled = true; $(p + "-update").textContent = "Updating…";
   const finish = () => { $(p + "-update").dataset.busy = "0"; $(p + "-update").textContent = "Update selected…"; rUpdateSel(); };
   try {
-    const {job} = await api("/api/repos_update", {paths, on_local: local, on_conflict: conflict, dry_run: dry});
+    const {job} = await api("/api/repos_update", {paths, on_local: local, on_conflict: conflict, dry_run: dry, branches: switches});
     watch(job, j => {
       finish();
       if (j.status !== "done") { logAdd([j.error || "Update failed."]); setStatus(j.status === "cancelled" ? "cancelled" : "failed"); return; }
@@ -1457,7 +1475,7 @@ $(p + "-update").onclick = async () => {
       j.result.results.forEach(res => {
         const i = repos.findIndex(r => r.path === res.path); if (i < 0) return;
         const row = res.row;
-        if (res.error) problems++;
+        if (res.error) problems++; else rBranch.delete(res.path);  // reached the target branch (or there was none); a failed one keeps its pick for a retry
         if (res.changed && !j.result.dry_run) {
           changed++; row.flash = true; rSel.delete(res.path);
           row.updated = `<b>${esc(res.name)}</b> updated${res.last_update_at ? " (" + esc(res.last_update_at) + ")" : ""}` + commitsHtml(res.commits, "Pulled commits", row.commit_base)
